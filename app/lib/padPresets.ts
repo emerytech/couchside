@@ -53,7 +53,7 @@ export function padPresetLabel(raw: unknown): string {
 }
 
 export const ROTATION_TIP_TITLE = 'Want a full-screen controller?';
-export const ROTATION_TIP_BODY = 'While using PAD, turn your phone sideways to expand the gamepad.';
+export const ROTATION_TIP_BODY = 'While using PAD, turn your phone sideways to expand the gamepad. In the mobile app, you can also tap Rotate when there is room beside the shoulder buttons. Full-screen Prefs opens your presets and themes.';
 
 export type RotationTipState = {
   ready: boolean;

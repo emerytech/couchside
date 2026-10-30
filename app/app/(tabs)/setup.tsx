@@ -4,7 +4,7 @@ import { blockTabSwipe } from '@/lib/tabSwipe';
 import { resetLicenseActivation } from '@/lib/licenseActivation';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import { createContext, useContext } from 'react';
-import type { StyleProp, ViewStyle } from 'react-native';
+import type { StyleProp, ViewStyle, ViewProps } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Linking from 'expo-linking';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -82,7 +82,7 @@ import {
 import { clearCompatCache } from '@/lib/compatFetch';
 import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { resetTips } from '@/lib/tips';
-import { setPref, usePref } from '@/lib/prefs';
+import { getPref, setPref, usePref } from '@/lib/prefs';
 import { sectionOpen, toggleCollapsed, type PrefSectionId } from '@/lib/prefSections';
 import { THEME_PICKER } from '@/lib/gameTheme';
 import { aliasFromValue, iconValue } from '@/lib/appIcon';
@@ -846,12 +846,16 @@ function PrefSection({
   label,
   style,
   children,
+  anchorRef,
+  onLayout,
 }: {
   id: PrefSectionId;
   icon: IoniconName;
   label: string;
   style: StyleProp<ViewStyle>;
   children: React.ReactNode;
+  anchorRef?: React.Ref<View>;
+  onLayout?: ViewProps['onLayout'];
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -860,7 +864,7 @@ function PrefSection({
   const folded = collapsed.includes(id);
   const open = sectionOpen(collapsed, id, q);
   return (
-    <View style={style}>
+    <View ref={anchorRef} collapsable={false} onLayout={onLayout} style={style}>
       {!q && (
         <Pressable
           onPress={() => {
@@ -1204,7 +1208,7 @@ function SetupBody() {
 
   // Select locally; clearing params during cold startup used to navigate before
   // the root navigator mounted. Re-apply on focus and every new activation.
-  const params = useLocalSearchParams<{ tab?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; section?: string; padRequest?: string }>();
   const router = useRouter();
   const licenseActivation = useLicenseActivation();
   // Release the in-memory key when the user leaves activation; never persist it.
@@ -1222,6 +1226,39 @@ function SetupBody() {
   // ever has to move body content.
   const scrollRef = useRef<ScrollView>(null);
   const scrollY = useRef(0);
+  const padLayoutAnchor = useRef<View>(null);
+  const padSettingsRequest = useRef<{ id: string } | null>(null);
+  const consumedPadSettingsRequest = useRef<string | null>(null);
+  const finishPadSettingsRequest = useCallback(() => {
+    if (padSettingsRequest.current) consumedPadSettingsRequest.current = padSettingsRequest.current.id;
+    padSettingsRequest.current = null;
+  }, []);
+  const revealPadSettings = useCallback(() => {
+    const request = padSettingsRequest.current;
+    if (!request || !padLayoutAnchor.current || !scrollRef.current) return;
+    // Measure against the scroll CONTENT, so a delayed onScroll event cannot
+    // mix an old offset with a new portrait layout and scroll to the wrong row.
+    const content = scrollRef.current.getInnerViewNode();
+    if (content == null) return;
+    padLayoutAnchor.current.measureLayout(content, (_x, cardY) => {
+      if (padSettingsRequest.current !== request || !Number.isFinite(cardY)) return;
+      scrollRef.current?.scrollTo({ y: Math.max(0, cardY - 12), animated: false });
+      consumedPadSettingsRequest.current = request.id;
+      // Keep the target until the first user gesture. Native portrait lock
+      // can finish AFTER navigation; its reflow must re-align this card too.
+    });
+  }, []);
+  useFocusEffect(useCallback(() => {
+    if (params.tab !== 'prefs' || params.section !== 'padLayout' || !params.padRequest
+      || consumedPadSettingsRequest.current === params.padRequest || (IS_DIRECT_BUILD && licenseActivation?.key)) return;
+    padSettingsRequest.current = { id: params.padRequest };
+    setTab('prefs');
+    setPrefQuery('');
+    setPadSheet(null);
+    void setPref('prefsCollapsed', getPref('prefsCollapsed').filter(id => id !== 'padLayout'));
+    const frame = requestAnimationFrame(revealPadSettings);
+    return () => { cancelAnimationFrame(frame); padSettingsRequest.current = null; };
+  }, [params.tab, params.section, params.padRequest, licenseActivation?.id, revealPadSettings]));
   useEffect(
     () =>
       registerScroller('setup', (dy) => {
@@ -1235,7 +1272,7 @@ function SetupBody() {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
-        <CategoryTabs tab={tab} onTab={setTab} />
+        <CategoryTabs tab={tab} onTab={next => { finishPadSettingsRequest(); setTab(next); }} />
       </View>
       {/* The unlock is a one-time purchase buried under the Account category,
           and during the trial nothing else points at it — App Review could not
@@ -1277,6 +1314,10 @@ function SetupBody() {
       )}
       <ScrollView
         ref={scrollRef}
+        onTouchStart={finishPadSettingsRequest}
+        onPointerDown={finishPadSettingsRequest}
+        onScrollBeginDrag={finishPadSettingsRequest}
+        onContentSizeChange={revealPadSettings}
         onScroll={(e) => {
           scrollY.current = e.nativeEvent.contentOffset.y;
         }}
@@ -2222,9 +2263,19 @@ function SetupBody() {
 
             {/* What APPEARS on the Pad — every optional row/view can be hidden. How the
                 pad behaves lives in PAD BEHAVIOR, the next card. */}
-            <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}>
+            <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}
+              anchorRef={padLayoutAnchor} onLayout={revealPadSettings}>
               <NavPref label="Control presets" sub="Optional landscape PAD layouts for this box."
                 value={padPresetLabel(activeBox?.controlPreset)} onPress={() => setPadSheet('presets')} />
+              <NavPref
+                label="Controller theme"
+                sub="Style the full-screen controller (MOVE / landscape pad). Auto matches the game running on your box; a named theme applies always."
+                value={THEME_PICKER.find((o) => o.value === controllerTheme)?.label ?? 'Off'}
+                onPress={() => {
+                  hapticSelection();
+                  router.push('/theme-picker');
+                }}
+              />
               <PrefAction label="Controller help" sub="Full-screen PAD, rotation tip, and restoring Current controls."
                 icon="help-circle-outline" onPress={() => setPadSheet('help')} />
               <TogglePref
@@ -2306,15 +2357,6 @@ function SetupBody() {
                 onValueChange={(v) => {
                   void setPref('padLargeToggle', v);
                   hapticSelection();
-                }}
-              />
-              <NavPref
-                label="Controller theme"
-                sub="Style the full-screen controller (MOVE / landscape pad). Auto matches the game running on your box; a named theme applies always."
-                value={THEME_PICKER.find((o) => o.value === controllerTheme)?.label ?? 'Off'}
-                onPress={() => {
-                  hapticSelection();
-                  router.push('/theme-picker');
                 }}
               />
             </PrefSection>

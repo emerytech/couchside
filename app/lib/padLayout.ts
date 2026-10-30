@@ -48,7 +48,7 @@ export type PadNodeId =
   | 'select' | 'steam' | 'qam' | 'start'
   | 'dpad' | 'lstick' | 'rstick'
   | 'a' | 'b' | 'x' | 'y'
-  | 'lock' | 'exit'
+  | 'lock' | 'exit' | 'preferences'
   // Movement mode (moveLayout): the big left-thumb zone, the 4-way menu
   // cluster, and the PAD/MOVE toggle that lives in the chrome row of BOTH
   // layouts.
@@ -142,6 +142,14 @@ export const EXIT_MOAT_U = 26;
 
 /** Every touch target must be at least this, in dp. */
 export const MIN_TOUCH = 44;
+
+/** Portrait PAD keeps its existing shoulder geometry. Only use the empty
+ * shoulder gap when a real 44dp Rotate target fits; never squeeze LB/RB. */
+export const PORTRAIT_PAD_CHROME = { padding: 12, shoulder: 60, gap: 8 } as const;
+export function portraitRotateFits(usableWidth: number): boolean {
+  return usableWidth - 2 * PORTRAIT_PAD_CHROME.padding
+    - 4 * PORTRAIT_PAD_CHROME.shoulder - 4 * PORTRAIT_PAD_CHROME.gap >= MIN_TOUCH;
+}
 
 /** Hard per-side cap on hit-rect expansion, in U. See expandHits. */
 export const EXPAND_CAP_U = 8;
@@ -244,6 +252,7 @@ const TABLE: Spec[] = [
   { id: 'variant', w: 15, h: 14, cx: { from: 'centre', at: -29 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'lock', w: 15, h: 14, cx: { from: 'centre', at: -11 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'exit', w: 15, h: 14, cx: { from: 'centre', at: 7 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'preferences', w: 15, h: 14, cx: { from: 'centre', at: 25 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'rb', w: 18, h: 14, cx: { from: 'right', at: 32 }, cy: { from: 'top', at: 10 }, layer: 1 },
   { id: 'rt', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 10 }, layer: 1 },
 
@@ -408,6 +417,7 @@ export function stardewLayout(win: Size, insets: Insets, size: 'standard' | 'lar
   const table: Spec[] = [
     { id: 'lock', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
     { id: 'exit', w: 18, h: 14, cx: { from: 'left', at: 35 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'preferences', w: 22, h: 14, cx: { from: 'left', at: 60 }, cy: { from: 'top', at: 10 }, layer: 9 },
     { id: 'move', w: large ? 64 : 54, h: large ? 40 : 34, cx: { from: 'left', at: 35 }, cy: { from: 'bottom', at: 24 }, layer: 7 },
     { id: 'lt', w: 24, h: 18, cx: { from: 'right', at: 74 }, cy: { from: 'top', at: 12 }, layer: 1 },
     { id: 'b', w: 32, h: 18, cx: { from: 'right', at: 44 }, cy: { from: 'top', at: 12 }, layer: 1 },

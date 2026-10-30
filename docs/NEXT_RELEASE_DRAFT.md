@@ -26,8 +26,9 @@ authorized by this file.
 Custom PAD game modes: #654 source e90aac9, now merged into main as 8782046,
 is integrated on `codex/presets-release-preview-20261029` for acceptance testing.
 Windows gameplay mappings passed on the Razr preset and existing iPhone default
-controls. The new iPhone preset, physical multi-touch and upgraded-tool holds
-remain acceptance gates. Steam Machine mapping verification is owner-deferred;
+controls. The new iPhone275 shared PAD preview also passed physical overlap and
+independent-release checks, and an owner-confirmed Stardew gameplay session.
+Upgraded-tool charging and remaining lifecycle/final-binary gates stay separate. Steam Machine mapping verification is owner-deferred;
 its earlier X/Y result is not a reason to swap the client mappings globally.
 
 Android background-progress notifications are not implemented in this candidate.
@@ -37,9 +38,10 @@ not promise recovery after force-quit or process termination.
 
 ## Internal release preparation
 
-Working app source: `codex/ios-secure-background-upload-20261029`, runtime review
-head `1e343a35b9d4bffa1c0d344094a1a9d9a5cedbe3`. Includes #649, #650, #652, #653
-and current main through `efdb432`. #651 defensive version fallback is separate
+Working app source: `codex/presets-release-preview-20261029`, held draft #655.
+Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
+Installed cloud iPhone275 source is `02e667d`; subsequent shortcut work is not yet
+in that installed artifact. #651 defensive version fallback is separate
 and optional; it is not included. #637 was superseded; do not merge it. #645's
 standalone PR conflicts with its old base, but its exact head is already an
 ancestor of this combined source. Do not merge duplicate feature branches.
@@ -47,8 +49,8 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
-| iOS configured build | 274, reserved for EAS acceptance preview | Final release build remains separate |
-| Physical iPhone QA build | 273.3, source d67f482 | Local-only; not a store submission or the new message-copy build |
+| iOS configured build | 275, used for EAS acceptance preview | Allocate a fresh number for the next native preview/final candidate |
+| Physical iPhone QA build | 275, cloud source 02e667d | Owner-only install; Rotate/preferences shortcuts need a newer binary |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
 | Android Direct configured code | 48 | Private 51 source 1c0c68a is reconciled; use a higher final code |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
@@ -146,3 +148,24 @@ Still pending: physical rotation/background/reconnect and handoff, face/D-pad
 slides, triggers/chrome under holds, final Android shared-handler build/device
 acceptance, and smoke testing the final release binaries. These partial results
 do not complete the whole release gate. No release/submission/email.
+
+### PAD Rotate and preferences shortcuts (held)
+
+Portrait PAD adds Rotate in the shoulder gap; the existing orientation lock
+requests landscape without a physical turn. Auto resumes sensor rotation, and
+Exit returns to portrait. Current/Stardew horizontal PAD adds a preferences
+button beside Exit. It reveals Setup → Prefs → PAD Layout, including when a
+previous search or folded section would hide it; Controller theme sits beside
+Control presets. Navigation/rotation revoke old output callbacks, release held
+inputs and remount the touch plane so held fingers cannot transfer to new controls.
+Settings reflows are re-aligned until the first user gesture. No new protocol,
+dependency, agent runtime or saved preset/theme default. Native shortcut/return
+acceptance remains pending; the installed iPhone275 predates these controls.
+
+Shortcut checks: TypeScript and825 app/hook tests pass. Independent read-only
+review drove one-use navigation requests and narrow-screen touch bounds. Browser
+presses verified Current/Stardew PREFS, portrait reflow alignment, folded/search
+recovery, ordinary Setup-category persistence, theme selection and return with
+the selected preset retained. Browser Rotate is hidden because its orientation
+API is a no-op; native Rotate is only shown with a full44dp shoulder gap. Native
+orientation, held-input navigation and phone return acceptance remain pending.

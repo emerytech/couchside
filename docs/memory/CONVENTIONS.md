@@ -1051,3 +1051,16 @@ Chrome/recovery/keyboard remain outside gameplay. Tokens still revoke old output
 callbacks on layout, focus, ownership or connection changes. Native multi-touch
 and measured-hit acceptance require physical devices; browser mouse tests and
 pure router tests do not establish that acceptance. No new dependency or wire key.
+
+
+### PAD chrome navigation (2026-10-29)
+Rotate/preferences are phone chrome, never wire actions. Revoke the current
+surface gate and releaseAll synchronously, then increment the layout epoch so
+old touch owners/timers cannot revive after an unavailable rotation or a return
+to the same layout. Manual Rotate reuses the PAD landscape lock; Auto and Exit
+keep their existing meaning. Settings deep-link accepts the fixed padLayout
+section with a fresh one-use request ID. Measure against scroll content (not a
+possibly stale onScroll offset), re-align through orientation/content reflow,
+and stop on the first user gesture. Consumed requests must not reset later
+ordinary Setup visits. Keep portrait Rotate native-only and require a full44dp
+spacer without squeezing existing shoulder controls; Help qualifies availability.

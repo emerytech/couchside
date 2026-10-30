@@ -21,7 +21,7 @@ import { getPref, setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { useNavigation } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -53,7 +53,7 @@ import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/compo
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
 import { surfaceChanged, createSurfaceInputGate, type PadSurface } from '@/lib/padSurface';
-import { moveLayout, padLayout, stardewLayout, verticalMoveLayout } from '@/lib/padLayout';
+import { moveLayout, padLayout, stardewLayout, verticalMoveLayout, portraitRotateFits, PORTRAIT_PAD_CHROME } from '@/lib/padLayout';
 import { NotePad } from '@/components/NotePad';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
@@ -938,6 +938,7 @@ function PadScreen() {
   );
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const router = useRouter();
   const { width, height, fontScale } = useWindowDimensions();
   const landscape = width > height;
   // Landscape "laptop mode" (opt-out pref, default on): the pointer/keyboard
@@ -1174,7 +1175,10 @@ function PadScreen() {
   // window can stay landscape-shaped while shrinking below the layout floors
   // (Stage Manager, Android freeform), which swaps the pad for the too-small
   // card — an unmount the immersive flag never sees. Found in review.
-  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}` : 'current'}`;
+  // Chrome transitions retire the old fingers even if a native rotation
+  // request is delayed or unavailable. A fresh mount needs a fresh gesture.
+  const [padChromeEpoch, setPadChromeEpoch] = useState(0);
+  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}` : 'current'}:${padChromeEpoch}`;
   const surface: PadSurface = { mounted: (immersiveLive && landGeom.ok) || (!immersiveLive && padFocused && mode === 'gamepad' && !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false), mode, landscape, layout: layoutIdentity };
   const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked, stale]);
   const inputGate = useMemo(() => createSurfaceInputGate(), []);
@@ -1193,6 +1197,26 @@ function PadScreen() {
     else inputGate.revoke();
     return () => { inputGate.revoke(); client.releaseAll(); };
   }, [inputGate, surfaceToken, surface.mounted, status, inputBlocked, stale, client]);
+
+  const releaseForPadChrome = useCallback(() => {
+    inputGate.revoke();
+    client.releaseAll();
+    setPadChromeEpoch(n => n + 1);
+  }, [inputGate, client]);
+  const rotateToPad = useCallback(() => {
+    releaseForPadChrome();
+    setExited(false);
+    // Existing LOCK/AUTO chrome restores sensor rotation. Leaving PAD still
+    // releases the orientation policy on blur, as it does for manual LOCK.
+    setPadLock(true);
+  }, [releaseForPadChrome]);
+  const padSettingsSequence = useRef(0);
+  const openPadSettings = useCallback(() => {
+    releaseForPadChrome();
+    setImmersive(false);
+    router.push({ pathname: '/setup', params: { tab: 'prefs', section: 'padLayout',
+      padRequest: `${Date.now()}-${++padSettingsSequence.current}` } });
+  }, [releaseForPadChrome, router]);
 
   // Rotation counts as learned only after a usable controller actually renders.
   const controllerAvailable = !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false;
@@ -2099,7 +2123,7 @@ function PadScreen() {
           />
         ) : preset.id === 'stardew' ? (
           <StardewPad background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
-            locked={padLock} onToggleLock={() => setPadLock((v) => !v)} onExit={exitLandscape} />
+            locked={padLock} onToggleLock={() => setPadLock((v) => !v)} onExit={exitLandscape} onSettings={openPadSettings} />
         ) : (
           <LandscapePad
             layout={landGeom}
@@ -2108,6 +2132,7 @@ function PadScreen() {
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
             onExit={exitLandscape}
+            onSettings={openPadSettings}
             onVariant={() => setMode('move')}
           />
         )}
@@ -2500,7 +2525,19 @@ function PadScreen() {
           <PadTouchRow style={styles.topRow}>
             <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
             <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
-            <PadTouchRow style={styles.topSpacer} />
+            <View style={[styles.topSpacer, { justifyContent: 'center' }]}>
+              {Platform.OS !== 'web' && portraitRotateFits(width - insets.left - insets.right) && (
+                <Pressable onPress={rotateToPad} accessibilityRole="button"
+                  accessibilityLabel="Rotate to full-screen pad"
+                  accessibilityHint="Opens the horizontal controller without turning the phone. Use Auto to follow the phone again."
+                  style={({ pressed }) => ({ minHeight: 44, alignItems: 'center', justifyContent: 'center',
+                    paddingHorizontal: 4, borderRadius: 12, borderWidth: 1,
+                    borderColor: t.blue, backgroundColor: pressed ? t.cardBorder : t.card, gap: 2 })}>
+                  <Ionicons name="phone-landscape-outline" size={17} color={t.blue} />
+                  <Text numberOfLines={1} adjustsFontSizeToFit style={{ color: t.blue, fontFamily: mono, fontSize: 11 }}>Rotate</Text>
+                </Pressable>
+              )}
+            </View>
             <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
             <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
           </PadTouchRow>
@@ -2636,7 +2673,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: t.bg,
-    paddingHorizontal: 12,
+    paddingHorizontal: PORTRAIT_PAD_CHROME.padding,
     justifyContent: 'space-between',
   },
 
@@ -3078,13 +3115,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: PORTRAIT_PAD_CHROME.gap,
   },
   topSpacer: {
     flex: 1,
   },
   shoulderBtn: {
-    width: 60,
+    width: PORTRAIT_PAD_CHROME.shoulder,
     height: 48,
   },
   pill: {

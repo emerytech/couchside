@@ -95,6 +95,12 @@ for (const preset of ['current', 'stardew', 'move'] as const) test(`${preset}: a
   const m = at(preset === 'current' ? 'lstick' : 'move', 0), a = at(preset === 'move' ? 'a' : 'x', 1);
   h.router.start([m, a]); h.router.move([{ ...m, x: m.x + 50 }]); assert(h.axes.get('l')![0] > 0); assert.equal(h.held.size, 1);
   const exit = layout.byId.exit.hit; h.router.start([point(3, exit.x + 1, exit.y + 1)]); assert.equal(h.held.size, 1);
+  if (layout.byId.preferences) {
+    const settings = layout.byId.preferences.hit;
+    h.router.start([point(4, settings.x + settings.w / 2, settings.y + settings.h / 2)]);
+    assert.equal(h.held.size, 1, 'settings chrome cannot become a gameplay control');
+    assert(h.axes.get('l')![0] > 0, 'chrome is excluded without stealing the moving finger');
+  }
   h.router.cancel(); assert.equal(h.held.size, 0); assert.deepEqual(h.axes.get('l'), [0, 0]);
 });
 test('revoked surface token plus disposed router cannot press on the replacement connection', () => {

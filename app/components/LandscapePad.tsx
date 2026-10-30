@@ -68,6 +68,8 @@ export type LandscapePadProps = {
   locked: boolean;
   onToggleLock: () => void;
   onExit: () => void;
+  /** Open the existing PAD preferences; never a gamepad protocol action. */
+  onSettings: () => void;
   /** The PAD -> MOVE toggle in the chrome row. */
   onVariant: () => void;
 };
@@ -658,7 +660,7 @@ function ChromeButton({
 }
 
 export function LandscapePad({
-  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant,
+  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant, onSettings,
 }: LandscapePadProps) {
   const t = useControllerTheme();
   const { byId, u } = layout;
@@ -736,6 +738,8 @@ export function LandscapePad({
         onPress={onExit}
         accessibilityLabel="Exit full-screen controller"
       />
+      <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings}
+        accessibilityLabel="Open pad settings" />
     </View>
   );
 }
@@ -833,7 +837,7 @@ const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
-  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit,
+  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
 }: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
@@ -862,6 +866,8 @@ export function StardewPad({
         accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'} />
       <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit}
         accessibilityLabel="Exit full-screen controller" />
+      <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings}
+        accessibilityLabel="Open pad settings" />
     </View>
   );
 }
