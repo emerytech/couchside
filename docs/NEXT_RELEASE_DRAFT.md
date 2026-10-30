@@ -40,10 +40,10 @@ not promise recovery after force-quit or process termination.
 
 Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
-Installed owner previews are cloud iPhone277 from `ad73a5a` and Direct55 from
-`159ec3f`. Direct55 contains an unsuccessful experimental held-input handoff
-fix. That experiment has been removed from the current source; Direct55 remains
-installed until the next preview. The owner deferred this edge case as non-blocking.
+Installed owner previews are cloud iPhone277 from `ad73a5a` and Direct56 from
+`e1ecf7e`. Direct56 removes the unsuccessful held-input handoff experiment.
+iPhone278 is built and verified, with installation pending. The owner deferred
+held-input Pass as non-blocking; ordinary handoff remains part of normal use.
 The Fabric host-ref correction is included. Rotate/PREFS, settings return, Auto
 and Exit passed on Direct54. Physical iPhone277 Rotate/PREFS landing and both
 phones' held-button background/reconnect checks passed on the Windows preview.
@@ -58,7 +58,7 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | iOS configured build | 278, reserved for EAS cloud candidate | Verify artifact and device smoke before submission |
 | Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical Rotate/PREFS and held-button background/reconnect passed |
 | Android Store configured code | 128 | Held candidate; verify artifact and signing before submission |
-| Android Direct configured code | 56, reserved for held candidate | Direct55 remains installed until update; verify candidate artifact and upgrade |
+| Android Direct configured code | 56, source e1ecf7e | Installed; five boxes, pairing, unlock, controls/theme retained; Rotate/PREFS and encrypted Linux upload passed |
 | Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -306,3 +306,22 @@ The retained Windows installer/executable match the successful build at
 `5c96b4d`; installer payload sources also match the current candidate. Both use
 GUI subsystem2. They remain unsigned for Windows Authenticode; this is separate
 from agent-asset integrity signing. No installer rebuild was necessary.
+
+### Candidate artifacts verified — 2026-10-30
+
+- iOS278 (2.9.80), EAS cloud source `e1ecf7e`: original distribution signature,
+  owner-only QA signature, unchanged owner entitlements and identical JS verified.
+  Actual packaged Hermes binary reports250829098.0.16. Device installation pending.
+- Direct56 and Play128 (2.9.80): actual package/version identities verified.
+  Direct signer matches previous previews and launcher aliases are preserved.
+  Play AAB validates with bundletool and matches the existing upload certificate.
+  APK/AAB Hermes bytes match their archived source maps; checksums retained.
+  The local store APK is test-signed, not a Play-delivered update.
+- Direct56 installed in place on the owner Razr: original first-install time and
+  five saved boxes retained. Native Linux status, pairing, unlock, Current controls
+  and Bonk theme remained. Manual Rotate and upright PREFS landing passed.
+- A fresh native Direct56 encrypted upload to Linux2.9.135 completed:64KiB and
+  exact destination SHA-256 matched. No stale-connection failure recurred in this
+  short check; that does not establish a root-cause fix for the earlier failure.
+- Final physical controls/ordinary handoff smoke and iPhone278 upgrade/native
+  smoke remain open. No public release, store submission or subscriber email.
