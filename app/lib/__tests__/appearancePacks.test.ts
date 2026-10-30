@@ -1,0 +1,10 @@
+import {strict as assert} from 'node:assert';
+import {APPEARANCE_PACKS,parseAppearancePack,importAppearance} from '../appearancePacks.ts';
+for(const p of APPEARANCE_PACKS) assert.deepEqual(parseAppearancePack(p),p);
+const good=importAppearance(':root { --c-accent: #88ccaa; --g-library: linear-gradient(135deg, #112233, #445566); --c-osk: #123456; }','Test');
+assert.equal(good.accepted.length,2);assert.deepEqual(good.skipped,['--c-osk']);
+assert.equal(good.pack.backgrounds.library?.angle,135);
+for(const css of ['@import "x"; --c-accent:#ffffff;','--c-accent:url(x);','--c-accent:var(--secret);','--c-accent:#fff;','x'.repeat(32769)])assert.throws(()=>importAppearance(css,'bad'));
+for(const patch of [{version:true},{name:'bad\nname'},{url:'https://example.com'},{colors:{...good.pack.colors,accent:'url(x)'}},{backgrounds:{home:{angle:999,stops:['#112233','#445566']}}}])assert.throws(()=>parseAppearancePack({...good.pack,...patch}));
+assert.equal(APPEARANCE_PACKS[0].name,'Ocean');
+console.log('PASS appearance validation and conservative PC5 token import');

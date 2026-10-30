@@ -2817,3 +2817,9 @@ Screen-capture verified end to end through the agent's own runner.
 
 _(Earlier releases 2.8.x–2.9.10 predate this roadmap; see `docs/BUILD_LOG.md` and the
 release tags.)_
+
+### In progress — Optional TV appearance packs (2026-10-30)
+- Priority: normal. Risk: medium. Affects: Linux agent, phone Steam appearance/Theme Studio, Decky TV renderer.
+- Depends on: matching companion appearance capability and SteamOS/Bazzite device acceptance.
+- Validated data packs, local import subset, saved PC library, reversible selection and original defaults. See TV_APPEARANCE_PACKS.md.
+- Local implementation and browser/API checks complete; hardware testing pending. Not released.

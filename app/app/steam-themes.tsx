@@ -1,3 +1,4 @@
+import { AppearancePacks } from '@/components/AppearancePacks';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -90,6 +91,7 @@ function ThemePicker({ settings, boxName, boxId }: { settings: ConnSettings; box
       {!!message && !state && <Text accessibilityLiveRegion="polite" style={{ color: t.text }}>{message}</Text>}
       {state && <>
         {!state.companion_ready && <View style={[styles.notice, { backgroundColor: t.card }]}><Text style={{ color: t.text }}>Install Decky Loader and update the Couchside companion before applying themes. Previews are available below.</Text></View>}
+        <AppearancePacks settings={settings} />
         <TextInput accessibilityLabel="Search SteamOS themes" placeholder="Search themes…" placeholderTextColor={t.textFaint}
           value={search} onChangeText={setSearch} style={[styles.search, { color: t.text, backgroundColor: t.card, borderColor: t.cardBorder }]} />
         <Pressable disabled={busy} onPress={() => save(false)} accessibilityRole="button" style={[styles.notice, { backgroundColor: t.card, borderColor: !state.settings.enabled ? color : t.cardBorder, borderWidth: 1 }]}>
