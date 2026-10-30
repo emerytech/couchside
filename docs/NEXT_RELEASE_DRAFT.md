@@ -334,3 +334,16 @@ remained. Live encrypted status and the virtual controller connected. Ordinary
 Pass from iPhone278 to Direct56 worked with gameplay controls released.
 Final physical control smoke and remaining iPhone navigation/upload checks are
 still pending; no release or subscriber send is authorized.
+
+### Direct56 physical control smoke and iPhone navigation — 2026-10-30
+
+The owner confirmed independent movement and X on physical Direct56. A scoped
+Linux virtual-controller recording corroborated overlapping input and independent
+releases, ending with no held keys and all axes neutral. Ordinary Pass also
+succeeded back to iPhone278 with gameplay controls released. This does not
+reclassify the owner-deferred held-button Pass gesture as passed.
+
+iPhone278 manual Rotate opened the retained Stardew Valley Larger layout. PREFS
+returned upright with PAD LAYOUT, Control presets, Controller theme and Help
+visible; Auto controller theme remained selected. Final iPhone physical controls
+and native encrypted-upload smoke are still pending. Publication remains held.
