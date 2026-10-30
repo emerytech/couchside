@@ -64,7 +64,7 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Android Store configured code | 128, source e1ecf7e | AAB validation/upload signature/maps passed; Play-delivered update remains a delivery-stage check |
 | Android Direct configured code | 56, source e1ecf7e | Upgrade/state retention, physical controls, Rotate/PREFS, ordinary handoff and native encrypted Linux upload passed |
 | Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
-| Windows agent source version | 0.4.14-win, tested artifact source5c96b4d | Exact tested installer/exe retained and verified; Authenticode unsigned, distribution/signing decision pending |
+| Windows agent source version | 0.4.14-win, tested artifact source5c96b4d | Exact tested installer/exe retained and verified; Owner approved existing unsigned Authenticode status for this release; new signing deferred |
 
 The Windows runtime file byte-matches the separate Windows combined-preview
 branch at `beb0fd7`. Both copies have SHA-256
@@ -100,9 +100,11 @@ confuse documentation-only commits with rebuilt binaries.
 1. Review the final documentation head and its CI. The frozen mobile source is
    `e1ecf7e`; subsequent edits are release notes/evidence only. Do not rebuild or
    consume new build numbers solely for these documentation changes.
-2. Decide Windows Authenticode signing/distribution. Existing installer/exe
-   remain unsigned. SignPath eligibility/acceptance and Store packaging are
-   separate work, not completed requirements or signed-artifact claims.
+2. Preserve the existing Windows signing/distribution approach for this release,
+   as explicitly selected by the owner. Retain the exact tested installer/exe,
+   which have no Authenticode signature. New Windows signing (including SignPath)
+   is deferred to a future release and is not a blocker for this candidate.
+   Existing agent-manifest integrity signing stays unchanged.
 3. After fresh owner approval, integrate the exact reviewed source and execute
    the intended release channels. Verify store processing and public artifacts,
    including the Play-signed delivered update. Owner-only iPhone signing and the
@@ -380,3 +382,11 @@ Owner completed the native encrypted foreground upload. Linux received the full
 iPhone278/Direct56 device smoke is complete. Previous background/cancellation
 evidence remains separate; this foreground check does not extend those claims.
 No main merge, release, store submission or subscriber email.
+
+### Windows signing decision — 2026-10-30
+
+The owner explicitly chose to keep the existing Windows signing approach for
+this release and defer new signing work to a later release. Retain the exact
+tested installer/executable without Authenticode signing and the existing
+agent-manifest integrity signature. This resolves the signing decision; it does
+not authorize publication, store submission, main merge or subscriber email.
