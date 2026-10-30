@@ -225,3 +225,17 @@ reserved by the separate optional appearance demo; it is not part of this build.
 - Focused Linux dependency, protocol parity, CEC tests and compilation passed.
   Temporary Windows observers and the scoped test firewall exception were
   removed. No release, store submission, public manifest change or email.
+
+### Native Linux pairing and preferences release — 2026-10-30
+
+- iPhone 277 and Direct 54 each added a separate Linux test box using the existing
+  owner-authorized pairing. Native reachability and authenticated status both
+  passed against agent 2.9.135; both showed the encrypted connection indicator
+  and connected virtual Xbox controller. Existing saved boxes were retained.
+- iPhone 277: owner confirmed Rotate followed by PREFS opens upright at Pad
+  Layout. A read-only observer of only the agent's virtual Xbox device recorded
+  X held continuously for 6.84 seconds, then all buttons and axes neutral before
+  device teardown. This confirms release for this native preferences transition.
+- Held-input phone handoff, native Linux uploads and broader final-binary/gameplay
+  acceptance remain pending. The earlier recorder expired without capturing X;
+  only the successful repeat is counted here. No release or subscriber email.
