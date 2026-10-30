@@ -114,6 +114,10 @@ export function AgentUpdateBanner() {
             done = true;
             break;
           }
+        } catch {
+          // Optional Windows apply state must not suppress legacy version checks.
+        }
+        try {
           const p = await api.ping(settings);
           if (p.version === target) {
             setMsg(`Updated to ${target}. `);
