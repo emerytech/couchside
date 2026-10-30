@@ -42,8 +42,9 @@ Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
 Installed owner previews are cloud iPhone277 and Direct54, source `ad73a5a`.
 The Fabric host-ref correction is included. Rotate/PREFS, settings return, Auto
-and Exit passed on Direct54; the corrected iPhone settings landing awaits
-physical confirmation because Mirroring misroutes clicks after resizing. #651 defensive version fallback is separate
+and Exit passed on Direct54. Physical iPhone277 Rotate/PREFS landing and both
+phones' held-button background/reconnect checks passed on the Windows preview.
+#651 defensive version fallback is separate
 and optional; it is not included. #637 was superseded; do not merge it. #645's
 standalone PR conflicts with its old base, but its exact head is already an
 ancestor of this combined source. Do not merge duplicate feature branches.
@@ -52,10 +53,10 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
 | iOS configured build | 277, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
-| Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical shortcut check pending |
+| Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical Rotate/PREFS and held-button background/reconnect passed |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
 | Android Direct configured code | 54, source ad73a5a | Installed in place with matching Direct signer, original first-install time, four saved boxes and existing theme/preset retained |
-| Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
+| Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
 The Windows runtime file byte-matches the separate Windows combined-preview
@@ -198,5 +199,29 @@ reserved by the separate optional appearance demo; it is not part of this build.
 - Android UI acceptance: manual Rotate, native PREFS reveal, return to locked PAD,
   Auto and Exit passed. Offline saved profile used for chrome checks to avoid
   competing with iPhone control. These are not new Windows gameplay/hold tests.
-- Corrected iPhone shortcut and remaining held-input/lifecycle gates stay open.
-  Appearance demo source is isolated and is not integrated here. No publication.
+- The following physical checkpoint supersedes the corrected iPhone shortcut
+  deferral. Appearance demo source remains isolated and is not integrated here.
+  No publication.
+
+### Physical lifecycle and Linux preview checkpoint — 2026-10-30
+
+- iPhone277: owner confirmed manual Rotate and upright PREFS landing at Pad
+  Layout. Windows recorded X held continuously for 4.16 seconds, then neutral.
+- iPhone277: owner confirmed control returned after holding X, going Home and
+  reopening PAD. Windows recorded a continuous 7.09-second X segment, release
+  to neutral, then a fresh A press and release after return.
+- Direct54: owner confirmed background/reconnect returned normally. Android
+  blocked a Home swipe while another finger was held, so the authorized ADB
+  Home key was used. Windows recorded a 13.18-second X segment, neutral, then
+  fresh A presses and releases. This validates lifecycle cancellation, not the
+  blocked Android gesture itself or upgraded-tool charging in a game.
+- Basic phone control handoff passed; handoff while an input is held remains
+  separate. Broader final-artifact acceptance remains open.
+- Linux2.9.135 privately replaced an older laptop agent after a protected
+  backup and isolated mock authentication smoke. Live verified HTTPS status,
+  unauthenticated refusal and unchanged pairing/configuration/TLS identity passed.
+  Helper and service files were retained byte-for-byte; rollback is available.
+  This is not full Linux phone/gameplay or installer acceptance.
+- Focused Linux dependency, protocol parity, CEC tests and compilation passed.
+  Temporary Windows observers and the scoped test firewall exception were
+  removed. No release, store submission, public manifest change or email.
