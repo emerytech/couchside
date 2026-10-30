@@ -40,9 +40,10 @@ not promise recovery after force-quit or process termination.
 
 Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
-Installed cloud iPhone276 and Direct52 source is `1c6d76c`. Manual Rotate passed
-on both devices. Native testing found that PREFS opened the category without
-revealing Pad Layout; the Fabric host-ref correction needs rebuilt acceptance. #651 defensive version fallback is separate
+Installed owner previews are cloud iPhone277 and Direct54, source `ad73a5a`.
+The Fabric host-ref correction is included. Rotate/PREFS, settings return, Auto
+and Exit passed on Direct54; the corrected iPhone settings landing awaits
+physical confirmation because Mirroring misroutes clicks after resizing. #651 defensive version fallback is separate
 and optional; it is not included. #637 was superseded; do not merge it. #645's
 standalone PR conflicts with its old base, but its exact head is already an
 ancestor of this combined source. Do not merge duplicate feature branches.
@@ -51,9 +52,9 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
 | iOS configured build | 277, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
-| Physical iPhone QA build | 276, cloud source 1c6d76c | Owner-only installed; Settings scroll correction pending |
+| Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical shortcut check pending |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 54, reserved for shared-PAD/Rotate/PREFS preview | Verify signer and in-place upgrade from private51; final release remains separate |
+| Android Direct configured code | 54, source ad73a5a | Installed in place with matching Direct signer, original first-install time, four saved boxes and existing theme/preset retained |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -186,3 +187,16 @@ rebuild and native settings acceptance remain separate. No publication authorize
 
 Corrected Settings acceptance reservations: iOS277 / Direct54. Direct53 is
 reserved by the separate optional appearance demo; it is not part of this build.
+
+### Corrected artifact checkpoint — 2026-10-30
+
+- Source `ad73a5a`: 13/13 CI checks passed; TypeScript and 825 app tests pass.
+- EAS cloud iPhone277 installed with original/owner signatures, unchanged owner
+  entitlements and identical JS bundle verified; connection and unlock retained.
+- Direct54 installed with signer continuity, matching APK/map checksums and
+  verified Hermes bundle association; source maps retained privately.
+- Android UI acceptance: manual Rotate, native PREFS reveal, return to locked PAD,
+  Auto and Exit passed. Offline saved profile used for chrome checks to avoid
+  competing with iPhone control. These are not new Windows gameplay/hold tests.
+- Corrected iPhone shortcut and remaining held-input/lifecycle gates stay open.
+  Appearance demo source is isolated and is not integrated here. No publication.
