@@ -1226,6 +1226,9 @@ function SetupBody() {
   // ever has to move body content.
   const scrollRef = useRef<ScrollView>(null);
   const scrollY = useRef(0);
+  // ScrollView's innerViewRef type predates nullable React 19 refs; reads below
+  // still guard the initial/unmounted null value.
+  const scrollContentRef = useRef<View>(null!);
   const padLayoutAnchor = useRef<View>(null);
   const padSettingsRequest = useRef<{ id: string } | null>(null);
   const consumedPadSettingsRequest = useRef<string | null>(null);
@@ -1238,7 +1241,11 @@ function SetupBody() {
     if (!request || !padLayoutAnchor.current || !scrollRef.current) return;
     // Measure against the scroll CONTENT, so a delayed onScroll event cannot
     // mix an old offset with a new portrait layout and scroll to the wrong row.
-    const content = scrollRef.current.getInnerViewNode();
+    // Fabric needs the host view: a numeric getInnerViewNode() handle silently
+    // skips measureLayout in release builds.
+    const content = Platform.OS === 'web'
+      ? scrollRef.current.getInnerViewNode()
+      : scrollContentRef.current;
     if (content == null) return;
     padLayoutAnchor.current.measureLayout(content, (_x, cardY) => {
       if (padSettingsRequest.current !== request || !Number.isFinite(cardY)) return;
@@ -1314,6 +1321,7 @@ function SetupBody() {
       )}
       <ScrollView
         ref={scrollRef}
+        innerViewRef={scrollContentRef}
         onTouchStart={finishPadSettingsRequest}
         onPointerDown={finishPadSettingsRequest}
         onScrollBeginDrag={finishPadSettingsRequest}

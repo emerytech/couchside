@@ -1059,7 +1059,9 @@ surface gate and releaseAll synchronously, then increment the layout epoch so
 old touch owners/timers cannot revive after an unavailable rotation or a return
 to the same layout. Manual Rotate reuses the PAD landscape lock; Auto and Exit
 keep their existing meaning. Settings deep-link accepts the fixed padLayout
-section with a fresh one-use request ID. Measure against scroll content (not a
+section with a fresh one-use request ID. Native Fabric measurements must use
+ScrollView innerViewRef (the host view), never the numeric getInnerViewNode handle;
+react-native-web retains its DOM getInnerViewNode fallback. Measure against scroll content (not a
 possibly stale onScroll offset), re-align through orientation/content reflow,
 and stop on the first user gesture. Consumed requests must not reset later
 ordinary Setup visits. Keep portrait Rotate native-only and require a full44dp

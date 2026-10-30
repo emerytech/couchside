@@ -40,8 +40,9 @@ not promise recovery after force-quit or process termination.
 
 Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
-Installed cloud iPhone275 source is `02e667d`; subsequent shortcut work is not yet
-in that installed artifact. #651 defensive version fallback is separate
+Installed cloud iPhone276 and Direct52 source is `1c6d76c`. Manual Rotate passed
+on both devices. Native testing found that PREFS opened the category without
+revealing Pad Layout; the Fabric host-ref correction needs rebuilt acceptance. #651 defensive version fallback is separate
 and optional; it is not included. #637 was superseded; do not merge it. #645's
 standalone PR conflicts with its old base, but its exact head is already an
 ancestor of this combined source. Do not merge duplicate feature branches.
@@ -50,7 +51,7 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
 | iOS configured build | 276, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
-| Physical iPhone QA build | 275, cloud source 02e667d | Owner-only install; Rotate/preferences shortcuts need a newer binary |
+| Physical iPhone QA build | 276, cloud source 1c6d76c | Owner-only installed; Settings scroll correction pending |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
 | Android Direct configured code | 52, reserved for shared-PAD/Rotate/PREFS preview | Verify signer and in-place upgrade from private51; final release remains separate |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
@@ -174,3 +175,11 @@ Owner requested both new test previews: iOS276 through EAS cloud (no submit),
 Direct Android52 on guarded Gandalf tank storage. Version2.9.79 retained; Play127
 unchanged. Artifact identity/signature checks and physical acceptance follow the
 builds; this reservation is not a claim of completion, installation or release.
+
+### Native shortcut correction (held)
+
+Both 276 and Direct52 installed in place with signing continuity; Direct first-install
+time retained. Manual Rotate worked on both. Native Settings measurement failed
+because Fabric rejects the legacy numeric node handle. Use the scroll content host
+ref on native and retain the DOM fallback on web. TypeScript and 825 tests pass;
+rebuild and native settings acceptance remain separate. No publication authorized.
