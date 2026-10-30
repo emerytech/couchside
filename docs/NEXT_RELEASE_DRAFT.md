@@ -50,10 +50,10 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
-| iOS configured build | 276, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
+| iOS configured build | 277, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
 | Physical iPhone QA build | 276, cloud source 1c6d76c | Owner-only installed; Settings scroll correction pending |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 52, reserved for shared-PAD/Rotate/PREFS preview | Verify signer and in-place upgrade from private51; final release remains separate |
+| Android Direct configured code | 54, reserved for shared-PAD/Rotate/PREFS preview | Verify signer and in-place upgrade from private51; final release remains separate |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -183,3 +183,6 @@ time retained. Manual Rotate worked on both. Native Settings measurement failed
 because Fabric rejects the legacy numeric node handle. Use the scroll content host
 ref on native and retain the DOM fallback on web. TypeScript and 825 tests pass;
 rebuild and native settings acceptance remain separate. No publication authorized.
+
+Corrected Settings acceptance reservations: iOS277 / Direct54. Direct53 is
+reserved by the separate optional appearance demo; it is not part of this build.
