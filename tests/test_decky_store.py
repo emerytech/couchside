@@ -887,7 +887,7 @@ def test_store_payload_marker_gates_cold_fetch():
               (p["available"], p["fetching"], p["count"], p["plugins"]), (False, False, 0, []))
         check("...and the store was NOT contacted", HTTP.hits("/plugins"), 0)
         check("...payload field set is the spec's",
-              sorted(p), sorted(["available", "fetching", "count", "fetched_at", "stale", "plugins", "error"]))
+              sorted(p), sorted(["available", "fetching", "count", "fetched_at", "stale", "plugins", "error", "error_code"]))
     with Box(marker=True) as box:
         HTTP.reset_hits()
         p = cs.decky_store_payload()
@@ -1223,9 +1223,58 @@ def test_has_icon_never_true_then_404():
         srv.shutdown()
 
 
+
+def test_loader_version_negotiation_and_upgrade_required():
+    print("test_loader_version_negotiation_and_upgrade_required")
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, cap): return b"ok"
+    class Opener:
+        def __init__(self): self.headers = []
+        def open(self, req, timeout):
+            self.headers.append(dict(req.header_items()))
+            return Response()
+    opener = Opener()
+    with Patch(_DECKY_NO_REDIRECT_OPENER=opener,
+               _decky_recorded_version=lambda: "v3.3.0",
+               _decky_loader_update_cached=lambda: {"current": "v3.3.1"}):
+        cs._decky_fetch_bounded(cs._DECKY_STORE_URL, 20, 1)
+        cs._decky_fetch_bounded("https://cdn.example/icon.png", 20, 1)
+    check("catalogue sends cached current loader version", opener.headers[0].get("X-decky-version"), "v3.3.1")
+    check("icons never receive loader header", "X-decky-version" in opener.headers[1], False)
+    with Patch(_DECKY_NO_REDIRECT_OPENER=opener,
+               _decky_recorded_version=lambda: "v3.2.7-pre1",
+               _decky_loader_update_cached=lambda: None):
+        cs._decky_fetch_bounded(cs._DECKY_STORE_URL, 20, 1)
+    check("recorded version used when no live check cached", opener.headers[-1].get("X-decky-version"), "v3.2.7-pre1")
+    HTTP.route("/plugins-upgrade", b"Unsupported loader version", "text/plain", code=426)
+    with Box(marker=True), Patch(_DECKY_STORE_URL=HTTP.url("/plugins-upgrade")):
+        cs._decky_store_fetch()
+        p = cs.decky_store_payload()
+        check("cold 426 finishes without an endless spinner",
+              (p["available"], p["fetching"], p["error_code"]),
+              (False, False, "loader_update_required"))
+    with Box(marker=True):
+        cs._decky_store_fetch()
+        before = len(_store()["plugins"])
+        with Patch(_DECKY_STORE_URL=HTTP.url("/plugins-upgrade")):
+            cs._decky_store_fetch()
+        p = cs.decky_store_payload()
+        check("426 exposes actionable additive diagnostic", p["error_code"], "loader_update_required")
+        check("426 preserves stale catalog", (p["available"], p["stale"], p["count"]), (True, True, before))
+        with Patch(_decky_ready_for_ops=lambda: None):
+            code, body = cs.decky_plugin_install({"id": 137})
+        check("426 prevents installing from old cache", (code, body.get("error")), (409, "loader_update_required"))
+        cs._decky_store_fetch()
+        check("successful fetch clears upgrade-required state", cs.decky_store_payload()["error_code"], None)
+
+
 if __name__ == "__main__":
     try:
-        for fn in (test_capture_survives_normaliser,
+        for fn in (test_loader_version_negotiation_and_upgrade_required,
+                   test_capture_survives_normaliser,
                    test_normaliser_rejects_bad_shapes_with_control,
                    test_normaliser_list_level,
                    test_image_url_host_scheme_rule,

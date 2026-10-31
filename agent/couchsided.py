@@ -14616,19 +14616,33 @@ class _DeckyNoRedirect(urllib.request.HTTPRedirectHandler):
 _DECKY_NO_REDIRECT_OPENER = urllib.request.build_opener(_DeckyNoRedirect())
 
 
+class _DeckyStoreUpgradeRequired(Exception):
+    """The official catalogue rejected the installed loader (HTTP 426)."""
+
+
 def _decky_fetch_bounded(url, cap, timeout):
     """GET `url` through the no-redirect opener, returning at most `cap` bytes
     or None (any error, any 3xx, or a body over the cap). The URL is always
-    agent-built or host-pinned by the caller. Never raises."""
+    agent-built or host-pinned by the caller. Only catalogue HTTP 426 raises
+    _DeckyStoreUpgradeRequired so the app can distinguish a required upgrade."""
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "couchside-agent/%s" % VERSION,
-            "Accept": "*/*",
-        })
+        headers = {"User-Agent": "couchside-agent/%s" % VERSION, "Accept": "*/*"}
+        if url == _DECKY_STORE_URL:
+            # Match Decky's catalogue negotiation. Do not invent a current
+            # version or open its single-client WebSocket just to browse.
+            cached = _decky_loader_update_cached() or {}
+            version = cached.get("current") or _decky_recorded_version()
+            if isinstance(version, str) and _DECKY_TAG_RE.fullmatch(version):
+                headers["X-Decky-Version"] = version
+        req = urllib.request.Request(url, headers=headers)
         with _DECKY_NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
             if r.status != 200:
                 return None
             data = r.read(cap + 1)
+    except urllib.error.HTTPError as exc:
+        if url == _DECKY_STORE_URL and exc.code == 426:
+            raise _DeckyStoreUpgradeRequired() from None
+        return None
     except Exception:
         return None
     if len(data) > cap:
@@ -14770,7 +14784,9 @@ def _decky_store_snapshot():
                 "plugins": _DECKY_STORE["plugins"],
                 "fetched_at": _DECKY_STORE["fetched_at"],
                 "stale": _DECKY_STORE["stale"], "fetching": _DECKY_STORE["fetching"],
-                "error": _DECKY_STORE["error"]}
+                "error": _DECKY_STORE["error"],
+                "error_code": ("loader_update_required" if _DECKY_STORE["error"] ==
+                               "Update Decky Loader to use the plugin store." else None)}
 
 
 def _decky_plugin_update(entry, flags, store):
@@ -14953,6 +14969,10 @@ def _decky_store_fetch():
                 _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
                 _DECKY_STORE["error"] = ("store unreachable" if data is None
                                          else "store answered nothing usable")
+    except _DeckyStoreUpgradeRequired:
+        with _DECKY_STORE_LOCK:
+            _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
+            _DECKY_STORE["error"] = "Update Decky Loader to use the plugin store."
     except Exception as e:
         with _DECKY_STORE_LOCK:
             _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
@@ -15018,7 +15038,7 @@ def decky_store_payload():
     if store["fetched_at"] is None:
         return {"available": False, "fetching": bool(store["fetching"]), "count": 0,
                 "fetched_at": None, "stale": False, "plugins": [],
-                "error": store["error"]}
+                "error": store["error"], "error_code": store["error_code"]}
     installed = {}
     have_listing = False
     if _decky_loader_installed():
@@ -15042,7 +15062,7 @@ def decky_store_payload():
         })
     return {"available": True, "fetching": bool(store["fetching"]), "count": len(rows),
             "fetched_at": store["fetched_at"], "stale": bool(store["stale"]),
-            "plugins": rows, "error": store["error"]}
+            "plugins": rows, "error": store["error"], "error_code": store["error_code"]}
 
 
 def decky_store_refresh():
@@ -15935,6 +15955,8 @@ def decky_plugin_install(body):
         if pre:
             return pre
         store = _decky_store_snapshot()
+        if store["error_code"] == "loader_update_required":
+            return 409, {"ok": False, "error": "loader_update_required"}
         if not store["fetched_at"]:
             return 503, {"ok": False, "error": "store_unavailable",
                          "fetching": bool(store["fetching"])}
@@ -16047,9 +16069,19 @@ def decky_loader_check():
             return 503, {"ok": False, "error": "loader_down", "repair": True,
                          "detail": "unexpected version info"}
         cur, rem, upd = res.get("current"), res.get("remote"), res.get("updatable")
-        val = {"current": str(cur)[:32] if isinstance(cur, str) else None,
-               "remote": str(rem)[:32] if isinstance(rem, str) else None,
-               "updatable": bool(upd) if isinstance(upd, bool) else None,
+        # Decky 3.3.1 returns a GitHub release object, not a version string.
+        # Its `updatable` means the loader supports updates, even when the
+        # installed tag matches. Keep our existing version/availability API
+        # and never expose the release assets or treat missing tags as updates.
+        if isinstance(rem, dict):
+            rem = rem.get("tag_name")
+        cur = cur.strip()[:32] if isinstance(cur, str) else None
+        rem = rem.strip()[:32] if isinstance(rem, str) else None
+        cur, rem = cur or None, rem or None
+        available = (upd and cur != rem) if isinstance(upd, bool) and cur and rem else None
+        val = {"current": cur,
+               "remote": rem,
+               "updatable": available,
                "checked_at": int(time.time()), "channel": _decky_channel()}
         with _DECKY_CHECK_LOCK:
             _DECKY_CHECK["val"] = val
