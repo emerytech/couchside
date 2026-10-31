@@ -3,8 +3,8 @@ import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LandscapePad, StardewPad } from '@/components/LandscapePad';
 import { PadRotationTip } from '@/components/PadRotationTip';
-import { padLayout, stardewLayout } from '@/lib/padLayout';
-import { CURRENT_CONTROLS, normalizePadPreset, type PadPreset } from '@/lib/padPresets';
+import { padLayout, stardewLayout, vampireLayout } from '@/lib/padLayout';
+import { CURRENT_CONTROLS, normalizePadPreset, padPresetLabel, type PadPreset } from '@/lib/padPresets';
 import { setPref } from '@/lib/prefs';
 import type { Box } from '@/lib/settings';
 import { mono, useTheme } from '@/lib/theme';
@@ -23,18 +23,18 @@ function Preview({ preset }: { preset: PadPreset }) {
   const [width, setWidth] = useState(0);
   const win = { width: 844, height: 390 };
   const insets = { left: 47, right: 0, top: 0, bottom: 21 };
-  const layout = preset.id === 'current' ? padLayout(win, insets) : stardewLayout(win, insets, preset.size);
+  const layout = preset.id === 'vampire' ? vampireLayout(win, insets, preset.hand) : preset.id === 'current' ? padLayout(win, insets) : stardewLayout(win, insets, preset.size);
   const scale = width / win.width;
   return (
     <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
       style={{ height: width ? win.height * scale : 160, overflow: 'hidden', borderRadius: 12, backgroundColor: t.bg }}
-      accessibilityLabel={`${preset.id === 'current' ? 'Current controls' : 'Stardew Valley'} landscape preview. Preview does not send input.`}>
+      accessibilityLabel={`${padPresetLabel(preset)} landscape preview. Preview does not send input.`}>
       {width > 0 && layout.ok && (
         <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
           style={{ width: win.width, height: win.height, transformOrigin: 'top left', transform: [{ scale }] }}>
           {preset.id === 'current'
             ? <LandscapePad layout={layout} {...previewControls} />
-            : <StardewPad background={preset.background} layout={layout} {...previewControls} />}
+            : <StardewPad variant={preset.id === 'vampire' ? 'vampire' : 'stardew'} background={preset.background} layout={layout} {...previewControls} />}
         </View>
       )}
     </View>
@@ -75,6 +75,15 @@ export function PadPresetSheet({ kind, box, onClose, onApply }: {
             {body(box ? `For ${box.name} on this phone. Applies only to full-screen PAD when you turn sideways.` : 'Pair a box to save a preset. You can still preview the layouts here.')}
             {button('Current controls', () => setDraft(CURRENT_CONTROLS), draft.id === 'current', saving)}
             {button('Stardew Valley', () => setDraft({ version: 1, id: 'stardew', size: 'larger' }), draft.id === 'stardew', saving)}
+            {button('Vampire Survivors', () => setDraft({ version: 1, id: 'vampire', size: 'larger', hand: 'right' }), draft.id === 'vampire', saving)}
+            {draft.id === 'vampire' && <>
+              {body('One-handed PAD: move with one thumb, then lift to select upgrades. Movement also navigates menus. Attacks are automatic; no fire button or repeated-input macro is needed.')}
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                {button('Left hand', () => setDraft({ ...draft, hand: 'left' }), draft.hand === 'left', saving)}
+                {button('Right hand', () => setDraft({ ...draft, hand: 'right' }), draft.hand === 'right', saving)}
+              </View>
+              {body('A selects, B goes back, and Start pauses using the default Xbox bindings. Custom Steam Input mappings may differ. Uses your existing controller theme. Tap Rotate in PAD for this layout without turning your phone.')}
+            </>}
             {draft.id === 'stardew' && <>
               <View style={{ flexDirection: 'row', gap: 12 }}>
                 {button('Standard', () => setDraft({ ...draft, size: 'standard' }), draft.size === 'standard', saving)}
@@ -100,7 +109,7 @@ export function PadPresetSheet({ kind, box, onClose, onApply }: {
             {body('Open the Pad tab, select PAD, then turn your phone sideways for the full-screen controller. A game does not need to be running. Mouse and other modes behave differently.')}
             {body('If PAD is unavailable, connect to a box that supports a gamepad. Keyboard-only mode hides PAD; Auto-drop pad can also hide it while a game is running. If another phone has control, use the existing control request before playing.')}
             {body('If rotation does not expand PAD, check your phone’s rotation lock. After using Exit, turn upright before rotating sideways again. Small windows may not have enough room for the controller.')}
-            {body('Choose a preset in Setup → Prefs → Pad Layout → Control presets. Stardew changes only landscape PAD. Choose Current controls and Apply to return to your exact saved configuration. The Stardew farm background applies only to this preset; choose My usual background to keep your existing backdrop. Your saved theme and game bindings are never overwritten.')}
+            {body('Choose a preset in Setup → Prefs → Pad Layout → Control presets. Game presets change only full-screen landscape PAD. Choose Current controls and Apply to return to your exact saved configuration. The Stardew farm background applies only to this preset; choose My usual background to keep your existing backdrop. Your saved theme and game bindings are never overwritten.')}
             {button('Show rotation tip', () => {
               setShowTip(true); setReplayQueued(true);
               void setPref('padRotationTipLearned', false);

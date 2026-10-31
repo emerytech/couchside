@@ -412,6 +412,23 @@ export function padLayout(win: Size, insets: Insets): PadLayout {
  * One movement zone and two primary actions; the Xbox identifiers stay explicit.
  * The left-side chrome has a 26U moat from every input, including expanded hits.
  */
+/** One thumb can move, then select upgrades without crossing the screen.
+ * Movement and action hit areas are separated to prevent accidental confirms.
+ */
+export function vampireLayout(win: Size, insets: Insets, hand: 'left' | 'right' = 'right'): PadLayout {
+  const from = hand;
+  const table: Spec[] = [
+    { id: 'lock', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'exit', w: 18, h: 14, cx: { from: 'left', at: 35 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'preferences', w: 22, h: 14, cx: { from: 'left', at: 60 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'move', w: 58, h: 48, cx: { from, at: 32 }, cy: { from: 'bottom', at: 26 }, layer: 7 },
+    { id: 'a', w: 20, h: 18, cx: { from, at: 13 }, cy: { from: 'top', at: 33 }, layer: 1 },
+    { id: 'b', w: 20, h: 18, cx: { from, at: 37 }, cy: { from: 'top', at: 33 }, layer: 1 },
+    { id: 'start', w: 22, h: 18, cx: { from, at: 62 }, cy: { from: 'top', at: 33 }, layer: 1 },
+  ];
+  return buildLayout(table, win, insets);
+}
+
 export function stardewLayout(win: Size, insets: Insets, size: 'standard' | 'larger'): PadLayout {
   const large = size === 'larger';
   const table: Spec[] = [

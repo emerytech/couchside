@@ -15,10 +15,16 @@ export const STARDEW_ACTIONS = [
   { key: 'start', kind: 'button', glyph: 'Start', label: 'Menu / Pause' },
 ] as const;
 
+export const VAMPIRE_ACTIONS = [
+  { key: 'a', kind: 'button', glyph: 'A', label: 'Select' },
+  { key: 'b', kind: 'button', glyph: 'B', label: 'Back' },
+  { key: 'start', kind: 'button', glyph: 'Start', label: 'Pause' },
+] as const;
+
 export const STARDEW_BACKDROP = { key: 'stardew-farm', glow: '#8ca96b' };
 
 type Momentary = { onDown: () => void; onUp: () => void };
-export function stardewActionInput(action: typeof STARDEW_ACTIONS[number], controls: {
+export function stardewActionInput(action: typeof STARDEW_ACTIONS[number] | typeof VAMPIRE_ACTIONS[number], controls: {
   btn: (key: ButtonKey) => Momentary;
   trig: (key: TriggerKey) => Momentary;
 }): Momentary {
@@ -28,7 +34,8 @@ export function stardewActionInput(action: typeof STARDEW_ACTIONS[number], contr
 /** Local, per-box layout choice. Never copy a preset into the user's prefs. */
 export type PadPreset = {
   version: 1;
-  id: 'current' | 'stardew';
+  id: 'current' | 'stardew' | 'vampire';
+  hand?: 'left' | 'right';
   size: 'standard' | 'larger';
   /** Omitted means the preset's farm art; never mutates the saved app theme. */
   background?: 'farm' | 'current';
@@ -40,6 +47,9 @@ export const CURRENT_CONTROLS: PadPreset = { version: 1, id: 'current', size: 's
 export function normalizePadPreset(raw: unknown): PadPreset {
   if (!raw || typeof raw !== 'object') return CURRENT_CONTROLS;
   const p = raw as Record<string, unknown>;
+  if (p.version === 1 && p.id === 'vampire' && (p.hand === 'left' || p.hand === 'right')) {
+    return { version: 1, id: 'vampire', size: 'larger', hand: p.hand };
+  }
   if (p.version !== 1 || p.id !== 'stardew' || (p.size !== 'standard' && p.size !== 'larger')) {
     return CURRENT_CONTROLS;
   }
@@ -49,7 +59,7 @@ export function normalizePadPreset(raw: unknown): PadPreset {
 
 export function padPresetLabel(raw: unknown): string {
   const p = normalizePadPreset(raw);
-  return p.id === 'current' ? 'Current controls' : `Stardew Valley · ${p.size === 'larger' ? 'Larger' : 'Standard'}`;
+  return p.id === 'vampire' ? `Vampire Survivors · ${p.hand === 'left' ? 'Left' : 'Right'} hand` : p.id === 'current' ? 'Current controls' : `Stardew Valley · ${p.size === 'larger' ? 'Larger' : 'Standard'}`;
 }
 
 export const ROTATION_TIP_TITLE = 'Want a full-screen controller?';

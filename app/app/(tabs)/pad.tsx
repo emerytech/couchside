@@ -53,7 +53,7 @@ import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/compo
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
 import { surfaceChanged, createSurfaceInputGate, type PadSurface } from '@/lib/padSurface';
-import { moveLayout, padLayout, stardewLayout, verticalMoveLayout, portraitRotateFits, PORTRAIT_PAD_CHROME } from '@/lib/padLayout';
+import { moveLayout, padLayout, stardewLayout, vampireLayout, verticalMoveLayout, portraitRotateFits, PORTRAIT_PAD_CHROME } from '@/lib/padLayout';
 import { NotePad } from '@/components/NotePad';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
@@ -1092,11 +1092,13 @@ function PadScreen() {
   const landGeom = useMemo(
     () => (mode === 'move'
       ? (landscape ? moveLayout : verticalMoveLayout)
+      : preset.id === 'vampire' && mode === 'gamepad'
+        ? (win: { width: number; height: number }, safe: typeof insets) => vampireLayout(win, safe, preset.hand)
       : preset.id === 'stardew' && mode === 'gamepad'
         ? (win: { width: number; height: number }, safe: typeof insets) => stardewLayout(win, safe, preset.size)
         : padLayout)({ width, height }, insets),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [width, height, insets.top, insets.right, insets.bottom, insets.left, mode, landscape, preset.id, preset.size],
+    [width, height, insets.top, insets.right, insets.bottom, insets.left, mode, landscape, preset.id, preset.size, preset.hand],
   );
   /** ✕ in the LANDSCAPE GAMEPAD: force portrait and let rotation re-enter. */
   const exitLandscape = useCallback(() => {
@@ -1178,7 +1180,7 @@ function PadScreen() {
   // Chrome transitions retire the old fingers even if a native rotation
   // request is delayed or unavailable. A fresh mount needs a fresh gesture.
   const [padChromeEpoch, setPadChromeEpoch] = useState(0);
-  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}` : 'current'}:${padChromeEpoch}`;
+  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}:${preset.hand ?? ""}` : 'current'}:${padChromeEpoch}`;
   const surface: PadSurface = { mounted: (immersiveLive && landGeom.ok) || (!immersiveLive && padFocused && mode === 'gamepad' && !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false), mode, landscape, layout: layoutIdentity };
   const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked, stale]);
   const inputGate = useMemo(() => createSurfaceInputGate(), []);
@@ -2121,8 +2123,8 @@ function PadScreen() {
               setMode('gamepad');
             } : undefined}
           />
-        ) : preset.id === 'stardew' ? (
-          <StardewPad background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
+        ) : preset.id === 'stardew' || preset.id === 'vampire' ? (
+          <StardewPad variant={preset.id} background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
             locked={padLock} onToggleLock={() => setPadLock((v) => !v)} onExit={exitLandscape} onSettings={openPadSettings} />
         ) : (
           <LandscapePad

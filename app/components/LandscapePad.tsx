@@ -32,7 +32,7 @@ import {
   type Rect,
 } from '@/lib/padLayout';
 import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
-import { STARDEW_ACTIONS, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
+import { STARDEW_ACTIONS, VAMPIRE_ACTIONS, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
 import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
@@ -837,21 +837,21 @@ const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
-  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
-}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current' }) {
+  variant = 'stardew', background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current'; variant?: 'stardew' | 'vampire' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
   const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
-  const controls = useMemo(() => padTouchControls(layout, 'stardew'), [layout]);
+  const controls = useMemo(() => padTouchControls(layout, variant), [layout, variant]);
   const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
   const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
-    <View style={StyleSheet.absoluteFill} testID="stardew-pad">
-      <GameBackdrop backdrop={background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
+    <View style={StyleSheet.absoluteFill} testID={`${variant}-pad`}>
+      <GameBackdrop backdrop={variant === 'vampire' || background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
       <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       <FloatingStick node={byId.move} u={u} label="Move" zoneOutline
         onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
-      {STARDEW_ACTIONS.map((action) => (
+      {(variant === 'vampire' ? VAMPIRE_ACTIONS : STARDEW_ACTIONS).map((action) => (
         <PadKey key={action.key} node={byId[action.key]} label={action.glyph} actionLabel={action.label}
           u={u} fontSize={(action.key === 'x' || action.key === 'a' ? 4.5 : 3.2) * u}
           color={action.key in colors ? colors[action.key as keyof typeof colors] : undefined}
@@ -859,7 +859,7 @@ export function StardewPad({
       ))}
       </Surface>
       <Text pointerEvents="none" style={{ position: 'absolute', left: byId.move.rect.x,
-        top: byId.move.rect.y - 6 * u, width: byId.move.rect.w, textAlign: 'center',
+        top: byId.move.rect.y + (variant === 'vampire' ? 2 : -6) * u, width: byId.move.rect.w, textAlign: 'center',
         color: t.textDim, fontFamily: mono, fontSize: 3.4 * u }}>MOVE / MENUS</Text>
       <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
         color={locked ? t.amber : undefined} onPress={onToggleLock} checked={locked}
