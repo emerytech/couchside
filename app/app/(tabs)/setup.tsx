@@ -528,10 +528,11 @@ function BoxEditPanel({
 }
 
 export default function SetupScreen() {
-  useLockOrientation('portrait');
+  const [padPreviewExpanded, setPadPreviewExpanded] = useState(false);
+  useLockOrientation(padPreviewExpanded ? 'landscape-locked' : 'portrait');
   return (
     <TabScreen>
-      <SetupBody />
+      <SetupBody setPadPreviewExpanded={setPadPreviewExpanded} />
     </TabScreen>
   );
 }
@@ -890,7 +891,7 @@ function PrefSection({
   );
 }
 
-function SetupBody() {
+function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: boolean): void }) {
   const reducedMotion = useReducedMotion();
   const animateSection = () => {
     if (!reducedMotion && Platform.OS !== 'web') {
@@ -1208,7 +1209,7 @@ function SetupBody() {
 
   // Select locally; clearing params during cold startup used to navigate before
   // the root navigator mounted. Re-apply on focus and every new activation.
-  const params = useLocalSearchParams<{ tab?: string; section?: string; padRequest?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; section?: string; padRequest?: string; padGallery?: string }>();
   const router = useRouter();
   const licenseActivation = useLicenseActivation();
   // Release the in-memory key when the user leaves activation; never persist it.
@@ -1261,11 +1262,13 @@ function SetupBody() {
     padSettingsRequest.current = { id: params.padRequest };
     setTab('prefs');
     setPrefQuery('');
-    setPadSheet(null);
+    setPadSheet(params.padGallery === '1' ? 'presets' : null);
+    // Consume before measurement so closing the gallery does not reopen it.
+    if (params.padGallery === '1') consumedPadSettingsRequest.current = params.padRequest;
     void setPref('prefsCollapsed', getPref('prefsCollapsed').filter(id => id !== 'padLayout'));
     const frame = requestAnimationFrame(revealPadSettings);
     return () => { cancelAnimationFrame(frame); padSettingsRequest.current = null; };
-  }, [params.tab, params.section, params.padRequest, licenseActivation?.id, revealPadSettings]));
+  }, [params.tab, params.section, params.padRequest, params.padGallery, licenseActivation?.id, revealPadSettings]));
   useEffect(
     () =>
       registerScroller('setup', (dy) => {
@@ -2638,7 +2641,8 @@ function SetupBody() {
         )}
       </ScrollView>
       {padSheet && <PadPresetSheet key={`${activeBoxId}:${padSheet}`} kind={padSheet} box={activeBox}
-        onClose={() => setPadSheet(null)}
+        onClose={() => { setPadPreviewExpanded(false); setPadSheet(null); }}
+        onExpandedChange={setPadPreviewExpanded}
         onApply={async (controlPreset) => {
           if (activeBoxId) await updateBox(activeBoxId, { controlPreset });
         }} />}

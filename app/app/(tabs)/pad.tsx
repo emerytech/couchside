@@ -1219,7 +1219,7 @@ function PadScreen() {
   const openPadSettings = useCallback(() => {
     releaseForPadChrome();
     setImmersive(false);
-    router.push({ pathname: '/setup', params: { tab: 'prefs', section: 'padLayout',
+    router.push({ pathname: '/setup', params: { tab: 'prefs', section: 'padLayout', padGallery: '1',
       padRequest: `${Date.now()}-${++padSettingsSequence.current}` } });
   }, [releaseForPadChrome, router]);
 
