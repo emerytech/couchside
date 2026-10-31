@@ -38,8 +38,8 @@ confirmation and fresh idle manifests are required; no direct file deletion.
 | Component | Available evidence | Required before production |
 | --- | --- | --- |
 | App source | exact feature head above, green CI | review the full diff against main |
-| Android Direct 2.9.80 (63) | signed artifact/map verified; installed upgrade and portrait screenshot passed | custom mapping and lifecycle acceptance; final versioned binary smoke |
-| iOS 2.9.80 (287) | verified IPA uploaded to TestFlight | verify Apple processing; rebuild including portrait fix; physical acceptance |
+| Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | physical mapping/lifecycle and per-box isolation acceptance; final versioned binary smoke |
+| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | native editor and physical acceptance; final versioned store binary smoke |
 | Google Play | prior code128 belongs to 2.9.80 | allocate a fresh code after checking Play; build and verify AAB/maps |
 | Linux agent | source still declares2.9.135 with new Decky/uninstall changes | assign fresh version, test exact candidate and signed assets |
 | Windows agent | source still declares0.4.14-win with uninstall addition | reconcile0.4.15-rc1 signing work separately; allocate version and test exact installer |
@@ -50,6 +50,10 @@ candidate. Recheck build-number availability before reserving final candidates.
 Do not ship changed agents under their existing published versions.
 Windows signing preparation remains a separate workstream; do not silently
 include its updater/installer changes or claim SignPath approval.
+
+Preview 288 is an internal device build, not an App Review submission. Earlier
+287 was uploaded to TestFlight but does not contain the portrait fix. PR #658
+required checks passed on `80db266`; the release branch remains draft.
 
 ## Acceptance gates
 
