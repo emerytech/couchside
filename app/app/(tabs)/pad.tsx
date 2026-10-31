@@ -880,7 +880,8 @@ const DEVICE_LABEL =
 function statusLabel(status: GamepadStatus, dev: string | null): string {
   switch (status) {
     case 'connected':
-      return dev ?? 'connected';
+      return dev === 'Microsoft X-Box 360 pad' || dev === 'ViGEm X360 pad'
+        ? 'Couchside Controller' : dev ?? 'connected';
     case 'connecting':
       return 'connecting…';
     case 'replaced':
@@ -2248,6 +2249,7 @@ function PadScreen() {
                 { backgroundColor: stale ? t.amber : STATUS_COLOR[status] },
               ]}
             />
+            <View style={{ flexShrink: 1, alignItems: 'center' }}>
             <Text style={styles.pillText} numberOfLines={1}>
               {stale
                 ? 'no response · tap to retry'
@@ -2255,6 +2257,10 @@ function PadScreen() {
                   ? 'no response · tap to take control'
                   : statusLabel(status, dev)}
             </Text>
+            {!stale && status === 'connected' && (dev === 'Microsoft X-Box 360 pad' || dev === 'ViGEm X360 pad') && (
+              <Text style={[styles.pillText, { fontSize: 9 }]} numberOfLines={1}>Virtual Xbox-compatible controller</Text>
+            )}
+            </View>
           </Pressable>
           {/* TourAnchor REPLACES the toggle's View and inherits its style, so
               the row is byte-for-byte the same box — see components/TourAnchor.tsx.
