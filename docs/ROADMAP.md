@@ -2817,3 +2817,9 @@ Screen-capture verified end to end through the agent's own runner.
 
 _(Earlier releases 2.8.x–2.9.10 predate this roadmap; see `docs/BUILD_LOG.md` and the
 release tags.)_
+
+### In progress — Optional TV appearance packs (2026-10-30)
+- Priority: normal. Risk: medium. Affects: Linux agent, phone Steam appearance/Theme Studio, Decky TV renderer.
+- Depends on: matching companion appearance capability and a working Decky frontend.
+- Validated data packs, local import subset, saved PC library, reversible selection and original defaults. See TV_APPEARANCE_PACKS.md.
+- Local/browser/API and SteamOS/Bazzite TV checks complete, including native picker focus fixes. Private iPhone 281 verified literal CSS Paste/Preview/Cancel/Apply to Bazzite, restart persistence, default restoration, and clean launches. Original TV installations restored. Earlier unexpected-close entry predates the previews; its cause remains unconfirmed. Release packaging/review remain pending. Not released.

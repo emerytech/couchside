@@ -453,6 +453,9 @@ export type DeckyStoreEntry = {
 };
 
 export type DeckyStore = {
+  /** Optional diagnostics from newer agents; older agents omit these fields. */
+  error?: string | null;
+  error_code?: 'loader_update_required' | null;
   available: boolean;
   /** A background fetch is running on the box — re-poll, never fetch on demand. */
   fetching: boolean;
@@ -1200,6 +1203,8 @@ export type Journal = {
  * are user-defined argv commands the app can add/delete.
  */
 export type Launcher = {
+  /** Per-game uninstall UI offer. Absent on older agents and non-Steam entries. */
+  uninstall?: 'steam' | 'busy';
   id: string;
   label: string;
   /** "shortcut" = a non-Steam shortcut from Steam's shortcuts.vdf (agent
@@ -2648,6 +2653,10 @@ export const api = {
   },
 
   // ---------- launchers ----------
+
+  steamUninstall(settings: ConnSettings, id: string): Promise<{ ok: boolean; state: 'requested'; id: string }> {
+    return request(settings, '/api/steam/uninstall', { method: 'POST', body: { id, confirm: true } });
+  },
 
   /** List discovered Steam games + user-defined custom launchers. */
   launchers(

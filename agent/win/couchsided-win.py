@@ -93,7 +93,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.14-win"
+VERSION = "0.4.15-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -2026,6 +2026,69 @@ def list_launchers():
     ]
     return (customs + discover_steam_games() + discover_epic_games()
             + discover_gog_games() + discover_xbox_games())
+
+
+
+def _steam_uninstall_ready(appid):
+    """Only a fresh, idle, fully installed manifest can open the uninstall UI.
+
+    StateFlags must be exactly FullyInstalled (4); running, updating, missing,
+    malformed or unfamiliar states fail closed. Steam owns the actual removal.
+    """
+    if not isinstance(appid, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", appid):
+        return False
+    try:
+        root = _steam_root()
+        if root is None:
+            return False
+        for library in _steam_libraries(root):
+            path = os.path.join(library, "appmanifest_%s.acf" % appid)
+            if os.path.commonpath([os.path.realpath(path), os.path.realpath(library)]) != os.path.realpath(library):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read(65537)
+                if len(text) > 65536:
+                    continue
+                fields = _parse_acf(text, keys=("appid", "name", "StateFlags"))
+                if fields.get("appid") == appid and fields.get("name") and not _is_steam_tool(appid, fields["name"]):
+                    return fields.get("StateFlags") == "4"
+            except (OSError, UnicodeError):
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _with_uninstall_offers(games, mock=False):
+    """Add per-item operation metadata; never mutate cached discovery records."""
+    return [dict(g, uninstall=("steam" if mock or _steam_uninstall_ready(str(g.get("appid", ""))) else "busy"))
+            if g.get("kind") == "steam" and re.fullmatch(r"steam:[1-9][0-9]{0,9}", g.get("id", "")) else g
+            for g in games]
+
+
+def steam_uninstall_request(body, mock=False):
+    """Authenticated caller requests Steam's UI, not direct file deletion."""
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        return 400, {"ok": False, "error": "confirmation required"}
+    lid = body.get("id")
+    if not isinstance(lid, str) or not re.fullmatch(r"steam:[1-9][0-9]{0,9}", lid):
+        return 400, {"ok": False, "error": "invalid Steam game id"}
+    games = list_launchers() if mock else discover_steam_games()
+    game = next((g for g in games if g.get("id") == lid and g.get("kind") == "steam"), None)
+    if game is None:
+        return 404, {"ok": False, "error": "game is not installed on this box"}
+    appid = lid.split(":", 1)[1]
+    if not mock and not _steam_uninstall_ready(appid):
+        return 409, {"ok": False, "error": "game is running, busy, or its installed state could not be verified"}
+    argv = ["steam", "steam://uninstall/" + appid] if mock else _launcher_argv(lid)
+    if not argv:
+        return 409, {"ok": False, "error": "Steam is unavailable"}
+    argv = [argv[0], "steam://uninstall/" + appid]
+    result = mock_launch(argv) if mock else real_launch(argv)
+    if not result.get("ok"):
+        return 502, {"ok": False, "error": "could not open Steam uninstall"}
+    return 200, {"ok": True, "state": "requested", "id": lid}
 
 
 def _launcher_argv(launcher_id):
@@ -6056,7 +6119,7 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
-                self._send(200, {"launchers": list_launchers(),
+                self._send(200, {"launchers": _with_uninstall_offers(list_launchers(), self.mock),
                                  "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
                            started)
             elif path == "/api/downloads":
@@ -6313,6 +6376,15 @@ class Handler(BaseHTTPRequestHandler):
                                      "→ Restart)."}, started)
                     return
                 self._handle_add_launcher(body, started)
+                return
+
+            if path == "/api/steam/uninstall":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                except (ValueError, UnicodeError):
+                    req = None
+                status, result = steam_uninstall_request(req, self.mock)
+                self._send(status, result, started)
                 return
 
             lprefix = "/api/launchers/"

@@ -45,6 +45,45 @@ class Themes(unittest.TestCase):
         conn.request(method, '/api/steam/themes', body, headers)
         r = conn.getresponse(); result = (r.status, json.loads(r.read())); conn.close()
         return result
+    def pack(self, name="Forest"):
+        return {"version": 1, "name": name, "colors": dict(background="#10231d", surface="#244338", text="#ffffff", muted="#b8d3c5", accent="#9ae2b4", focus="#d7ffe3"), "backgrounds": {"home": {"angle": 135, "stops": ["#10231d", "#315c49"]}}}
+
+    def test_appearance_roundtrip_restore_and_legacy_patch(self):
+        cs._decky_read_json_capped = lambda path: ({"api": 1, "appearance": 1}, None)
+        pack = self.pack()
+        self.assertEqual(self.req("POST", {"appearance": pack}, token=False)[0], 401)
+        code, state = self.req("POST", {"installed": True, "enabled": True, "appearance": pack})
+        self.assertEqual(code, 200)
+        self.assertTrue(state["appearance_ready"])
+        self.assertEqual(cs._steam_theme_read()["appearance"], pack)
+        self.assertEqual(self.req("GET")[1]["settings"]["appearance_packs"], [pack])
+        # Old apps do not send appearance: their normal layout changes preserve it.
+        self.assertEqual(self.req("POST", {"theme": "orbit"})[1]["settings"]["appearance"], pack)
+        self.assertIsNone(self.req("POST", {"appearance": None})[1]["settings"]["appearance"])
+        self.assertEqual(cs._steam_theme_read()["appearance_packs"], [pack])
+        self.assertEqual(self.req("POST", {"enabled": False})[0], 200)
+
+    def test_appearance_gate_and_rejections_are_atomic(self):
+        self.assertEqual(self.req("POST", {"installed": True, "enabled": True, "appearance": self.pack()})[0], 400)
+        before = self.req("GET")[1]["settings"]
+        bad = []
+        for key, value in [("version", True), ("name", "bad\nname"), ("script", "x")]:
+            p = self.pack(); p[key] = value; bad.append(p)
+        p = self.pack(); p["colors"]["accent"] = "url(https://example.com)"; bad.append(p)
+        p = self.pack(); p["backgrounds"]["home"]["angle"] = True; bad.append(p)
+        p = self.pack(); p["backgrounds"]["home"]["stops"] = ["#000000"] * 5; bad.append(p)
+        for pack in bad:
+            self.assertEqual(self.req("POST", {"appearance": pack})[0], 400)
+            self.assertEqual(self.req("GET")[1]["settings"], before)
+
+    def test_appearance_library_limit_and_named_replacement(self):
+        for i in range(8):
+            self.assertEqual(self.req("POST", {"appearance": self.pack(str(i))})[0], 200)
+        self.assertEqual(self.req("POST", {"appearance": self.pack("ninth")})[0], 400)
+        self.assertEqual(self.req("POST", {"appearance": self.pack("0")})[0], 200)
+        self.assertEqual(len(cs._steam_theme_read()["appearance_packs"]), 8)
+        self.assertEqual(self.req("POST", {"appearance": None})[0], 200)
+
     def test_other_renderer_blocks_enable_but_not_restore(self):
         with patch.object(cs, '_steam_theme_conflict', return_value='Turn off ThemeHub first'):
             self.assertEqual(self.req('POST', {'installed': True, 'enabled': True})[0], 400)
@@ -85,6 +124,7 @@ class Themes(unittest.TestCase):
         code, body = self.req('POST', {'installed': True, 'enabled': True, 'theme': 'orbit', 'accent': 'violet', 'motion': False})
         self.assertEqual(code, 200)
         self.assertEqual(body['settings'], cs._steam_theme_read())
+        self.assertNotIn("appearance", json.loads(Path(cs._STEAM_THEME_FILE).read_text()))
         self.assertEqual(os.stat(cs._STEAM_THEME_FILE).st_mode & 0o777, 0o600)
         self.assertEqual(self.req('GET')[1]['settings']['theme'], 'orbit')
         self.assertEqual(self.req('POST', {'enabled': False})[0], 200)

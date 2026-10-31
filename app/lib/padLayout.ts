@@ -1,3 +1,4 @@
+import { GAME_PADS, type GamePadId } from './gamePadCatalog.ts';
 /**
  * Landscape gamepad geometry — pure, no React, no imports.
  *
@@ -412,6 +413,49 @@ export function padLayout(win: Size, insets: Insets): PadLayout {
  * One movement zone and two primary actions; the Xbox identifiers stay explicit.
  * The left-side chrome has a 26U moat from every input, including expanded hits.
  */
+/** One thumb can move, then select upgrades without crossing the screen.
+ * Movement and action hit areas are separated to prevent accidental confirms.
+ */
+export function gamePresetLayout(win: Size, insets: Insets, id: GamePadId, hand: 'left' | 'right' = 'right'): PadLayout {
+  const def = GAME_PADS[id];
+  const table: Spec[] = [
+    { id: 'lock', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'exit', w: 18, h: 14, cx: { from: 'left', at: 35 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'preferences', w: 22, h: 14, cx: { from: 'left', at: 60 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  ];
+  if (def.layout === 'one') {
+    table.push({ id: 'move', w: 80, h: 38, cx: { from: hand, at: 45 }, cy: { from: 'bottom', at: 21 }, layer: 7 });
+    def.actions.forEach((a, i) => {
+      const col = i < 3 ? i : i - 3;
+      table.push({ id: a.key, w: 20, h: 16, cx: { from: hand, at: 12 + col * 24 }, cy: { from: 'top', at: i < 3 ? 28 : 48 }, layer: 1 });
+    });
+  } else if (def.layout === 'combat') {
+    table.push({ id: 'move', w: 64, h: 60, cx: { from: 'left', at: 35 }, cy: { from: 'bottom', at: 32 }, layer: 7 });
+    def.actions.forEach((a, i) => table.push({ id: a.key, w: 24, h: 18,
+      cx: { from: 'right', at: 14 + (i % 3) * 28 }, cy: { from: 'top', at: 14 + Math.floor(i / 3) * 24 }, layer: 1 }));
+  } else {
+    table.push({ id: 'move', w: 46, h: 36, cx: { from: 'left', at: 28 }, cy: { from: 'bottom', at: 20 }, layer: 7 },
+      { id: 'rstick', w: 46, h: 36, cx: { from: 'right', at: 28 }, cy: { from: 'bottom', at: 20 }, layer: 7 });
+    def.actions.forEach((a, i) => table.push({ id: a.key, w: 20, h: 16,
+      cx: { from: 'left', at: 12 + (i % 5) * 24 }, cy: { from: 'top', at: 29 + Math.floor(i / 5) * 21 }, layer: 1 }));
+  }
+  return buildLayout(table, win, insets);
+}
+
+export function vampireLayout(win: Size, insets: Insets, hand: 'left' | 'right' = 'right'): PadLayout {
+  const from = hand;
+  const table: Spec[] = [
+    { id: 'lock', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'exit', w: 18, h: 14, cx: { from: 'left', at: 35 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'preferences', w: 22, h: 14, cx: { from: 'left', at: 60 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'move', w: 58, h: 48, cx: { from, at: 32 }, cy: { from: 'bottom', at: 26 }, layer: 7 },
+    { id: 'a', w: 20, h: 18, cx: { from, at: 13 }, cy: { from: 'top', at: 33 }, layer: 1 },
+    { id: 'b', w: 20, h: 18, cx: { from, at: 37 }, cy: { from: 'top', at: 33 }, layer: 1 },
+    { id: 'start', w: 22, h: 18, cx: { from, at: 62 }, cy: { from: 'top', at: 33 }, layer: 1 },
+  ];
+  return buildLayout(table, win, insets);
+}
+
 export function stardewLayout(win: Size, insets: Insets, size: 'standard' | 'larger'): PadLayout {
   const large = size === 'larger';
   const table: Spec[] = [

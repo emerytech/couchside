@@ -795,6 +795,24 @@ function LaunchScreen() {
     [settings, showToast],
   );
 
+  const uninstallPending = useRef(false);
+  const currentUninstallBox = useRef(boxKey);
+  currentUninstallBox.current = boxKey;
+  const uninstall = async (l: Launcher) => {
+    if (uninstallPending.current || l.uninstall !== 'steam') return;
+    uninstallPending.current = true;
+    try {
+      const accepted = await confirm({ title: `Uninstall ${l.label}?`,
+        message: `Open Steam's uninstall flow on ${activeBox?.name ?? 'this box'}? Steam may ask for confirmation on that PC. Save files and mods depend on the game; back up anything you need. Couchside will refresh the library, but opening Steam does not mean removal is complete.`,
+        confirmText: 'Open uninstall in Steam', destructive: true });
+      if (!accepted || currentUninstallBox.current !== boxKey) return;
+      await api.steamUninstall(settings, l.id);
+      showToast('Uninstall requested. Check Steam on the PC; refresh the library after confirming.');
+      list.refresh();
+    } catch { showToast('Could not open uninstall. Refresh the library and check that Steam is ready and the game is closed.'); }
+    finally { uninstallPending.current = false; }
+  };
+
   const remove = useCallback(
     async (l: Launcher) => {
       const ok = await confirm({
@@ -1171,6 +1189,9 @@ function LaunchScreen() {
             setSheetFor(null);
             if (l) launch(l);
           }}
+          onUninstall={sheetFor?.uninstall ? () => {
+            const l = sheetFor; setSheetFor(null); if (l) void uninstall(l);
+          } : undefined}
           onClose={() => setSheetFor(null)}
         />
 

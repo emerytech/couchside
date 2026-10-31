@@ -37,7 +37,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, FlatList, Image, Modal, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -45,6 +45,7 @@ import {
   confirmDeckyLoaderInstall, confirmDeckyLoaderUninstall, confirmRestartDecky, deckyConfirm,
   toneColor, useDeckyLoaderOp,
 } from '@/components/DeckyCard';
+import { DeckyInstallConfirmation } from '@/components/DeckyInstallConfirmation';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import {
@@ -54,9 +55,9 @@ import {
 } from '@/lib/api';
 import {
   apiErrorHint, canRunLoaderOp, channelLabel, DECKY_BLINK_LINE, DECKY_PANEL_MISSING,
-  DECKY_REPAIR_STABLE, DECKY_UNIT_DRIFTED, deckyHint, describeLoaderState, installConfirmCopy,
+  DECKY_REPAIR_STABLE, DECKY_UNIT_DRIFTED, deckyHint, describeLoaderState,
   installLabel, installType, isJobActive, isLoaderOpActive, jobCopy, loaderOpCopy, searchStore,
-  sortStore, type StoreSort,
+  sortStore, storeLoadMessage, visibleJobNote, type InstallConfirmInput, type StoreSort,
 } from '@/lib/deckyPlugins';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -65,7 +66,7 @@ import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type Tab = 'installed' | 'store';
-type Note = { tone: 'ok' | 'err' | 'info'; msg: string; restartAction?: string };
+type Note = { tone: 'ok' | 'err' | 'info'; msg: string; restartAction?: string; at?: number };
 
 const SORTS: { key: StoreSort; label: string }[] = [
   { key: 'downloads', label: 'Popular' },
@@ -91,95 +92,52 @@ function fmtDownloads(n: number): string {
 
 // ---------- rows ----------
 
-function DeckyPluginRow({
-  p, storeEntry, runningProbe, disabled, onUpdate, onReload, onUninstall,
-}: {
-  p: DeckyPlugin;
-  storeEntry?: DeckyStoreEntry;
-  runningProbe: 'proc' | 'unknown';
-  disabled: boolean;
-  onUpdate: (entry: DeckyStoreEntry, p: DeckyPlugin) => void;
-  onReload: (p: DeckyPlugin) => void;
-  onUninstall: (p: DeckyPlugin) => void;
+function DeckyPluginRow({ p, storeEntry, runningProbe, disabled, installsDisabled, onUpdate, onManage }: {
+  p: DeckyPlugin; storeEntry?: DeckyStoreEntry; runningProbe: 'proc' | 'unknown';
+  disabled: boolean; installsDisabled: boolean; onUpdate: (entry: DeckyStoreEntry, p: DeckyPlugin) => void;
+  onManage: (p: DeckyPlugin) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const marks: string[] = [];
-  if (p.disabled === true) marks.push('disabled');
-  if (p.hidden === true) marks.push('hidden');
-  if (p.frozen === true) marks.push('frozen');
-  return (
-    <View style={styles.row} testID={`decky-plugin-${p.name}`}>
+  const flags = (['disabled', 'hidden', 'frozen'] as const).filter(k => p[k] === true);
+  return <View style={styles.row} testID={`decky-plugin-${p.name}`}>
+    <View style={styles.pluginHeader}>
+      <View style={[styles.icon, styles.iconFallback]}><Ionicons name="extension-puzzle-outline" size={22} color={t.blue} /></View>
       <View style={styles.rowMain}>
         <View style={styles.rowTitle}>
-          {/* A running dot only when the agent's probe is REAL (KI-072). */}
-          {runningProbe === 'proc' && typeof p.running === 'boolean' ? (
-            <View style={[styles.dot, { backgroundColor: p.running ? t.green : t.textFaint }]} />
-          ) : null}
-          <Text style={styles.name} numberOfLines={1}>{p.name}</Text>
-          {p.root ? (
-            <View style={[styles.badge, { borderColor: t.amber }]}>
-              <Ionicons name="shield-outline" size={10} color={t.amber} />
-              <Text style={[styles.badgeText, { color: t.amber }]}>root</Text>
-            </View>
-          ) : null}
+          {runningProbe === 'proc' && typeof p.running === 'boolean' ? <View style={[styles.dot, { backgroundColor: p.running ? t.green : t.textFaint }]} /> : null}
+          <Text style={styles.name}>{p.name}</Text>
+          {p.root ? <Text style={[styles.badgeText, { color: t.amber }]}>ROOT</Text> : null}
         </View>
-        <Text style={styles.sub} numberOfLines={1}>
-          {p.version ?? 'version unknown'}{p.author ? ` · ${p.author}` : ''}{marks.length ? ` · ${marks.join(' · ')}` : ''}
-        </Text>
-        {p.protected ? (
-          <Text style={styles.faint}>Installed by Couchside — managed by the installer.</Text>
-        ) : (
-          <View style={styles.actions}>
-            {p.update ? (
-              storeEntry ? (
-                <Pressable
-                  onPress={() => onUpdate(storeEntry, p)}
-                  disabled={disabled}
-                  testID={`decky-update-${p.name}`}
-                  style={({ pressed }) => [styles.primaryBtn, (pressed || disabled) && styles.pressed]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Update ${p.name} to ${p.update.version}`}>
-                  <Text style={styles.primaryBtnText}>{installLabel('update', p.update.version)}</Text>
-                </Pressable>
-              ) : (
-                <Text style={[styles.faint, { color: t.blue }]}>{p.update.version} available — open the Store tab</Text>
-              )
-            ) : null}
-            <Pressable
-              onPress={() => onReload(p)}
-              disabled={disabled}
-              testID={`decky-reload-${p.name}`}
-              style={({ pressed }) => [styles.ghostBtn, (pressed || disabled) && styles.pressed]}
-              accessibilityRole="button"
-              accessibilityLabel={`Reload ${p.name}`}>
-              <Ionicons name="refresh-outline" size={14} color={t.text} />
-              <Text style={styles.ghostBtnText}>Reload</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => onUninstall(p)}
-              disabled={disabled}
-              testID={`decky-uninstall-${p.name}`}
-              style={({ pressed }) => [styles.ghostBtn, (pressed || disabled) && styles.pressed]}
-              accessibilityRole="button"
-              accessibilityLabel={`Uninstall ${p.name}`}>
-              <Ionicons name="trash-outline" size={14} color={t.red} />
-              <Text style={[styles.ghostBtnText, { color: t.red }]}>Uninstall…</Text>
-            </Pressable>
-          </View>
-        )}
+        <Text style={styles.sub}>{p.author}</Text>
       </View>
+      {!p.protected ? <Pressable onPress={() => onManage(p)} disabled={disabled} style={styles.moreBtn}
+        accessibilityRole="button" accessibilityLabel={`Manage ${p.name}`} testID={`decky-manage-${p.name}`}>
+        <Ionicons name="ellipsis-horizontal" size={22} color={t.textDim} />
+      </Pressable> : null}
     </View>
-  );
+    {flags.length ? <View style={styles.badgeRow}>{flags.map(k =>
+      <View key={k} style={styles.badge}><Text style={styles.badgeText}>{k[0].toUpperCase() + k.slice(1)}</Text></View>)}</View> : null}
+    <View style={styles.pluginFooter}>
+      <Text style={styles.sub}>{p.version ?? 'Version unknown'}{p.update ? ` → ${p.update.version}` : ''}</Text>
+      {!p.protected && p.update && storeEntry ? <Pressable onPress={() => onUpdate(storeEntry, p)} disabled={installsDisabled}
+        testID={`decky-update-${p.name}`} style={[styles.primaryBtn, installsDisabled && styles.pressed]}
+        accessibilityRole="button" accessibilityLabel={`Update ${p.name} to ${p.update.version}`}>
+        <Text style={styles.primaryBtnText}>Update</Text></Pressable> : !p.protected && !p.update ? <Text style={styles.installedLabel}>Installed</Text> : null}
+    </View>
+    {p.protected ? <Text style={styles.faint}>Managed by the Couchside installer.</Text> : p.update && !storeEntry ? <Text style={styles.faint}>Update available — open Store.</Text> : null}
+  </View>;
 }
 
 function StoreRow({
-  e, installedRoot, disabled, onInstall,
+  e, installedRoot, disabled, installsDisabled, onInstall, onManage,
 }: {
   e: DeckyStoreEntry;
   installedRoot: boolean | undefined;
   disabled: boolean;
+  installsDisabled: boolean;
   onInstall: (e: DeckyStoreEntry) => void;
+  onManage: (e: DeckyStoreEntry) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -205,6 +163,7 @@ function StoreRow({
   const root = e.root ?? installedRoot ?? false;
   return (
     <View style={styles.row} testID={`decky-store-${e.id}`}>
+      <View style={styles.pluginHeader}>
       {showIcon && src ? (
         <Image source={src} style={styles.icon} onError={() => setFailedUri(src.uri)} />
       ) : (
@@ -214,7 +173,7 @@ function StoreRow({
       )}
       <View style={styles.rowMain}>
         <View style={styles.rowTitle}>
-          <Text style={styles.name} numberOfLines={1}>{e.name}</Text>
+          <Text style={styles.name}>{e.name}</Text>
           {root ? (
             <View style={[styles.badge, { borderColor: t.amber }]}>
               <Ionicons name="shield-outline" size={10} color={t.amber} />
@@ -223,27 +182,33 @@ function StoreRow({
           ) : null}
         </View>
         <Text style={styles.sub} numberOfLines={1}>
-          {e.author}{top ? ` · ${top.name}` : ''} · {fmtDownloads(e.downloads)} downloads
-          {e.installed_version ? ` · installed ${e.installed_version}` : ''}
+          {e.author} · {fmtDownloads(e.downloads)} downloads
         </Text>
-        {e.description ? <Text style={styles.desc} numberOfLines={2}>{e.description}</Text> : null}
-        {e.tags.length ? <Text style={styles.faint} numberOfLines={1}>{e.tags.join(' · ')}</Text> : null}
+      </View>
+      </View>
+      {e.description ? <Text style={styles.desc} numberOfLines={2}>{e.description}</Text> : null}
+      <View style={styles.pluginFooter}>
+        <Text style={styles.sub}>{e.installed_version && top && e.installed_version !== top.name ? `${e.installed_version} → ${top.name}` : top?.name}</Text>
         {top ? (
           <View style={styles.actions}>
-            <Pressable
+            {type === 'reinstall' ? <>
+              <Text style={styles.installedLabel}>✓ Installed</Text>
+              <Pressable onPress={() => onManage(e)} disabled={disabled} style={styles.moreBtn}
+                accessibilityRole="button" accessibilityLabel={`Manage ${e.name}`}><Ionicons name="ellipsis-horizontal" size={22} color={t.textDim} /></Pressable>
+            </> : <Pressable
               onPress={() => onInstall(e)}
-              disabled={disabled}
+              disabled={installsDisabled}
               testID={`decky-store-install-${e.id}`}
               style={({ pressed }) => [
                 type === 'downgrade' ? styles.warnBtn : styles.primaryBtn,
-                (pressed || disabled) && styles.pressed,
+                (pressed || installsDisabled) && styles.pressed,
               ]}
               accessibilityRole="button"
               accessibilityLabel={`${installLabel(type, top.name)} ${e.name}`}>
               <Text style={type === 'downgrade' ? styles.warnBtnText : styles.primaryBtnText}>
-                {installLabel(type, top.name)}
+                {type === 'update' ? 'Update' : type === 'install' ? 'Install' : installLabel(type, top.name)}
               </Text>
-            </Pressable>
+            </Pressable>}
           </View>
         ) : (
           <Text style={styles.faint}>No installable version listed.</Text>
@@ -263,11 +228,19 @@ function StoreRow({
 const SCREEN_OPTIONS = { headerShown: false };
 
 type ListItem =
+  | { key: string; kind: 'overview' }
+  | { key: string; kind: 'controls' }
   | { key: string; kind: 'plugin'; p: DeckyPlugin }
   | { key: string; kind: 'store'; e: DeckyStoreEntry }
-  | { key: string; kind: 'msg'; text: string; spinner?: boolean };
+  | { key: string; kind: 'msg'; text: string; spinner?: boolean; retry?: boolean };
 
 export default function DeckyPage() {
+  const { settings } = useSettings();
+  // Remount box-local operation notices/menus as well as polls when switching boxes.
+  return <DeckyContent key={hostKey(settings)} />;
+}
+
+function DeckyContent() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
@@ -277,11 +250,23 @@ export default function DeckyPage() {
   const key = hostKey(settings);
 
   const [tab, setTab] = useState<Tab>('installed');
+  const [manageOpen, setManageOpen] = useState(false);
+  const [menuPlugin, setMenuPlugin] = useState<DeckyPlugin | DeckyStoreEntry | null>(null);
+  const [pendingInstall, setPendingInstall] = useState<{ input: InstallConfirmInput; id: number; boxKey: string } | null>(null);
+  const installConfirmed = useRef(false);
+  const closePluginDialog = useCallback(() => {
+    installConfirmed.current = true;
+    setPendingInstall(null);
+    setMenuPlugin(null);
+  }, []);
+  useEffect(closePluginDialog, [key, closePluginDialog]);
+  const [restartSince, setRestartSince] = useState<number | null>(null);
+  const [restarting, setRestarting] = useState(false);
 
   // ---- loader ----
   const [fastLoader, setFastLoader] = useState(false);
   const loader = usePoll<DeckyLoader | null>(
-    () => api.deckyLoader(settings), fastLoader ? 2000 : 15000, configured, key);
+    () => api.deckyLoader(settings), fastLoader || restarting ? 2000 : 15000, configured, key);
   const l = loader.data;
   const opActive = isLoaderOpActive(l?.op);
   useEffect(() => { setFastLoader(opActive); }, [opActive]);
@@ -294,14 +279,14 @@ export default function DeckyPage() {
     if (!opActive) return undefined;
     let live = true;
     const tick = () => {
-      void api.deckyLoaderLog(settings, 40).then((ls) => { if (live) setLog(ls); });
+      void api.deckyLoaderLog(settings, 40).then((ls) => { if (live) setLog(ls); }).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 2000);
     return () => { live = false; clearInterval(id); };
   }, [opActive, settings]);
   const fetchLog = useCallback(() => {
-    void api.deckyLoaderLog(settings, 60).then(setLog);
+    void api.deckyLoaderLog(settings, 60).then(setLog).catch(() => {});
   }, [settings]);
 
   const refreshLoader = loader.refresh;   // stable (useCallback []), unlike the poll object
@@ -318,7 +303,7 @@ export default function DeckyPage() {
       try {
         const r = await api.deckyLoaderCheck(settings);
         if (r && r.updatable && r.remote) setCheckNote({ tone: 'info', msg: `Loader ${r.remote} is available — Repair installs it.` });
-        else if (r) setCheckNote({ tone: 'ok', msg: `Loader is up to date${r.current ? ` (${r.current})` : ''}.` });
+        else if (r?.current && r.remote) setCheckNote({ tone: 'ok', msg: `Loader is up to date (${r.current}).` });
         else setCheckNote({ tone: 'info', msg: 'No version info from the box.' });
         refreshLoader();
       } catch (e) {
@@ -337,11 +322,26 @@ export default function DeckyPage() {
   }, [settings, refreshLoader]);
 
   // The existing injected action, named by the agent — KI-037 wording, user-invoked.
-  const [restarting, setRestarting] = useState(false);
+  useEffect(() => {
+    if (restartSince === null) return;
+    if (loader.lastSuccess && loader.lastSuccess > restartSince && l?.state === 'running') {
+      setRestarting(false); setRestartSince(null); setCheckNote(null);
+    }
+  }, [restartSince, loader.lastSuccess, l?.state]);
+  useEffect(() => {
+    if (restartSince === null) return;
+    const timer = setTimeout(() => {
+      setRestarting(false); setRestartSince(null);
+      setCheckNote({ tone: 'err', msg: 'Restart requested, but Decky has not confirmed it is running. Check its status or logs.' });
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [restartSince]);
+  const jobRef = useRef<DeckyJob | null>(null);
   const restartDecky = useCallback((action: string, title?: string) => {
     confirmRestartDecky(() => {
       void (async () => {
         setRestarting(true);
+        setCheckNote(null); setJobNote(null); setDismissedJob(jobRef.current?.started_at ?? null);
         hapticLight();
         try {
           // runAction resolves ok:false (it does NOT throw) when the box refuses
@@ -351,16 +351,18 @@ export default function DeckyPage() {
           // said. Read the result and surface the box's own stderr on failure.
           const r = await api.runAction(settings, action);
           if (r.ok) {
-            hapticSuccess();
+            hapticSuccess(); setRestartSince(Date.now());
           } else {
+            setRestarting(false);
             hapticWarning();
             setCheckNote({ tone: 'err', msg: (r.stderr || '').trim() || 'Restart Decky did not run on the box.' });
           }
         } catch {
+          setRestarting(false);
           hapticWarning();
           setCheckNote({ tone: 'err', msg: 'Could not reach the box.' });
         } finally {
-          setRestarting(false);
+          refreshLoader();
           setTimeout(() => refreshLoader(), 1500);
           setTimeout(() => refreshLoader(), 6000);
         }
@@ -391,16 +393,23 @@ export default function DeckyPage() {
   const installed = !!l?.installed;
   const plugins = usePoll<DeckyPluginsList | null>(
     () => api.deckyPlugins(settings), 15000, configured && installed, key);
-  const [storeFast, setStoreFast] = useState(false);
   const store = usePoll<DeckyStore | null>(
-    () => api.deckyStore(settings), storeFast ? 2000 : 5 * 60 * 1000, configured && installed, key);
-  const storeFetching = !!store.data && store.data.fetching && !store.data.available;
-  useEffect(() => { setStoreFast(storeFetching); }, [storeFetching]);
+    () => api.deckyStore(settings), 5 * 60 * 1000, configured && installed, key);
+  const storeFetching = !!store.data?.fetching;
+  // Changing usePoll's interval does not replace an already scheduled five-
+  // minute tick. Explicitly follow a cold-cache/background fetch until done.
+  const pollStoreNow = store.refresh;
+  useEffect(() => {
+    if (!storeFetching) return;
+    const timer = setTimeout(pollStoreNow, 2000);
+    return () => clearTimeout(timer);
+  }, [storeFetching, store.lastSuccess, store.error, pollStoreNow]);
 
   const [jobFast, setJobFast] = useState(false);
   const jobs = usePoll<{ job: DeckyJob | null } | null>(
     () => api.deckyJobs(settings), jobFast ? 2000 : 30000, configured && installed, key);
   const job = jobs.data?.job ?? null;
+  useEffect(() => { jobRef.current = job; }, [job]);
   const jobActive = isJobActive(job);
   useEffect(() => { setJobFast(jobActive); }, [jobActive]);
   // Active → done: re-poll the list twice, like the flash (1.5 s, 6 s).
@@ -427,7 +436,7 @@ export default function DeckyPage() {
     hapticLight();
     setJobNote(null);
     setJobBusy(true);
-    setDismissedJob(null);
+    setDismissedJob(jobRef.current?.started_at ?? null);
     void (async () => {
       try {
         const r = await fn();
@@ -444,7 +453,7 @@ export default function DeckyPage() {
         } else if (e instanceof ApiError && e.kind === 'http') {
           hapticWarning();
           const h = apiErrorHint(e.status, e.body, e.message);
-          setJobNote({ tone: 'err', msg: h.text, restartAction: h.restartAction });
+          setJobNote({ tone: 'err', msg: h.text, restartAction: h.restartAction, at: Date.now() });
         } else {
           hapticWarning();
           setJobNote({ tone: 'err', msg: 'Could not reach the box.' });
@@ -471,7 +480,7 @@ export default function DeckyPage() {
     if (!top) return;
     const installedCopy = installedByName.get(e.name);
     const type = e.install_type ?? installType(e.installed_version ?? installedCopy?.version ?? null, top.name);
-    const copy = installConfirmCopy({
+    const input: InstallConfirmInput = {
       name: e.name,
       author: e.author,
       type,
@@ -479,10 +488,11 @@ export default function DeckyPage() {
       remoteVersion: top.name,
       root: e.root ?? installedCopy?.root ?? false,
       steamUiUp,
-    });
-    deckyConfirm(copy.title, copy.message, copy.okLabel,
-      () => runPluginJob(() => api.deckyInstall(settings, e.id)), type === 'downgrade');
-  }, [installedByName, steamUiUp, runPluginJob, settings]);
+    };
+    installConfirmed.current = false;
+    setMenuPlugin(null);
+    setPendingInstall({ input, id: e.id, boxKey: key });
+  }, [installedByName, steamUiUp, key]);
 
   const uninstallPlugin = useCallback((p: DeckyPlugin) => {
     const msg = `Decky Loader removes its files and cleans up its settings.`
@@ -504,20 +514,19 @@ export default function DeckyPage() {
     return sortStore(searchStore(list, query), sort);
   }, [store.data, query, sort]);
 
-  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  const [refreshNote, setRefreshNote] = useState<Note | null>(null);
   const refreshStoreOnBox = useCallback(() => {
     hapticLight();
     setRefreshNote(null);
     void (async () => {
       try {
         const r = await api.deckyStoreRefresh(settings);
-        setRefreshNote(r.fetching ? 'Refreshing on the box…' : r.refreshed ? 'Refreshed.' : 'Refreshed recently — try again in a minute.');
-        setStoreFast(true);
+        setRefreshNote(r.fetching || r.refreshed ? null : { tone: 'info', msg: 'Refreshed recently — try again in a minute.' });
         refreshStore();
       } catch (e) {
-        setRefreshNote(e instanceof ApiError && e.kind === 'http'
+        setRefreshNote({ tone: 'err', msg: e instanceof ApiError && e.kind === 'http'
           ? apiErrorHint(e.status, e.body, "Couldn't refresh.").text
-          : 'Could not reach the box.');
+          : 'Could not reach the box.' });
       }
     })();
   }, [settings, refreshStore]);
@@ -538,26 +547,18 @@ export default function DeckyPage() {
       return pl.plugins.map((p) => ({ key: `p:${p.folder}`, kind: 'plugin' as const, p }));
     }
     const st = store.data;
-    if (!st) {
-      return store.loading
-        ? [{ key: 'm', kind: 'msg', text: 'Loading the store…', spinner: true }]
-        : [{ key: 'm', kind: 'msg', text: 'The store needs a newer Couchside service on the box.' }];
-    }
-    if (!st.available) {
-      return st.fetching
-        ? [{ key: 'm', kind: 'msg', text: 'Fetching the plugin store on the box…', spinner: true }]
-        : [{ key: 'm', kind: 'msg', text: l.allowed
-            ? 'The store list is not available on the box. Tap Refresh to fetch it.'
-            : 'The store is fetched by the box once Decky management is enabled (couchside allow-decky on).' }];
-    }
+    const message = storeLoadMessage(st, store.loading, !!store.error, l.allowed);
+    if (message) return [{ key: 'm', kind: 'msg', ...message }];
     if (!storeRows.length) return [{ key: 'm', kind: 'msg', text: query ? 'No plugins match.' : 'The store list is empty.' }];
     return storeRows.map((e) => ({ key: `s:${e.id}`, kind: 'store' as const, e }));
-  }, [l, tab, plugins.data, plugins.loading, store.data, store.loading, storeRows, query]);
+  }, [l, tab, plugins.data, plugins.loading, store.data, store.loading, store.error, storeRows, query]);
 
   // ---- render pieces ----
   const renderLoaderCard = () => {
     if (!l) return null;
     const d = describeLoaderState(l);
+    const expanded = manageOpen || !l.installed || opActive;
+    const recovering = restarting || !!loader.error;
     const hint = deckyHint(l);
     const canOp = canRunLoaderOp(l);
     const opLine = loaderOpCopy(l.op);
@@ -569,12 +570,18 @@ export default function DeckyPage() {
         <View style={styles.cardHead}>
           <Ionicons name="extension-puzzle-outline" size={16} color={t.blue} />
           <Text style={styles.cardTitle}>Decky Loader</Text>
-          <View style={[styles.chip, { borderColor: toneColor(t, d.tone) }]}>
-            <Text style={[styles.chipText, { color: toneColor(t, d.tone) }]}>{d.chip}</Text>
-          </View>
+          <Pressable onPress={() => setManageOpen(v => !v)} style={styles.moreBtn} testID="decky-manage-loader"
+            accessibilityRole="button" accessibilityLabel="Manage Decky Loader" accessibilityState={{ expanded }}>
+            <Text style={styles.link}>Manage</Text><Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={15} color={t.textDim} />
+          </Pressable>
         </View>
-        <Text style={[styles.stateLine, { color: toneColor(t, d.tone) }]}>{d.line}</Text>
-
+        <Text style={[styles.stateLine, { color: recovering ? t.amber : toneColor(t, d.tone) }]}>
+          {restarting ? 'Restarting Decky…' : loader.error ? 'Connection interrupted — checking again…' : d.line}
+          {l.installed && !expanded ? ` · ${l.loader_update?.current ?? l.version ?? 'Version unknown'}` : ''}
+        </Text>
+        {checkNote && !expanded ? <Text style={[styles.note, { color: toneColor(t, checkNote.tone === 'err' ? 'warn' : 'action') }]}>{checkNote.msg}</Text> : null}
+        {!expanded && !recovering && l.state !== 'running' ? <Pressable onPress={() => setManageOpen(true)} accessibilityRole="button" style={styles.ghostBtn}><Text style={styles.ghostBtnText}>View status and recovery options</Text></Pressable> : null}
+        {expanded ? <>
         {l.installed ? (
           <View style={styles.kv}>
             <Text style={styles.k}>Version</Text>
@@ -583,11 +590,11 @@ export default function DeckyPage() {
             </Text>
           </View>
         ) : null}
-        {l.loader_update ? (
+        {l.installed ? (
           <View style={styles.kv}>
             <Text style={styles.k}>Latest</Text>
             <Text style={styles.v} numberOfLines={1}>
-              {l.loader_update.remote ?? 'unknown'}{updatable ? ' — update available' : ''}
+              {l.loader_update?.remote ?? 'Not checked'}{updatable ? ' — update available' : ''}
             </Text>
           </View>
         ) : null}
@@ -692,13 +699,16 @@ export default function DeckyPage() {
             <Text style={styles.hint}>{hint.text}</Text>
           )
         ) : null}
+        </> : null}
       </View>
     );
   };
 
   const renderJobBanner = () => {
-    const shown = job && job.started_at !== dismissedJob ? job : null;
-    if (!shown && !jobNote) return null;
+    if (restarting) return <View style={styles.banner} accessibilityLiveRegion="polite"><ActivityIndicator color={t.blue} /><Text style={styles.note}>Reconnecting plugins…</Text><Text style={styles.faint}>Waiting for Decky to confirm it is running.</Text></View>;
+    const note = visibleJobNote(jobNote, l?.state, !!loader.error, loader.lastSuccess);
+    const shown = !note && job && job.started_at !== dismissedJob ? job : null;
+    if (!shown && !note) return null;
     const jc = shown ? jobCopy(shown, opSteamUiUp ?? l?.steam_ui_up) : null;
     return (
       <View style={styles.banner} testID="decky-job-banner">
@@ -732,23 +742,23 @@ export default function DeckyPage() {
                   </Pressable>
                 ) : null}
                 {jc.offerReload && l?.restart_action ? (
-                  <Pressable onPress={() => restartDecky(l.restart_action as string, 'Reload Decky?')} disabled={restarting}
+                  <Pressable onPress={() => restartDecky(l.restart_action as string, 'Restart Decky?')} disabled={restarting}
                     testID="decky-job-reload-decky"
                     style={({ pressed }) => [styles.ghostBtn, (pressed || restarting) && styles.pressed]}
-                    accessibilityRole="button" accessibilityLabel="Reload Decky (restarts all plugins)">
-                    <Text style={styles.ghostBtnText}>Reload Decky</Text>
+                    accessibilityRole="button" accessibilityLabel="Restart Decky (restarts all plugins)">
+                    <Text style={styles.ghostBtnText}>Restart Decky</Text>
                   </Pressable>
                 ) : null}
               </View>
             ) : null}
           </>
         ) : null}
-        {jobNote ? (
+        {note ? (
           <View>
-            <Text style={[styles.note, { color: jobNote.tone === 'ok' ? t.green : jobNote.tone === 'err' ? t.red : t.blue }]}>{jobNote.msg}</Text>
-            {jobNote.restartAction ? (
+            <Text style={[styles.note, { color: note.tone === 'ok' ? t.green : note.tone === 'err' ? t.red : t.blue }]}>{note.msg}</Text>
+            {note.restartAction ? (
               <View style={styles.btnRow}>
-                <Pressable onPress={() => restartDecky(jobNote.restartAction as string)} disabled={restarting}
+                <Pressable onPress={() => restartDecky(note.restartAction as string)} disabled={restarting}
                   testID="decky-note-restart"
                   style={({ pressed }) => [styles.primaryBtn, (pressed || restarting) && styles.pressed]}
                   accessibilityRole="button" accessibilityLabel="Restart Decky (restarts all plugins)">
@@ -767,7 +777,7 @@ export default function DeckyPage() {
     const pl = plugins.data;
     const updates = pl && pl.available ? pl.updates : null;
     return (
-      <View>
+      <View style={styles.stickyControls}>
         <View style={styles.tabBar}>
           {(['installed', 'store'] as Tab[]).map((k) => {
             const active = k === tab;
@@ -781,7 +791,7 @@ export default function DeckyPage() {
                   {k === 'installed' ? `Installed${pl && pl.available ? ` (${pl.plugins.length})` : ''}` : 'Store'}
                 </Text>
                 {k === 'installed' && updates ? (
-                  <View style={styles.countPill}><Text style={styles.countPillText}>{updates}</Text></View>
+                  <View style={styles.countPill}><Text style={styles.countPillText}>{updates} {updates === 1 ? 'update' : 'updates'}</Text></View>
                 ) : null}
               </Pressable>
             );
@@ -838,7 +848,8 @@ export default function DeckyPage() {
                   : ''}
               </Text>
             </View>
-            {refreshNote ? <Text style={styles.listMeta}>{refreshNote}</Text> : null}
+            {store.data?.stale ? <Text style={styles.warnLine}>{store.data.error_code === 'loader_update_required' ? 'Update Decky Loader to install plugins. Showing the last catalog.' : 'Couldn’t refresh. Showing the last saved catalog.'}</Text> : null}
+            {storeFetching ? <Text style={styles.listMeta}>Refreshing on the box…</Text> : refreshNote ? <Text style={refreshNote.tone === 'err' ? styles.warnLine : styles.listMeta}>{refreshNote.msg}</Text> : null}
           </View>
         ) : null}
       </View>
@@ -846,14 +857,19 @@ export default function DeckyPage() {
   };
 
   const runningProbe = plugins.data?.running_probe ?? 'unknown';
-  const rowsDisabled = jobBusy || jobActive || opActive;
+  const rowsDisabled = jobBusy || jobActive || opActive || restarting;
+  const installsDisabled = rowsDisabled || store.data?.error_code === 'loader_update_required';
 
   const renderItem = ({ item }: { item: ListItem }) => {
+    if (item.kind === 'overview') return <View style={{ gap: 10, paddingBottom: 8 }}>{renderLoaderCard()}{renderJobBanner()}</View>;
+    if (item.kind === 'controls') return renderTabs();
     if (item.kind === 'msg') {
       return (
-        <View style={styles.msg}>
+        <View style={styles.emptyState} accessibilityLiveRegion="polite">
           {item.spinner ? <ActivityIndicator size="small" color={t.blue} /> : null}
           <Text style={styles.msgText}>{item.text}</Text>
+          {item.retry ? <Pressable onPress={refreshStoreOnBox} style={styles.primaryBtn} accessibilityRole="button" testID="decky-store-retry"><Text style={styles.primaryBtnText}>Try again</Text></Pressable> : null}
+          {item.spinner ? [0, 1, 2].map(n => <View key={n} style={styles.skeleton}><View style={styles.skeletonLine} /><View style={[styles.skeletonLine, { width: '65%' }]} /></View>) : null}
         </View>
       );
     }
@@ -864,9 +880,9 @@ export default function DeckyPage() {
           storeEntry={storeByName.get(item.p.name)}
           runningProbe={runningProbe}
           disabled={rowsDisabled}
+          installsDisabled={installsDisabled}
           onUpdate={(e) => installFromStore(e)}
-          onReload={reloadPlugin}
-          onUninstall={uninstallPlugin}
+          onManage={setMenuPlugin}
         />
       );
     }
@@ -875,7 +891,9 @@ export default function DeckyPage() {
         e={item.e}
         installedRoot={installedByName.get(item.e.name)?.root}
         disabled={rowsDisabled}
+        installsDisabled={installsDisabled}
         onInstall={installFromStore}
+        onManage={setMenuPlugin}
       />
     );
   };
@@ -916,28 +934,55 @@ export default function DeckyPage() {
         </View>
       ) : (
         <FlatList
-          data={items}
+          data={[{ key: 'overview', kind: 'overview' }, { key: 'controls', kind: 'controls' }, ...items] as ListItem[]}
+          stickyHeaderIndices={[1]}
           keyExtractor={(i) => i.key}
           renderItem={renderItem}
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: insets.bottom + 24, gap: 8 }}
-          ListHeaderComponent={
-            <View style={{ gap: 8, marginBottom: 2 }}>
-              {renderLoaderCard()}
-              {renderJobBanner()}
-              {renderTabs()}
-            </View>
-          }
           initialNumToRender={12}
           windowSize={7}
         />
       )}
+      <Modal visible={!!menuPlugin || !!pendingInstall} transparent animationType="fade" onRequestClose={closePluginDialog}>
+        <Pressable style={styles.modalBackdrop} onPress={closePluginDialog}>
+        {menuPlugin || pendingInstall ? <Pressable style={styles.menu} accessibilityViewIsModal onPress={() => {}}>
+          {pendingInstall ? <DeckyInstallConfirmation input={pendingInstall.input} disabled={installsDisabled}
+            onCancel={closePluginDialog} onConfirm={() => {
+              if (installConfirmed.current || installsDisabled || pendingInstall.boxKey !== key) return;
+              installConfirmed.current = true;
+              setPendingInstall(null);
+              runPluginJob(() => api.deckyInstall(settings, pendingInstall.id));
+            }} /> : <>
+          <Text style={styles.title}>{menuPlugin?.name}</Text>
+          <Text style={styles.sub}>Plugin actions</Text>
+          {menuPlugin && !rowsDisabled ? <>
+            {installedByName.get(menuPlugin.name) && !installedByName.get(menuPlugin.name)?.protected ? <>
+              <Pressable accessibilityRole="button" style={styles.ghostBtn} onPress={() => { setMenuPlugin(null); reloadPlugin(installedByName.get(menuPlugin.name) as DeckyPlugin); }}><Text style={styles.ghostBtnText}>Reload this plugin</Text></Pressable>
+              <Pressable accessibilityRole="button" style={styles.ghostBtn} onPress={() => { setMenuPlugin(null); uninstallPlugin(installedByName.get(menuPlugin.name) as DeckyPlugin); }}><Text style={[styles.ghostBtnText, { color: t.red }]}>Uninstall…</Text></Pressable>
+            </> : null}
+            {storeByName.get(menuPlugin.name) && !installedByName.get(menuPlugin.name)?.protected && !installsDisabled ? <Pressable accessibilityRole="button" style={styles.ghostBtn} onPress={() => { setMenuPlugin(null); installFromStore(storeByName.get(menuPlugin.name) as DeckyStoreEntry); }}><Text style={styles.ghostBtnText}>{installLabel(storeByName.get(menuPlugin.name)?.install_type ?? 'reinstall', storeByName.get(menuPlugin.name)?.versions[0]?.name ?? '')}…</Text></Pressable> : null}
+          </> : <Text style={styles.faint}>Wait for the current operation to finish.</Text>}
+          <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => setMenuPlugin(null)}><Text style={styles.primaryBtnText}>Close</Text></Pressable>
+          </>}
+        </Pressable> : null}</Pressable>
+      </Modal>
     </View>
   );
 }
 
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
+    stickyControls: { backgroundColor: t.bg, paddingVertical: 8 },
+    moreBtn: { minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, marginLeft: 'auto' },
+    badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+    pluginFooter: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+    installedLabel: { color: t.green, fontSize: 12, fontWeight: '600', alignSelf: 'center' },
+    modalBackdrop: { flex: 1, backgroundColor: t.bg + 'ee', justifyContent: 'center', padding: 24 },
+    menu: { maxHeight: '90%', backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 20, padding: 20, gap: 14, width: '100%', maxWidth: 440, alignSelf: 'center' },
+    emptyState: { paddingVertical: 20, gap: 14, alignItems: 'center' },
+    skeleton: { width: '100%', height: 110, backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 16, padding: 20, gap: 14 },
+    skeletonLine: { backgroundColor: t.inset, height: 14, width: '85%', borderRadius: 5 },
     screen: { flex: 1, backgroundColor: t.bg },
     header: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -951,32 +996,32 @@ const makeStyles = (t: Palette) =>
     cardHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
     cardTitle: { color: t.text, fontSize: 14, fontWeight: '800', flex: 1 },
     chip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2 },
-    chipText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase' },
-    stateLine: { fontSize: 12, fontWeight: '600', lineHeight: 17 },
+    chipText: { color: t.text, fontSize: 10, fontWeight: '800', letterSpacing: 0.5, textTransform: 'uppercase' },
+    stateLine: { color: t.text, fontSize: 12, fontWeight: '600', lineHeight: 17 },
     kv: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     k: { color: t.textDim, fontSize: 12, width: 64 },
     v: { color: t.text, fontSize: 12, fontFamily: mono, flex: 1 },
     warnLine: { color: t.amber, fontSize: 12, fontWeight: '600', lineHeight: 17 },
     faint: { color: t.textFaint, fontSize: 11, lineHeight: 16, marginTop: 4 },
     opRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    opText: { fontSize: 12, fontWeight: '600', lineHeight: 17, flex: 1 },
+    opText: { color: t.text, fontSize: 12, fontWeight: '600', lineHeight: 17, flex: 1 },
     log: { padding: 8, borderRadius: 8, backgroundColor: t.inset, borderWidth: 1, borderColor: t.cardBorder },
     logLine: { color: t.textDim, fontSize: 10, fontFamily: mono, lineHeight: 14 },
-    note: { fontSize: 12, fontWeight: '600', lineHeight: 17 },
+    note: { color: t.text, fontSize: 12, fontWeight: '600', lineHeight: 17 },
     btnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, alignItems: 'center' },
     primaryBtn: {
       flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: t.blue,
-      borderRadius: 9, paddingVertical: 8, paddingHorizontal: 12,
+      minHeight: 44, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 14,
     },
     primaryBtnText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
     warnBtn: {
       flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: t.card,
-      borderRadius: 9, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: t.amber,
+      minHeight: 44, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: t.amber,
     },
     warnBtnText: { color: t.amber, fontSize: 13, fontWeight: '700' },
     ghostBtn: {
       flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: t.card,
-      borderRadius: 9, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: t.cardBorder,
+      minHeight: 44, borderRadius: 11, paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: t.cardBorder,
     },
     ghostBtnText: { color: t.text, fontSize: 13, fontWeight: '700' },
     linkBtn: { paddingVertical: 8, paddingHorizontal: 4 },
@@ -1022,22 +1067,23 @@ const makeStyles = (t: Palette) =>
     sortChipText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
     sortChipTextOn: { color: t.blue },
     row: {
-      flexDirection: 'row', gap: 10, padding: 10,
+      gap: 10, padding: 12,
       backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder,
     },
-    rowMain: { flex: 1, gap: 3 },
+    pluginHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    rowMain: { flex: 1, minWidth: 0, gap: 4 },
     rowTitle: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     dot: { width: 8, height: 8, borderRadius: 4 },
-    name: { color: t.text, fontSize: 14, fontWeight: '700', flexShrink: 1 },
+    name: { color: t.text, fontSize: 15, fontWeight: '700', flexShrink: 1 },
     badge: {
       flexDirection: 'row', alignItems: 'center', gap: 3, borderWidth: 1, borderRadius: 999,
       paddingHorizontal: 6, paddingVertical: 1,
     },
-    badgeText: { fontSize: 10, fontWeight: '800' },
+    badgeText: { color: t.amber, fontSize: 10, fontWeight: '800' },
     sub: { color: t.textDim, fontSize: 12 },
-    desc: { color: t.textFaint, fontSize: 12, lineHeight: 17 },
-    actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
-    icon: { width: 44, height: 44, borderRadius: 8, backgroundColor: t.inset },
+    desc: { color: t.textDim, fontSize: 13, lineHeight: 19 },
+    actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginLeft: 'auto' },
+    icon: { width: 40, height: 40, borderRadius: 10, backgroundColor: t.inset },
     iconFallback: { alignItems: 'center', justifyContent: 'center' },
     msg: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 16, justifyContent: 'center' },
     msgText: { color: t.textFaint, fontSize: 13, lineHeight: 19, textAlign: 'center', flexShrink: 1 },
