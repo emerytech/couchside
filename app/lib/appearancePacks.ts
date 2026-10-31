@@ -17,6 +17,7 @@ export function importAppearance(css:string,name:string){
  if(css.length>32768)throw Error('Theme text must be under 32 KiB.');
  const text=css.replace(/\/\*[\s\S]*?\*\//g,'');
  if(/[@\\]/.test(text)||/\/\*|\*\//.test(text))throw Error('Directives, escapes and unfinished comments are unsupported.');
+ if(/(?:^|[;{}\s])[\u2013\u2014](?=[cg]-[\w-]*\s*:)/.test(text))throw Error('Smart punctuation changed a CSS double hyphen (--). Paste the original CSS using Paste, then preview again.');
  const pack=make(name,'#0c1321','#19263a','#f0f4fa','#aabbd0','#26d4be');
  const colors:Record<string,keyof AppearancePack['colors']>={'--c-bg':'background','--c-card':'surface','--c-text':'text','--c-text-2':'muted','--c-accent':'accent','--c-ring-a':'focus'};
  const gradients:Record<string,'home'|'library'|'settings'>={'--g-art-default':'home','--g-library':'library','--g-settings':'settings'};
