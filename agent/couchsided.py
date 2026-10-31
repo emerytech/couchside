@@ -16760,8 +16760,39 @@ _STEAM_THEME_CATALOG = (
      "description": "A deep blue console ribbon with large game tiles and selected-game stats."},
 )
 _STEAM_THEME_DEFAULT = {"version": 1, "installed": False, "enabled": False,
-                        "theme": "couchside", "accent": "teal", "motion": True, "studio": None}
+                        "theme": "couchside", "accent": "teal", "motion": True, "studio": None, "appearance": None, "appearance_packs": []}
 _STEAM_THEME_MOCK = dict(_STEAM_THEME_DEFAULT, installed=True)
+
+
+def _appearance_pack_validate(value):
+    """Portable data only. No CSS, selectors, paths, URLs or executable values."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"version", "name", "colors", "backgrounds"}:
+        raise ValueError("invalid appearance pack fields")
+    if type(value["version"]) is not int or value["version"] != 1:
+        raise ValueError("unsupported appearance pack version")
+    name = value["name"]
+    if not isinstance(name, str) or not name.strip() or len(name) > 60 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("invalid appearance pack name")
+    colors = value["colors"]
+    keys = {"background", "surface", "text", "muted", "accent", "focus"}
+    def color(v):
+        return isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v) is not None
+    if not isinstance(colors, dict) or set(colors) != keys or not all(color(v) for v in colors.values()):
+        raise ValueError("appearance colors must be six-digit hex values")
+    backgrounds = value["backgrounds"]
+    if not isinstance(backgrounds, dict) or set(backgrounds) - {"home", "library", "settings"}:
+        raise ValueError("invalid appearance backgrounds")
+    for gradient in backgrounds.values():
+        if not isinstance(gradient, dict) or set(gradient) != {"angle", "stops"}:
+            raise ValueError("invalid appearance gradient")
+        if type(gradient["angle"]) is not int or not 0 <= gradient["angle"] <= 360:
+            raise ValueError("invalid gradient angle")
+        stops = gradient["stops"]
+        if not isinstance(stops, list) or not 2 <= len(stops) <= 4 or not all(color(v) for v in stops):
+            raise ValueError("invalid gradient stops")
+    return json.loads(json.dumps(dict(value, name=name.strip())))
 
 
 def _theme_document_validate(value):
@@ -16802,6 +16833,13 @@ def _steam_theme_validate(data):
         raise ValueError("unknown accent")
     if result["enabled"] and not result["installed"]:
         raise ValueError("enable the themes add-on first")
+    result["appearance"] = _appearance_pack_validate(result["appearance"])
+    packs = result["appearance_packs"]
+    if not isinstance(packs, list) or len(packs) > 8 or any(p is None for p in packs):
+        raise ValueError("at most eight saved appearance packs")
+    result["appearance_packs"] = [_appearance_pack_validate(p) for p in packs]
+    if len({p["name"] for p in result["appearance_packs"]}) != len(packs):
+        raise ValueError("duplicate appearance pack name")
     result["studio"] = _theme_document_validate(result["studio"])
     if result["studio"] and any(result[k] != result["studio"][doc] for k, doc in (("theme", "layout"), ("accent", "accent"), ("motion", "motion"))):
         raise ValueError("theme document must match applied settings")
@@ -16815,8 +16853,8 @@ def _steam_theme_read():
         with os.fdopen(fd, "r") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 return dict(_STEAM_THEME_DEFAULT)
-            raw = f.read(4097)
-        if len(raw) > 4096:
+            raw = f.read(32769)
+        if len(raw) > 32768:
             return dict(_STEAM_THEME_DEFAULT)
         return _steam_theme_validate(json.loads(raw))
     except (OSError, ValueError, TypeError):
@@ -16848,6 +16886,7 @@ def _steam_theme_conflict():
 def steam_themes_state(mock=False):
     companion = False
     studio_ready = False
+    appearance_ready = False
     supported = {"couchside", "orbit", "shelf"}
     if not mock:
         try:
@@ -16855,6 +16894,7 @@ def steam_themes_state(mock=False):
                 "~/homebrew/plugins/Couchside/defaults/themes-capability.json"))
             companion = isinstance(cap, dict) and cap.get("api") == 1
             studio_ready = companion and cap.get("studio") == 1
+            appearance_ready = companion and cap.get("appearance") == 1
             if companion and isinstance(cap.get("themes"), list):
                 supported = {item for item in cap["themes"] if isinstance(item, str)}
         except (OSError, ValueError, TypeError):
@@ -16863,6 +16903,7 @@ def steam_themes_state(mock=False):
             "themes": [theme for theme in _STEAM_THEME_CATALOG if mock or theme["id"] in supported],
             "companion_ready": bool(mock or companion),
             "studio_ready": bool(mock or studio_ready),
+            "appearance_ready": bool(mock or appearance_ready),
             "requires": "Decky Loader and the Couchside companion"}
 
 
@@ -16876,10 +16917,18 @@ def steam_themes_save(data, mock=False):
         if "studio" not in data and any(k in data for k in ("theme", "accent", "motion")):
             merged["studio"] = None
         value = _steam_theme_validate(merged)
+        if "appearance" in data and value["appearance"] is not None:
+            pack = value["appearance"]
+            saved = [p for p in value["appearance_packs"] if p["name"] != pack["name"]]
+            if len(saved) >= 8:
+                raise ValueError("eight packs saved; replace one by using its name")
+            value["appearance_packs"] = saved + [pack]
         conflict = None if mock or not value["enabled"] else _steam_theme_conflict()
         if conflict:
             raise ValueError(conflict)
         state = steam_themes_state(mock)
+        if value["enabled"] and value["appearance"] and not state["appearance_ready"]:
+            raise ValueError("update the Couchside companion to use appearance packs")
         if value["enabled"] and value["studio"] and not state["studio_ready"]:
             raise ValueError("update the Couchside companion to use Theme Studio")
         if value["enabled"] and (not state["companion_ready"] or value["theme"] not in {item["id"] for item in state["themes"]}):
@@ -16892,7 +16941,13 @@ def steam_themes_save(data, mock=False):
             fd, tmp = tempfile.mkstemp(prefix=".steam-themes-", dir=directory)
             try:
                 with os.fdopen(fd, "w") as f:
-                    json.dump(value, f)
+                    # Older companions reject unknown file keys. Do not change their
+                    # on-disk schema until a pack has deliberately been saved.
+                    stored = dict(value)
+                    if stored["appearance"] is None and not stored["appearance_packs"]:
+                        stored.pop("appearance")
+                        stored.pop("appearance_packs")
+                    json.dump(stored, f)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp, _STEAM_THEME_FILE)

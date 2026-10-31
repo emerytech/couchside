@@ -1,12 +1,13 @@
+import type { AppearancePack } from './appearancePacks';
 import type { ThemeDocument } from './themeFormat';
 /** Fixed renderer IDs and validated data; downloaded executable themes are unsupported. */
 export type SteamThemeSettings = {
   version: 1; installed: boolean; enabled: boolean;
   theme: 'couchside' | 'orbit' | 'shelf' | 'wave' | 'channels' | 'crossbar' | 'horizon';
-  accent: 'teal' | 'blue' | 'violet' | 'amber'; motion: boolean; studio?: ThemeDocument | null;
+  accent: 'teal' | 'blue' | 'violet' | 'amber'; motion: boolean; studio?: ThemeDocument | null; appearance?: AppearancePack | null; appearance_packs?: AppearancePack[];
 };
 export type SteamTheme = { id: SteamThemeSettings['theme']; name: string; layout: string; description: string };
-export type SteamThemesState = { settings: SteamThemeSettings; themes: SteamTheme[]; companion_ready: boolean; requires: string; studio_ready?: boolean };
+export type SteamThemesState = { settings: SteamThemeSettings; themes: SteamTheme[]; companion_ready: boolean; requires: string; studio_ready?: boolean; appearance_ready?: boolean };
 export const STEAM_THEME_ACCENTS = { teal: '#26d4be', blue: '#73b5ff', violet: '#b5a0ff', amber: '#ffcf7b' } as const;
 
 /** Applying a search result must never target an invisible previous selection. */
