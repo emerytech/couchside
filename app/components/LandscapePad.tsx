@@ -32,7 +32,7 @@ import {
   type Rect,
 } from '@/lib/padLayout';
 import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
-import { STARDEW_ACTIONS, VAMPIRE_ACTIONS, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
+import { STARDEW_ACTIONS, VAMPIRE_ACTIONS, VAMPIRE_BACKDROP, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
 import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
@@ -838,7 +838,7 @@ const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
   variant = 'stardew', background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
-}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current'; variant?: 'stardew' | 'vampire' }) {
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'ruins' | 'current'; variant?: 'stardew' | 'vampire' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
   const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
@@ -847,7 +847,7 @@ export function StardewPad({
   const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
     <View style={StyleSheet.absoluteFill} testID={`${variant}-pad`}>
-      <GameBackdrop backdrop={variant === 'vampire' || background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
+      <GameBackdrop backdrop={background === 'current' ? t.backdrop : variant === 'vampire' ? VAMPIRE_BACKDROP : STARDEW_BACKDROP} landscape fitContainer />
       <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       <FloatingStick node={byId.move} u={u} label="Move" zoneOutline
         onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />

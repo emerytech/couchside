@@ -9,6 +9,10 @@ test('handedness survives storage and invalid selections fail closed', () => {
   for (const hand of ['left', 'right'] as const) {
     const choice = { version: 1, id: 'vampire', size: 'larger', hand };
     assert.deepEqual(normalizePadPreset(JSON.parse(JSON.stringify(choice))), choice);
+    for (const background of ['ruins', 'current']) {
+      assert.deepEqual(normalizePadPreset({ ...choice, background }), { ...choice, background });
+    }
+    assert.deepEqual(normalizePadPreset({ ...choice, background: 'farm' }), choice);
   }
   assert.deepEqual(normalizePadPreset({ version: 1, id: 'vampire', hand: 'bad' }), CURRENT_CONTROLS);
   assert.equal(surfaceChanged({ mounted: true, mode: 'gamepad', landscape: true, layout: 'vampire:larger:left' },

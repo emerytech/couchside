@@ -21,6 +21,8 @@ export const VAMPIRE_ACTIONS = [
   { key: 'start', kind: 'button', glyph: 'Start', label: 'Pause' },
 ] as const;
 
+export const VAMPIRE_BACKDROP = { key: 'vampire-pad-ruins', glow: '#8170a5' };
+
 export const STARDEW_BACKDROP = { key: 'stardew-farm', glow: '#8ca96b' };
 
 type Momentary = { onDown: () => void; onUp: () => void };
@@ -37,8 +39,8 @@ export type PadPreset = {
   id: 'current' | 'stardew' | 'vampire';
   hand?: 'left' | 'right';
   size: 'standard' | 'larger';
-  /** Omitted means the preset's farm art; never mutates the saved app theme. */
-  background?: 'farm' | 'current';
+  /** Omitted means the preset's original art; never mutates the saved app theme. */
+  background?: 'farm' | 'ruins' | 'current';
 };
 
 export const CURRENT_CONTROLS: PadPreset = { version: 1, id: 'current', size: 'standard' };
@@ -48,7 +50,8 @@ export function normalizePadPreset(raw: unknown): PadPreset {
   if (!raw || typeof raw !== 'object') return CURRENT_CONTROLS;
   const p = raw as Record<string, unknown>;
   if (p.version === 1 && p.id === 'vampire' && (p.hand === 'left' || p.hand === 'right')) {
-    return { version: 1, id: 'vampire', size: 'larger', hand: p.hand };
+    return { version: 1, id: 'vampire', size: 'larger', hand: p.hand,
+      ...(p.background === 'current' || p.background === 'ruins' ? { background: p.background } : {}) };
   }
   if (p.version !== 1 || p.id !== 'stardew' || (p.size !== 'standard' && p.size !== 'larger')) {
     return CURRENT_CONTROLS;

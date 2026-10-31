@@ -82,7 +82,10 @@ export function PadPresetSheet({ kind, box, onClose, onApply }: {
                 {button('Left hand', () => setDraft({ ...draft, hand: 'left' }), draft.hand === 'left', saving)}
                 {button('Right hand', () => setDraft({ ...draft, hand: 'right' }), draft.hand === 'right', saving)}
               </View>
-              {body('A selects, B goes back, and Start pauses using the default Xbox bindings. Custom Steam Input mappings may differ. Uses your existing controller theme. Tap Rotate in PAD for this layout without turning your phone.')}
+              <Text style={{ color: t.text, fontFamily: mono }}>Background</Text>
+              {button('Moonlit ruins', () => setDraft({ ...draft, background: 'ruins' }), draft.background !== 'current', saving)}
+              {button('My usual background', () => setDraft({ ...draft, background: 'current' }), draft.background === 'current', saving)}
+              {body('A selects, B goes back, and Start pauses using the default Xbox bindings. Custom Steam Input mappings may differ. Keeps your controller colors; choose the original moonlit ruins or your usual background. Tap Rotate in PAD for this layout without turning your phone.')}
             </>}
             {draft.id === 'stardew' && <>
               <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -96,7 +99,7 @@ export function PadPresetSheet({ kind, box, onClose, onApply }: {
               {body('Uses the game’s default Xbox bindings. Custom Steam Input layouts can change these actions. Move also navigates menus. Choose Current controls for the right stick, journal, and LB/RB toolbar-row controls.')}
             </>}
             <Preview preset={draft} />
-            {body('Landscape preview · controls are inactive. The farm background applies only to this preset. Your button colors, portrait PAD, gestures and saved theme stay as they are. Current controls restores your usual layout.')}
+            {body('Landscape preview · controls are inactive. Preset artwork applies only to this full-screen layout. Your button colors, portrait PAD, gestures and saved theme stay as they are. Current controls restores your usual layout.')}
             {!!error && <Text accessibilityRole="alert" style={{ color: t.red }}>{error}</Text>}
             {button(saving ? 'Applying…' : 'Apply', () => {
               setSaving(true); setError('');
