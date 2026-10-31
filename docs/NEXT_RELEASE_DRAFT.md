@@ -39,7 +39,7 @@ confirmation and fresh idle manifests are required; no direct file deletion.
 | --- | --- | --- |
 | App source | exact feature head above, green CI | review the full diff against main |
 | Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | shared-output LT hold/release passed on hardware; remaining lifecycle/per-box isolation and final binary smoke |
-| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery/copy/save/apply, physical A-to-LT, normal release, PREFS release and background/resume passed; cold restart/isolation and final store smoke pending |
+| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery/copy/save/apply, physical A-to-LT, normal release, PREFS release and background/resume passed; cold restart and per-box selection isolation passed; final store smoke pending |
 | Google Play | prior code128 belongs to 2.9.80 | allocate a fresh code after checking Play; build and verify AAB/maps |
 | Linux agent | source still declares2.9.135 with new Decky/uninstall changes | assign fresh version, test exact candidate and signed assets |
 | Windows agent | source still declares0.4.14-win with uninstall addition | reconcile0.4.15-rc1 signing work separately; allocate version and test exact installer |
@@ -94,3 +94,16 @@ press/release after return. The first attempt lost its recording during a host
 reboot and was not counted as instrumented evidence. Android Direct 63 also
 passed independent releases of two controls mapped to the same trigger.
 These results do not certify the remaining acceptance gates or final binaries.
+
+## Persistence and integration checkpoint — 2026-10-31
+
+iPhone preview 288 retained its selected custom mapping after an app-switcher
+force-close and fresh launch. A second saved box kept Current controls; returning
+to the original box restored the custom selection. The original Vampire
+Survivors Right-hand/Moonlit ruins preset was restored after the check.
+
+TypeScript and all 866 app/input tests passed on the candidate. Steam uninstall
+auth/refusal tests, core dependency checks and protocol parity also passed.
+Required GitHub checks passed on `b566e71`. These are source/preview checks;
+final versioned release artifacts and real Steam uninstall acceptance remain
+pending. No production version or release channel was changed.
