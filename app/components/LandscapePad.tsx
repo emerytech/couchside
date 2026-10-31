@@ -1,3 +1,7 @@
+import { createCustomPadInputs, type CustomPad, type CustomOutput } from '@/lib/customPad';
+import type { PadPreset } from '@/lib/padPresets';
+import { isGamePadId } from '@/lib/gamePadCatalog';
+import { GAME_PADS, type GamePadId } from '@/lib/gamePadCatalog';
 /**
  * The landscape gamepad — a real controller, full screen, no app chrome.
  *
@@ -12,7 +16,7 @@
  * Nothing in this file may size a control off the window width, read insets, or
  * use a percentage string. It gets a computed layout and draws it.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useLayoutEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
@@ -32,7 +36,7 @@ import {
   type Rect,
 } from '@/lib/padLayout';
 import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
-import { STARDEW_ACTIONS, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
+import { STARDEW_ACTIONS, VAMPIRE_ACTIONS, VAMPIRE_BACKDROP, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
 import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
@@ -91,6 +95,8 @@ const inner = (n: PadNode) => ({
   height: n.rect.h,
 });
 
+const CustomLabels = createContext<CustomPad | undefined>(undefined);
+
 // ---------- A plain momentary button ----------
 
 function PadKey({
@@ -102,6 +108,8 @@ function PadKey({
   const t = useControllerTheme();
   const touch = usePadTouchVisual();
   const Container = touch ? View : Pressable;
+  const customLabel = useContext(CustomLabels)?.bindings[node.id as CustomOutput];
+  if (customLabel) { label = customLabel.output.toUpperCase(); actionLabel = customLabel.label || undefined; }
   const actionKey = node.id === 'steam' ? 'guide' : node.id;
   const [localHeld, setHeld] = useState(false);
   const held = touch ? touch.visual.held.includes(`${node.id === 'lt' || node.id === 'rt' ? 'trigger' : 'button'}:${actionKey}`) : localHeld;
@@ -320,6 +328,7 @@ function Dpad({
 }: {
   node: PadNode; u: number; btn: (k: ButtonKey) => Down;
 }) {
+  const custom = useContext(CustomLabels);
   const t = useControllerTheme();
   // dpadZone returns 'du' | 'dd' | 'dl' | 'dr' | 'a' — every one of them a
   // ButtonKey, so nothing needs widening on the way to the wire.
@@ -415,7 +424,7 @@ function Dpad({
             alignItems: 'center', justifyContent: 'center',
           }}>
           <Text style={{ color: t.green, fontFamily: mono, fontWeight: '700', fontSize: 3.4 * u }}>
-            OK
+            {custom?.bindings.a?.output.toUpperCase() ?? 'OK'}
           </Text>
         </View>
       </View>
@@ -518,6 +527,7 @@ function FaceCluster({
 }: {
   nodes: PadNode[]; u: number; btn: (k: ButtonKey) => Down; colors: Record<FaceId, string>;
 }) {
+  const custom = useContext(CustomLabels);
   const t = useControllerTheme();
   const touch = usePadTouchVisual();
   const [zone, setZone] = useState<FaceId | null>(null);
@@ -611,8 +621,9 @@ function FaceCluster({
                 fontWeight: '700',
                 fontSize: 4.4 * u,
               }}>
-              {id.toUpperCase()}
+              {(custom?.bindings[id]?.output ?? id).toUpperCase()}
             </Text>
+            {custom?.bindings[id]?.label && <Text numberOfLines={2} style={{ color: t.text, fontSize: 1.8 * u, textAlign: 'center' }}>{custom.bindings[id]!.label}</Text>}
           </View>
         );
       })}
@@ -837,21 +848,21 @@ const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
-  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
-}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current' }) {
+  variant = 'stardew', background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'ruins' | 'themed' | 'current'; variant?: 'stardew' | 'vampire' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
   const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
-  const controls = useMemo(() => padTouchControls(layout, 'stardew'), [layout]);
+  const controls = useMemo(() => padTouchControls(layout, variant), [layout, variant]);
   const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
   const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
-    <View style={StyleSheet.absoluteFill} testID="stardew-pad">
-      <GameBackdrop backdrop={background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
+    <View style={StyleSheet.absoluteFill} testID={`${variant}-pad`}>
+      <GameBackdrop backdrop={background === 'current' ? t.backdrop : variant === 'vampire' ? VAMPIRE_BACKDROP : STARDEW_BACKDROP} landscape fitContainer />
       <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       <FloatingStick node={byId.move} u={u} label="Move" zoneOutline
         onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
-      {STARDEW_ACTIONS.map((action) => (
+      {(variant === 'vampire' ? VAMPIRE_ACTIONS : STARDEW_ACTIONS).map((action) => (
         <PadKey key={action.key} node={byId[action.key]} label={action.glyph} actionLabel={action.label}
           u={u} fontSize={(action.key === 'x' || action.key === 'a' ? 4.5 : 3.2) * u}
           color={action.key in colors ? colors[action.key as keyof typeof colors] : undefined}
@@ -859,7 +870,7 @@ export function StardewPad({
       ))}
       </Surface>
       <Text pointerEvents="none" style={{ position: 'absolute', left: byId.move.rect.x,
-        top: byId.move.rect.y - 6 * u, width: byId.move.rect.w, textAlign: 'center',
+        top: byId.move.rect.y + (variant === 'vampire' ? 2 : -6) * u, width: byId.move.rect.w, textAlign: 'center',
         color: t.textDim, fontFamily: mono, fontSize: 3.4 * u }}>MOVE / MENUS</Text>
       <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
         color={locked ? t.amber : undefined} onPress={onToggleLock} checked={locked}
@@ -870,6 +881,42 @@ export function StardewPad({
         accessibilityLabel="Open pad settings" />
     </View>
   );
+}
+
+/** Catalog presets reuse the same native multi-touch surface and release gate. */
+export function CatalogPad({ presetId, background, layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { presetId: GamePadId; background?: string }) {
+  const t = useControllerTheme();
+  const def = GAME_PADS[presetId];
+  const { byId, u } = layout;
+  const controls = useMemo(() => padTouchControls(layout, presetId), [layout, presetId]);
+  const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
+  const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
+  return <View style={StyleSheet.absoluteFill} testID={`${presetId}-pad`}>
+    <GameBackdrop backdrop={background === 'current' ? t.backdrop : { key: `${presetId}-pad`, glow: def.glow }} landscape fitContainer />
+    <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
+      <FloatingStick node={byId.move} u={u} label={def.layout === 'one' && presetId !== 'brotato' ? 'Navigate' : 'Move'} zoneOutline onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
+      {def.layout === 'twin' && <FloatingStick node={byId.rstick} u={u} label={presetId === 'isaac' ? 'Fire' : presetId === 'dredge' ? 'Camera' : presetId === 'dave' ? 'Look / Aim' : 'Aim'} zoneOutline onMove={stickMove('r')} onRelease={stickRelease('r')} onClick={NOOP} />}
+      {def.actions.map(a => <PadKey key={a.key} node={byId[a.key]} label={a.glyph} actionLabel={a.label} u={u} fontSize={3 * u}
+        {...(a.kind === 'trigger' ? trig(a.key) : btn(a.key))} />)}
+    </Surface>
+    <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'} onPress={onToggleLock} checked={locked} accessibilityLabel="Toggle orientation lock" />
+    <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit} accessibilityLabel="Exit full-screen controller" />
+    <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings} accessibilityLabel="Open pad settings" />
+  </View>;
+}
+
+/** Mapping is scoped to this full-screen surface, never portrait or other input modes. */
+export function CustomPresetPad({ preset, ...props }: LandscapePadProps & { preset: PadPreset }) {
+  const signature = JSON.stringify(preset.custom);
+  const mapping = useMemo(() => createCustomPadInputs(JSON.parse(signature) as CustomPad, props), [signature, props.btn, props.trig]);
+  useLayoutEffect(() => { mapping.activate(); return () => mapping.dispose(); }, [mapping]);
+  const inputs = { ...props, btn: mapping.btn, trig: mapping.trig };
+  return <CustomLabels.Provider value={preset.custom}>
+    {isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} {...inputs} />
+      : preset.id === 'current' ? <LandscapePad {...inputs} />
+      : <StardewPad variant={preset.id} background={preset.background} {...inputs} />}
+  </CustomLabels.Provider>;
 }
 
 /**

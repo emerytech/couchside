@@ -1046,6 +1046,46 @@ def test_uninstall_and_reload_jobs():
             fl.stop()
 
 
+def test_loader_version_response():
+    """Exercise Decky's real release-object shape through the bounded socket.
+
+    Upstream `updatable` is capability, not an available-update verdict. An
+    equal tag must not offer a reinstall as an update; malformed/missing tags
+    stay unknown. Cache reads must still require the management opt-in.
+    """
+    print("test_loader_version_response")
+    cases = [
+        ("release object, equal", "v3.3.1", {"tag_name": "v3.3.1", "assets": []}, True, "v3.3.1", False),
+        ("release object, different", "v3.3.0", {"tag_name": "v3.3.1"}, True, "v3.3.1", True),
+        ("legacy string", "v3.2.8", "v3.3.1", True, "v3.3.1", True),
+        ("legacy equal", "v3.3.1", "v3.3.1", True, "v3.3.1", False),
+        ("unsupported update", "dev", {"tag_name": "v3.3.1"}, False, "v3.3.1", False),
+        ("remote not ready", "v3.3.1", None, True, None, None),
+        ("malformed tag", "v3.3.1", {"tag_name": ["v3.3.1"]}, True, None, None),
+        ("empty tag", "v3.3.1", {"tag_name": "  "}, True, None, None),
+        ("missing current", None, {"tag_name": "v3.3.1"}, True, "v3.3.1", None),
+        ("malformed capability", "v3.3.0", {"tag_name": "v3.3.1"}, "true", "v3.3.1", None),
+    ]
+    for label, current, remote, capability, tag, available in cases:
+        payload = {"current": current, "remote": remote, "updatable": capability}
+        fl = FakeLoader({"updater/get_version_info": lambda l, c, m: [reply(m, payload)]})
+        try:
+            with Env(fl):
+                code, body = cs.decky_loader_check()
+                val = body.get("loader_update", {})
+                check(label, (code, val.get("current"), val.get("remote"), val.get("updatable")),
+                      (200, current, tag, available))
+                check(label + " retains channel/check time", ("channel" in val, isinstance(val.get("checked_at"), int)), (True, True))
+                before = SOCKETS["ws"]
+                check(label + " cached", cs.decky_loader_check()[1].get("cached"), True)
+                with Patch(_decky_allowed=lambda: False):
+                    check(label + " cached still opt-in gated", cs.decky_loader_check()[0], 403)
+                check(label + " no extra socket for cache/refusal", SOCKETS["ws"], before)
+                check(label + " only read-only version route", [c[0] for c in fl.calls if c[0] != "ack"], ["updater/get_version_info"])
+        finally:
+            fl.stop()
+
+
 def test_ws_client_bounds():
     """`_DeckyWS` is the agent's own bounded client because a user-level
     impostor on a free port 1337 could otherwise pin the job thread or OOM the
@@ -1445,6 +1485,7 @@ if __name__ == "__main__":
                test_install_job_happy_path,
                test_install_job_failures,
                test_uninstall_and_reload_jobs,
+               test_loader_version_response,
                test_ws_client_bounds,
                test_busy_both_directions,
                test_persist_and_resume,

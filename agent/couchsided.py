@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.135"
+VERSION = "2.9.136"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -12911,6 +12911,69 @@ def list_launchers():
     return customs + discover_steam_games() + discover_steam_shortcuts()
 
 
+
+def _steam_uninstall_ready(appid):
+    """Only a fresh, idle, fully installed manifest can open the uninstall UI.
+
+    StateFlags must be exactly FullyInstalled (4); running, updating, missing,
+    malformed or unfamiliar states fail closed. Steam owns the actual removal.
+    """
+    if not isinstance(appid, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", appid):
+        return False
+    try:
+        root = _steam_root()
+        if root is None:
+            return False
+        for library in _steam_libraries(root):
+            path = os.path.join(library, "appmanifest_%s.acf" % appid)
+            if os.path.commonpath([os.path.realpath(path), os.path.realpath(library)]) != os.path.realpath(library):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read(65537)
+                if len(text) > 65536:
+                    continue
+                fields = _parse_acf(text, keys=("appid", "name", "StateFlags"))
+                if fields.get("appid") == appid and fields.get("name") and not _is_steam_tool(appid, fields["name"]):
+                    return fields.get("StateFlags") == "4"
+            except (OSError, UnicodeError):
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _with_uninstall_offers(games, mock=False):
+    """Add per-item operation metadata; never mutate cached discovery records."""
+    return [dict(g, uninstall=("steam" if mock or _steam_uninstall_ready(str(g.get("appid", ""))) else "busy"))
+            if g.get("kind") == "steam" and re.fullmatch(r"steam:[1-9][0-9]{0,9}", g.get("id", "")) else g
+            for g in games]
+
+
+def steam_uninstall_request(body, mock=False):
+    """Authenticated caller requests Steam's UI, not direct file deletion."""
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        return 400, {"ok": False, "error": "confirmation required"}
+    lid = body.get("id")
+    if not isinstance(lid, str) or not re.fullmatch(r"steam:[1-9][0-9]{0,9}", lid):
+        return 400, {"ok": False, "error": "invalid Steam game id"}
+    games = mock_launchers() if mock else discover_steam_games()
+    game = next((g for g in games if g.get("id") == lid and g.get("kind") == "steam"), None)
+    if game is None:
+        return 404, {"ok": False, "error": "game is not installed on this box"}
+    appid = lid.split(":", 1)[1]
+    if not mock and not _steam_uninstall_ready(appid):
+        return 409, {"ok": False, "error": "game is running, busy, or its installed state could not be verified"}
+    argv = ["steam", "steam://uninstall/" + appid] if mock else _launcher_argv(lid)
+    if not argv:
+        return 409, {"ok": False, "error": "Steam is unavailable"}
+    argv = [argv[0], "steam://uninstall/" + appid]
+    result = mock_launch(argv) if mock else real_launch(argv)
+    if not result.get("ok"):
+        return 502, {"ok": False, "error": "could not open Steam uninstall"}
+    return 200, {"ok": True, "state": "requested", "id": lid}
+
+
 def _launcher_argv(launcher_id):
     """Resolve a KNOWN launcher id to its argv, or None if unknown.
 
@@ -14616,19 +14679,33 @@ class _DeckyNoRedirect(urllib.request.HTTPRedirectHandler):
 _DECKY_NO_REDIRECT_OPENER = urllib.request.build_opener(_DeckyNoRedirect())
 
 
+class _DeckyStoreUpgradeRequired(Exception):
+    """The official catalogue rejected the installed loader (HTTP 426)."""
+
+
 def _decky_fetch_bounded(url, cap, timeout):
     """GET `url` through the no-redirect opener, returning at most `cap` bytes
     or None (any error, any 3xx, or a body over the cap). The URL is always
-    agent-built or host-pinned by the caller. Never raises."""
+    agent-built or host-pinned by the caller. Only catalogue HTTP 426 raises
+    _DeckyStoreUpgradeRequired so the app can distinguish a required upgrade."""
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "couchside-agent/%s" % VERSION,
-            "Accept": "*/*",
-        })
+        headers = {"User-Agent": "couchside-agent/%s" % VERSION, "Accept": "*/*"}
+        if url == _DECKY_STORE_URL:
+            # Match Decky's catalogue negotiation. Do not invent a current
+            # version or open its single-client WebSocket just to browse.
+            cached = _decky_loader_update_cached() or {}
+            version = cached.get("current") or _decky_recorded_version()
+            if isinstance(version, str) and _DECKY_TAG_RE.fullmatch(version):
+                headers["X-Decky-Version"] = version
+        req = urllib.request.Request(url, headers=headers)
         with _DECKY_NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
             if r.status != 200:
                 return None
             data = r.read(cap + 1)
+    except urllib.error.HTTPError as exc:
+        if url == _DECKY_STORE_URL and exc.code == 426:
+            raise _DeckyStoreUpgradeRequired() from None
+        return None
     except Exception:
         return None
     if len(data) > cap:
@@ -14770,7 +14847,9 @@ def _decky_store_snapshot():
                 "plugins": _DECKY_STORE["plugins"],
                 "fetched_at": _DECKY_STORE["fetched_at"],
                 "stale": _DECKY_STORE["stale"], "fetching": _DECKY_STORE["fetching"],
-                "error": _DECKY_STORE["error"]}
+                "error": _DECKY_STORE["error"],
+                "error_code": ("loader_update_required" if _DECKY_STORE["error"] ==
+                               "Update Decky Loader to use the plugin store." else None)}
 
 
 def _decky_plugin_update(entry, flags, store):
@@ -14953,6 +15032,10 @@ def _decky_store_fetch():
                 _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
                 _DECKY_STORE["error"] = ("store unreachable" if data is None
                                          else "store answered nothing usable")
+    except _DeckyStoreUpgradeRequired:
+        with _DECKY_STORE_LOCK:
+            _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
+            _DECKY_STORE["error"] = "Update Decky Loader to use the plugin store."
     except Exception as e:
         with _DECKY_STORE_LOCK:
             _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
@@ -15018,7 +15101,7 @@ def decky_store_payload():
     if store["fetched_at"] is None:
         return {"available": False, "fetching": bool(store["fetching"]), "count": 0,
                 "fetched_at": None, "stale": False, "plugins": [],
-                "error": store["error"]}
+                "error": store["error"], "error_code": store["error_code"]}
     installed = {}
     have_listing = False
     if _decky_loader_installed():
@@ -15042,7 +15125,7 @@ def decky_store_payload():
         })
     return {"available": True, "fetching": bool(store["fetching"]), "count": len(rows),
             "fetched_at": store["fetched_at"], "stale": bool(store["stale"]),
-            "plugins": rows, "error": store["error"]}
+            "plugins": rows, "error": store["error"], "error_code": store["error_code"]}
 
 
 def decky_store_refresh():
@@ -15935,6 +16018,8 @@ def decky_plugin_install(body):
         if pre:
             return pre
         store = _decky_store_snapshot()
+        if store["error_code"] == "loader_update_required":
+            return 409, {"ok": False, "error": "loader_update_required"}
         if not store["fetched_at"]:
             return 503, {"ok": False, "error": "store_unavailable",
                          "fetching": bool(store["fetching"])}
@@ -16047,9 +16132,19 @@ def decky_loader_check():
             return 503, {"ok": False, "error": "loader_down", "repair": True,
                          "detail": "unexpected version info"}
         cur, rem, upd = res.get("current"), res.get("remote"), res.get("updatable")
-        val = {"current": str(cur)[:32] if isinstance(cur, str) else None,
-               "remote": str(rem)[:32] if isinstance(rem, str) else None,
-               "updatable": bool(upd) if isinstance(upd, bool) else None,
+        # Decky 3.3.1 returns a GitHub release object, not a version string.
+        # Its `updatable` means the loader supports updates, even when the
+        # installed tag matches. Keep our existing version/availability API
+        # and never expose the release assets or treat missing tags as updates.
+        if isinstance(rem, dict):
+            rem = rem.get("tag_name")
+        cur = cur.strip()[:32] if isinstance(cur, str) else None
+        rem = rem.strip()[:32] if isinstance(rem, str) else None
+        cur, rem = cur or None, rem or None
+        available = (upd and cur != rem) if isinstance(upd, bool) and cur and rem else None
+        val = {"current": cur,
+               "remote": rem,
+               "updatable": available,
                "checked_at": int(time.time()), "channel": _decky_channel()}
         with _DECKY_CHECK_LOCK:
             _DECKY_CHECK["val"] = val
@@ -16738,8 +16833,39 @@ _STEAM_THEME_CATALOG = (
      "description": "A deep blue console ribbon with large game tiles and selected-game stats."},
 )
 _STEAM_THEME_DEFAULT = {"version": 1, "installed": False, "enabled": False,
-                        "theme": "couchside", "accent": "teal", "motion": True, "studio": None}
+                        "theme": "couchside", "accent": "teal", "motion": True, "studio": None, "appearance": None, "appearance_packs": []}
 _STEAM_THEME_MOCK = dict(_STEAM_THEME_DEFAULT, installed=True)
+
+
+def _appearance_pack_validate(value):
+    """Portable data only. No CSS, selectors, paths, URLs or executable values."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"version", "name", "colors", "backgrounds"}:
+        raise ValueError("invalid appearance pack fields")
+    if type(value["version"]) is not int or value["version"] != 1:
+        raise ValueError("unsupported appearance pack version")
+    name = value["name"]
+    if not isinstance(name, str) or not name.strip() or len(name) > 60 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("invalid appearance pack name")
+    colors = value["colors"]
+    keys = {"background", "surface", "text", "muted", "accent", "focus"}
+    def color(v):
+        return isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v) is not None
+    if not isinstance(colors, dict) or set(colors) != keys or not all(color(v) for v in colors.values()):
+        raise ValueError("appearance colors must be six-digit hex values")
+    backgrounds = value["backgrounds"]
+    if not isinstance(backgrounds, dict) or set(backgrounds) - {"home", "library", "settings"}:
+        raise ValueError("invalid appearance backgrounds")
+    for gradient in backgrounds.values():
+        if not isinstance(gradient, dict) or set(gradient) != {"angle", "stops"}:
+            raise ValueError("invalid appearance gradient")
+        if type(gradient["angle"]) is not int or not 0 <= gradient["angle"] <= 360:
+            raise ValueError("invalid gradient angle")
+        stops = gradient["stops"]
+        if not isinstance(stops, list) or not 2 <= len(stops) <= 4 or not all(color(v) for v in stops):
+            raise ValueError("invalid gradient stops")
+    return json.loads(json.dumps(dict(value, name=name.strip())))
 
 
 def _theme_document_validate(value):
@@ -16780,6 +16906,13 @@ def _steam_theme_validate(data):
         raise ValueError("unknown accent")
     if result["enabled"] and not result["installed"]:
         raise ValueError("enable the themes add-on first")
+    result["appearance"] = _appearance_pack_validate(result["appearance"])
+    packs = result["appearance_packs"]
+    if not isinstance(packs, list) or len(packs) > 8 or any(p is None for p in packs):
+        raise ValueError("at most eight saved appearance packs")
+    result["appearance_packs"] = [_appearance_pack_validate(p) for p in packs]
+    if len({p["name"] for p in result["appearance_packs"]}) != len(packs):
+        raise ValueError("duplicate appearance pack name")
     result["studio"] = _theme_document_validate(result["studio"])
     if result["studio"] and any(result[k] != result["studio"][doc] for k, doc in (("theme", "layout"), ("accent", "accent"), ("motion", "motion"))):
         raise ValueError("theme document must match applied settings")
@@ -16793,8 +16926,8 @@ def _steam_theme_read():
         with os.fdopen(fd, "r") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 return dict(_STEAM_THEME_DEFAULT)
-            raw = f.read(4097)
-        if len(raw) > 4096:
+            raw = f.read(32769)
+        if len(raw) > 32768:
             return dict(_STEAM_THEME_DEFAULT)
         return _steam_theme_validate(json.loads(raw))
     except (OSError, ValueError, TypeError):
@@ -16826,6 +16959,7 @@ def _steam_theme_conflict():
 def steam_themes_state(mock=False):
     companion = False
     studio_ready = False
+    appearance_ready = False
     supported = {"couchside", "orbit", "shelf"}
     if not mock:
         try:
@@ -16833,6 +16967,7 @@ def steam_themes_state(mock=False):
                 "~/homebrew/plugins/Couchside/defaults/themes-capability.json"))
             companion = isinstance(cap, dict) and cap.get("api") == 1
             studio_ready = companion and cap.get("studio") == 1
+            appearance_ready = companion and cap.get("appearance") == 1
             if companion and isinstance(cap.get("themes"), list):
                 supported = {item for item in cap["themes"] if isinstance(item, str)}
         except (OSError, ValueError, TypeError):
@@ -16841,6 +16976,7 @@ def steam_themes_state(mock=False):
             "themes": [theme for theme in _STEAM_THEME_CATALOG if mock or theme["id"] in supported],
             "companion_ready": bool(mock or companion),
             "studio_ready": bool(mock or studio_ready),
+            "appearance_ready": bool(mock or appearance_ready),
             "requires": "Decky Loader and the Couchside companion"}
 
 
@@ -16854,10 +16990,18 @@ def steam_themes_save(data, mock=False):
         if "studio" not in data and any(k in data for k in ("theme", "accent", "motion")):
             merged["studio"] = None
         value = _steam_theme_validate(merged)
+        if "appearance" in data and value["appearance"] is not None:
+            pack = value["appearance"]
+            saved = [p for p in value["appearance_packs"] if p["name"] != pack["name"]]
+            if len(saved) >= 8:
+                raise ValueError("eight packs saved; replace one by using its name")
+            value["appearance_packs"] = saved + [pack]
         conflict = None if mock or not value["enabled"] else _steam_theme_conflict()
         if conflict:
             raise ValueError(conflict)
         state = steam_themes_state(mock)
+        if value["enabled"] and value["appearance"] and not state["appearance_ready"]:
+            raise ValueError("update the Couchside companion to use appearance packs")
         if value["enabled"] and value["studio"] and not state["studio_ready"]:
             raise ValueError("update the Couchside companion to use Theme Studio")
         if value["enabled"] and (not state["companion_ready"] or value["theme"] not in {item["id"] for item in state["themes"]}):
@@ -16870,7 +17014,13 @@ def steam_themes_save(data, mock=False):
             fd, tmp = tempfile.mkstemp(prefix=".steam-themes-", dir=directory)
             try:
                 with os.fdopen(fd, "w") as f:
-                    json.dump(value, f)
+                    # Older companions reject unknown file keys. Do not change their
+                    # on-disk schema until a pack has deliberately been saved.
+                    stored = dict(value)
+                    if stored["appearance"] is None and not stored["appearance_packs"]:
+                        stored.pop("appearance")
+                        stored.pop("appearance_packs")
+                    json.dump(stored, f)
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(tmp, _STEAM_THEME_FILE)
@@ -28245,8 +28395,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/launchers":
                 # create_enabled mirrors ALLOW_APP_LAUNCHERS so the app can
                 # show/hide its "add launcher" control (like update apply_enabled).
-                self._send(200, {"launchers": (mock_launchers() if self.mock
-                                               else list_launchers()),
+                self._send(200, {"launchers": _with_uninstall_offers(mock_launchers() if self.mock
+                                               else list_launchers(), self.mock),
                                  "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
                            started)
             elif path == "/api/steam/installable":
@@ -29809,6 +29959,15 @@ class Handler(BaseHTTPRequestHandler):
                            "stderr": "", "duration_ms": 1}
                           if self.mock else _wol_send(mac.strip()))
                 self._send(200, result, started)
+                return
+
+            if path == "/api/steam/uninstall":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                except (ValueError, UnicodeError):
+                    req = None
+                status, result = steam_uninstall_request(req, self.mock)
+                self._send(status, result, started)
                 return
 
             # POST /api/launchers: add a custom launcher from a JSON body. Gated

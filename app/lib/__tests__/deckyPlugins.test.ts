@@ -17,7 +17,7 @@ import {
   apiErrorHint, canRunLoaderOp, compareSemver, DECKY_INSTALL_ALERT, DECKY_ROOT_FROM_HOME,
   deckyHint, describeLoaderState, installConfirmCopy, installLabel, installNamesBothVersions,
   installType, isJobActive, jobCopy, loaderOpCopy, pluginUpdate, runResultCopy, searchStore,
-  semverTuple, sortStore, updateSet,
+  semverTuple, sortStore, updateSet, storeLoadMessage, visibleJobNote,
 } from '../deckyPlugins.ts';
 import type { DeckyJob, DeckyStoreEntry } from '../api';
 
@@ -248,7 +248,7 @@ test('job banner: running / unknown=Checking / done copy by steam_ui_up / failed
   assert.ok(jobCopy(job({}), false).line.startsWith('Installing X 1.0.0'));
   assert.ok(jobCopy(job({ done: true, outcome: 'unknown' }), false).line.startsWith('Checking'));
   const up = jobCopy(job({ done: true, outcome: 'done', ok: true }), true);
-  assert.ok(up.line.includes('reload Decky to see it in the Quick Access Menu'));
+  assert.ok(up.line.includes('restart Decky to see it in the Quick Access Menu'));
   assert.equal(up.offerReload, true);
   const down = jobCopy(job({ done: true, outcome: 'done', ok: true }), false);
   assert.ok(down.line.includes('next time Steam starts'));
@@ -280,4 +280,26 @@ test('the install alert leads with the root-from-home sentence and names GitHub,
   assert.ok(DECKY_INSTALL_ALERT.includes('GitHub'));
   assert.ok(DECKY_INSTALL_ALERT.includes('no checksum'));
   assert.ok(DECKY_INSTALL_ALERT.includes('Steam must restart'));
+});
+
+
+test('store loading distinguishes transport errors, opt-in, upgrade and old agents', () => {
+  assert.equal(storeLoadMessage(null, false, true, true)?.retry, true);
+  assert.match(storeLoadMessage(null, false, false, true)!.text, /newer Couchside/);
+  assert.equal(storeLoadMessage(null, true, false, true)?.spinner, true);
+  const cold = { available: false, fetching: false };
+  assert.match(storeLoadMessage(cold, false, false, false)!.text, /allow-decky/);
+  assert.equal(storeLoadMessage({ ...cold, fetching: true }, false, false, true)?.spinner, true);
+  assert.match(storeLoadMessage({ ...cold, error_code: 'loader_update_required' }, false, false, true)!.text, /Update Decky Loader/);
+  assert.equal(storeLoadMessage({ ...cold, available: true, stale: true }, false, true, true), null);
+});
+
+test('only a newer successful running probe clears a stopped operation notice', () => {
+  const note = { restartAction: 'restart_decky', at: 100, msg: 'Stopped' };
+  assert.equal(visibleJobNote(note, 'running', false, 99), note);
+  assert.equal(visibleJobNote(note, 'running', true, 101), note);
+  assert.equal(visibleJobNote(note, 'installed_stopped', false, 101), note);
+  assert.equal(visibleJobNote(note, 'running', false, 101), null);
+  const failure = { msg: 'Could not install', at: 100 };
+  assert.equal(visibleJobNote(failure, 'running', false, 101), failure);
 });

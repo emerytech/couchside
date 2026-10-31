@@ -1,3 +1,5 @@
+import { AppearancePacks } from '@/components/AppearancePacks';
+import { hostKey } from '@/lib/api';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -83,6 +85,7 @@ export default function ThemeStudio() {
     <Text style={{ color: t.text, fontSize: 26, fontWeight: '800' }}>Create your own theme</Text>
     <Text style={{ color: t.textDim }}>Save a draft here, export it, or apply it to {box?.name || 'a connected box'}. Nothing changes on the TV until you choose Apply.</Text>
     {!!message && <Text accessibilityLiveRegion="polite" style={{ color: t.text }}>{message}</Text>}
+    {box && <AppearancePacks key={`${box.id}|${hostKey(connFromBox(box))}`} settings={connFromBox(box)} />}
     <Text style={{ color: t.text, fontWeight: '700' }}>Your drafts</Text>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{button('New theme', () => { setTheme(newTheme()); setId(null); setMessage(''); })}{drafts.map(d => button(d.theme.name, () => { setId(d.id); setTheme(d.theme); }, id === d.id))}</View>
     <TextInput accessibilityLabel="Theme name" placeholder="Theme name" value={theme.name} maxLength={60} editable={!busy} onChangeText={name => update({ name })} style={{ color: t.text, backgroundColor: t.card, padding: 14, borderRadius: 12 }} />
