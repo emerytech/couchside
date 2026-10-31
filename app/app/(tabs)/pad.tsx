@@ -1,3 +1,4 @@
+import { portraitPadMetrics } from '@/lib/portraitPad';
 import { CustomPresetPad } from '@/components/LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
 /**
@@ -158,17 +159,19 @@ function PadButton({ label, onDown, onUp, style, color, fontSize }: PadButtonPro
 
 const STICK_SIZE = 132;
 const NUB_SIZE = 56;
-const STICK_RADIUS = (STICK_SIZE - NUB_SIZE) / 2;
 
 type StickProps = {
   side: StickKey;
+  size?: number;
   onMove: (x: number, y: number) => void;
   onRelease: () => void;
 };
 
-function Stick({ side, onMove, onRelease }: StickProps) {
+function Stick({ side, size = STICK_SIZE, onMove, onRelease }: StickProps) {
+  const radius = (size - NUB_SIZE) / 2;
+  const radiusRef = useRef(radius); radiusRef.current = radius;
   const touch = useMeasuredPadControl(`portrait:${side}`, hit => ({ id: `portrait:${side}`, hit, kind: 'stick', stick: side,
-    value(dx, dy) { const len = Math.hypot(dx, dy), scale = len > STICK_RADIUS ? STICK_RADIUS / len : 1; return { x: dx * scale / STICK_RADIUS, y: dy * scale / STICK_RADIUS }; } }));
+    value(dx, dy) { const len = Math.hypot(dx, dy), scale = len > radiusRef.current ? radiusRef.current / len : 1; return { x: dx * scale / radiusRef.current, y: dy * scale / radiusRef.current }; } }));
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const cb = useRef({ onMove, onRelease });
   cb.current = { onMove, onRelease };
@@ -184,13 +187,13 @@ function Stick({ side, onMove, onRelease }: StickProps) {
         let dx = g.dx;
         let dy = g.dy;
         const len = Math.hypot(dx, dy);
-        if (len > STICK_RADIUS) {
-          dx = (dx / len) * STICK_RADIUS;
-          dy = (dy / len) * STICK_RADIUS;
+        if (len > radiusRef.current) {
+          dx = (dx / len) * radiusRef.current;
+          dy = (dy / len) * radiusRef.current;
         }
         pan.setValue({ x: dx, y: dy });
         // +y down in screen coords matches the protocol directly.
-        cb.current.onMove(dx / STICK_RADIUS, dy / STICK_RADIUS);
+        cb.current.onMove(dx / radiusRef.current, dy / radiusRef.current);
       },
       onPanResponderRelease: () => {
         Animated.spring(pan, {
@@ -217,20 +220,20 @@ function Stick({ side, onMove, onRelease }: StickProps) {
     if (!nativeTouch) return;
     pan.stopAnimation();
     if (finger) {
-      const len = Math.hypot(finger.dx, finger.dy), scale = len > STICK_RADIUS ? STICK_RADIUS / len : 1;
+      const len = Math.hypot(finger.dx, finger.dy), scale = len > radiusRef.current ? radiusRef.current / len : 1;
       pan.setValue({ x: finger.dx * scale, y: finger.dy * scale });
     } else Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false, friction: 6 }).start();
     return () => { pan.stopAnimation(); };
-  }, [nativeTouch, finger?.dx, finger?.dy, pan]);
+  }, [nativeTouch, finger?.dx, finger?.dy, pan, radius]);
   const styles = useThemedStyles(makeStyles);
   if (touch.context) {
-    return <View ref={touch.ref} collapsable={false} onLayout={touch.onLayout} style={styles.stickPad} accessibilityLabel={`${side === 'l' ? 'Left' : 'Right'} stick`}>
+    return <View ref={touch.ref} collapsable={false} onLayout={touch.onLayout} style={[styles.stickPad, { width: size, height: size, borderRadius: size / 2 }]} accessibilityLabel={`${side === 'l' ? 'Left' : 'Right'} stick`}>
       <View style={styles.stickCross} pointerEvents="none" />
       <Animated.View pointerEvents="none" style={[styles.stickNub, { transform: pan.getTranslateTransform() }]} />
     </View>;
   }
   return (
-    <View style={styles.stickPad} {...responder.panHandlers}>
+    <View style={[styles.stickPad, { width: size, height: size, borderRadius: size / 2 }]} {...responder.panHandlers}>
       <View style={styles.stickCross} pointerEvents="none" />
       <Animated.View
         pointerEvents="none"
@@ -671,6 +674,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
 
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const compactKeyboard = useWindowDimensions().width < 400;
   const searchSide = usePref('searchButtonSide');
   const searchBtn = (
     <Pressable
@@ -699,6 +703,9 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
             hit by accident -- but handedness varies, so it is not our call. */}
         {!open && onSearch && searchSide === 'left' && searchBtn}
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={open ? "Close keyboard" : "Open keyboard"}
+          accessibilityHint={onHoldForCombos ? "Swipe to switch input mode. Hold for combos." : "Swipe to switch input mode."}
           onPress={open ? dismiss : focus}
           onLongPress={!open && onHoldForCombos ? () => { haptic(); onHoldForCombos(); } : undefined}
           delayLongPress={450}
@@ -711,10 +718,10 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           {open && <View style={styles.kbDragHandle} pointerEvents="none" />}
           {/* Closed: edge chevrons advertise the horizontal mode-switch swipe. */}
           {!open && <Text style={styles.kbSwipeCue}>‹</Text>}
-          <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
+          <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.kbBarText, { flexShrink: 1 }, open && styles.kbBarTextOpen]}>
             {open
               ? '⌨  type to send · swipe down or tap Done'
-              : onHoldForCombos
+              : compactKeyboard ? '⌨  KEYBOARD' : onHoldForCombos
                 ? '⌨  KEYBOARD  ·  swipe = mode · hold = combos'
                 : '⌨  KEYBOARD  ·  swipe to switch mode'}
           </Text>
@@ -942,6 +949,8 @@ function PadScreen() {
   const navigation = useNavigation();
   const router = useRouter();
   const { width, height, fontScale } = useWindowDimensions();
+  const portrait = portraitPadMetrics(width - insets.left - insets.right - 2 * PORTRAIT_PAD_CHROME.padding);
+  const portraitButton = { width: portrait.button, height: portrait.button };
   const landscape = width > height;
   // Landscape "laptop mode" (opt-out pref, default on): the pointer/keyboard
   // surfaces — everything that is NOT the gamepad, move, or the phone-local note
@@ -2576,42 +2585,42 @@ function PadScreen() {
           </PadTouchRow>
 
           {/* Main clusters: d-pad left, ABXY right */}
-          <PadTouchRow style={styles.clusterRow}
+          <PadTouchRow style={[styles.clusterRow, { minHeight: portrait.clusterHeight }]}
             onLayout={(e) => setPortraitClusterRoom({ key: portraitMeasureKey, room: Math.round(e.nativeEvent.layout.height + (rotationTipVisible ? rotationTipHeight : 0)) })}>
             <PadTouchRow style={styles.dpad}>
               <PadTouchRow style={styles.dpadRow}>
-                <PadTouchRow style={styles.dpadSpacer} />
-                <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
-                <PadTouchRow style={styles.dpadSpacer} />
+                <PadTouchRow style={[styles.dpadSpacer, portraitButton]} />
+                <PadButton label="▲" {...btn('du')} style={[styles.dpadBtn, portraitButton]} />
+                <PadTouchRow style={[styles.dpadSpacer, portraitButton]} />
               </PadTouchRow>
               <PadTouchRow style={styles.dpadRow}>
-                <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
+                <PadButton label="◀" {...btn('dl')} style={[styles.dpadBtn, portraitButton]} />
                 {/* Center OK = A: opens/activates the highlighted item. */}
-                <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={t.green} fontSize={14} />
-                <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
+                <PadButton label="OK" {...btn('a')} style={[styles.dpadBtn, portraitButton]} color={t.green} fontSize={14} />
+                <PadButton label="▶" {...btn('dr')} style={[styles.dpadBtn, portraitButton]} />
               </PadTouchRow>
               <PadTouchRow style={styles.dpadRow}>
-                <PadTouchRow style={styles.dpadSpacer} />
-                <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
-                <PadTouchRow style={styles.dpadSpacer} />
+                <PadTouchRow style={[styles.dpadSpacer, portraitButton]} />
+                <PadButton label="▼" {...btn('dd')} style={[styles.dpadBtn, portraitButton]} />
+                <PadTouchRow style={[styles.dpadSpacer, portraitButton]} />
               </PadTouchRow>
             </PadTouchRow>
 
             <PadTouchRow style={styles.abxy}>
               <PadTouchRow style={styles.abxyRow}>
-                <PadTouchRow style={styles.faceSpacer} />
-                <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={t.amber} />
-                <PadTouchRow style={styles.faceSpacer} />
+                <PadTouchRow style={[styles.faceSpacer, portraitButton]} />
+                <PadButton label="Y" {...btn('y')} style={[styles.faceBtn, portraitButton]} color={t.amber} />
+                <PadTouchRow style={[styles.faceSpacer, portraitButton]} />
               </PadTouchRow>
               <PadTouchRow style={styles.abxyRow}>
-                <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={t.blue} />
-                <PadTouchRow style={styles.faceSpacer} />
-                <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={t.red} />
+                <PadButton label="X" {...btn('x')} style={[styles.faceBtn, portraitButton]} color={t.blue} />
+                <PadTouchRow style={[styles.faceSpacer, portraitButton]} />
+                <PadButton label="B" {...btn('b')} style={[styles.faceBtn, portraitButton]} color={t.red} />
               </PadTouchRow>
               <PadTouchRow style={styles.abxyRow}>
-                <PadTouchRow style={styles.faceSpacer} />
-                <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={t.green} />
-                <PadTouchRow style={styles.faceSpacer} />
+                <PadTouchRow style={[styles.faceSpacer, portraitButton]} />
+                <PadButton label="A" {...btn('a')} style={[styles.faceBtn, portraitButton]} color={t.green} />
+                <PadTouchRow style={[styles.faceSpacer, portraitButton]} />
               </PadTouchRow>
             </PadTouchRow>
           </PadTouchRow>
@@ -2619,12 +2628,12 @@ function PadScreen() {
           {/* Bottom corners: analog sticks with thumb-click buttons beside them */}
           <PadTouchRow style={styles.stickRow}>
             <PadTouchRow style={styles.stickGroup}>
-              <Stick side="l" onMove={stickMove('l')} onRelease={stickRelease('l')} />
+              <Stick size={portrait.stick} side="l" onMove={stickMove('l')} onRelease={stickRelease('l')} />
               <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
             </PadTouchRow>
             <PadTouchRow style={styles.stickGroup}>
               <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
-              <Stick side="r" onMove={stickMove('r')} onRelease={stickRelease('r')} />
+              <Stick size={portrait.stick} side="r" onMove={stickMove('r')} onRelease={stickRelease('r')} />
             </PadTouchRow>
           </PadTouchRow>
           </PadTouchSurface>
