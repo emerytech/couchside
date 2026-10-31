@@ -18,6 +18,13 @@
 export type BackdropAssets = { portrait: unknown; landscape: unknown };
 
 const REGISTRY: Record<string, BackdropAssets> = {
+  'hollow-pad': { portrait: require('../assets/gameThemes/hollow-pad-landscape.png'), landscape: require('../assets/gameThemes/hollow-pad-landscape.png') },
+  'celeste-pad': { portrait: require('../assets/gameThemes/celeste-pad-landscape.png'), landscape: require('../assets/gameThemes/celeste-pad-landscape.png') },
+  'deadcells-pad': { portrait: require('../assets/gameThemes/deadcells-pad-landscape.png'), landscape: require('../assets/gameThemes/deadcells-pad-landscape.png') },
+  'dave-pad': { portrait: require('../assets/gameThemes/dave-pad-landscape.png'), landscape: require('../assets/gameThemes/dave-pad-landscape.png') },
+  'dredge-pad': { portrait: require('../assets/gameThemes/dredge-pad-landscape.png'), landscape: require('../assets/gameThemes/dredge-pad-landscape.png') },
+  'lamb-pad': { portrait: require('../assets/gameThemes/lamb-pad-landscape.png'), landscape: require('../assets/gameThemes/lamb-pad-landscape.png') },
+
   'brotato-pad': { portrait: require('../assets/gameThemes/brotato-pad-landscape.png'), landscape: require('../assets/gameThemes/brotato-pad-landscape.png') },
   'balatro-pad': { portrait: require('../assets/gameThemes/balatro-pad-landscape.png'), landscape: require('../assets/gameThemes/balatro-pad-landscape.png') },
   'spire-pad': { portrait: require('../assets/gameThemes/spire-pad-landscape.png'), landscape: require('../assets/gameThemes/spire-pad-landscape.png') },

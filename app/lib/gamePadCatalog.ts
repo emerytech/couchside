@@ -1,11 +1,30 @@
 import type { ButtonKey, TriggerKey } from './gamepad';
 
-export type GamePadId = 'brotato' | 'balatro' | 'spire' | 'hades' | 'terraria' | 'isaac';
+export type GamePadId = 'brotato' | 'balatro' | 'spire' | 'hades' | 'terraria' | 'isaac'
+  | 'hollow' | 'celeste' | 'deadcells' | 'dave' | 'dredge' | 'lamb';
 type ActionButton = Extract<ButtonKey, 'a' | 'b' | 'x' | 'y' | 'lb' | 'rb' | 'select' | 'start'>;
 export type GameAction = { key: ActionButton; kind: 'button'; glyph: string; label: string } | { key: TriggerKey; kind: 'trigger'; glyph: string; label: string };
 const b = (key: ActionButton, label: string): GameAction => ({ key, kind: 'button', glyph: key === 'start' ? 'Start' : key.toUpperCase(), label });
 const t = (key: TriggerKey, label: string): GameAction => ({ key, kind: 'trigger', glyph: key.toUpperCase(), label });
 export const GAME_PADS: Record<GamePadId, { title: string; layout: 'one' | 'combat' | 'twin'; art: string; glow: string; hint: string; actions: GameAction[] }> = {
+  hollow: { title: 'Hollow Knight', layout: 'combat', art: 'Moonlit underground kingdom', glow: '#82aaca',
+    hint: 'For the original Hollow Knight. Separate jump, attack and focus targets support simultaneous movement and holds. Buttons keep their Xbox identity; check your in-game bindings before playing.',
+    actions: [b('a','Jump'),b('x','Attack'),b('b','Focus / Cast'),t('rt','Dash'),t('lt','Super dash'),b('y','Dream nail'),b('lb','Map'),b('rb','Quick cast'),b('select','Inventory'),b('start','Pause')] },
+  celeste: { title: 'Celeste', layout: 'combat', art: 'Alpine sunset', glow: '#be9ed4',
+    hint: 'Jump, dash and grab controls with independent holds for climbing. All inputs remain ordinary Xbox buttons; match grab and alternate actions to your in-game bindings. No automatic jumps or timing macros.',
+    actions: [b('a','Jump'),b('x','Dash'),b('b','Dash / B'),b('lb','Grab / LB'),b('rb','Grab / RB'),b('y','Y'),t('lt','LT'),t('rt','RT'),b('select','Journal / View'),b('start','Pause')] },
+  deadcells: { title: 'Dead Cells', layout: 'combat', art: 'Ruined island fortress', glow: '#79b5ae',
+    hint: 'Large weapon, jump and roll targets with separate skill triggers. Holds pass through normally. Match these Xbox buttons to your selected controller bindings, including heal and interact.',
+    actions: [b('x','Weapon 1'),b('y','Weapon 2'),b('b','Roll'),b('a','Jump'),t('lt','Skill / LT'),t('rt','Skill / RT'),b('lb','Heal / LB'),b('rb','Interact / RB'),b('select','Map'),b('start','Pause')] },
+  dave: { title: 'Dave the Diver', layout: 'twin', art: 'Sunlit blue reef', glow: '#59bdce',
+    hint: 'Movement and a second stick for game contexts that use it, with both triggers available for aiming and tools. Diving, restaurant work and minigames change the prompts: follow the displayed Xbox letters. No rapid-tap automation.',
+    actions: [t('lt','LT'),b('lb','LB'),b('rb','RB'),t('rt','RT'),b('x','Action / X'),b('a','Confirm / A'),b('b','Back / B'),b('y','Action / Y'),b('select','View'),b('start','Menu')] },
+  dredge: { title: 'Dredge', layout: 'twin', art: 'Fogbound fishing harbor', glow: '#b49b70',
+    hint: 'Separate steering and camera sticks, plus every face and shoulder button for fishing, cargo and abilities. Follow the game’s current Xbox prompts; fishing timing stays entirely under your control.',
+    actions: [b('lb','LB'),t('lt','LT'),t('rt','RT'),b('rb','RB'),b('a','Confirm / A'),b('b','Back / B'),b('x','Action / X'),b('y','Action / Y'),b('select','View'),b('start','Pause')] },
+  lamb: { title: 'Cult of the Lamb', layout: 'combat', art: 'Candlelit forest shrine', glow: '#bf8176',
+    hint: 'Separate attack, dodge, curse and interaction targets for crusades and camp life. Held inputs remain independent of movement. Follow your in-game Xbox mappings for contextual and shoulder actions.',
+    actions: [b('x','Attack'),b('b','Dodge'),b('y','Curse'),b('a','Interact'),t('lt','LT'),t('rt','RT'),b('lb','LB'),b('rb','RB'),b('select','View'),b('start','Pause')] },
   brotato: { title: 'Brotato', layout: 'one', art: 'Alien wasteland', glow: '#a0bd60',
     hint: 'One-handed movement with auto-aim enabled in the game. Shop actions follow the game’s button prompts. Use Current controls if you prefer manual aiming.',
     actions: [b('a','Select'),b('b','Back'),b('start','Pause'),b('x','Shop action'),b('y','Shop action'),b('lb','Shop / LB'),b('rb','Shop / RB')] },

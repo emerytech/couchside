@@ -886,7 +886,7 @@ export function CatalogPad({ presetId, background, layout, btn, trig, stickMove,
     <GameBackdrop backdrop={background === 'current' ? t.backdrop : { key: `${presetId}-pad`, glow: def.glow }} landscape fitContainer />
     <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       <FloatingStick node={byId.move} u={u} label={def.layout === 'one' && presetId !== 'brotato' ? 'Navigate' : 'Move'} zoneOutline onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
-      {def.layout === 'twin' && <FloatingStick node={byId.rstick} u={u} label={presetId === 'isaac' ? 'Fire' : 'Aim'} zoneOutline onMove={stickMove('r')} onRelease={stickRelease('r')} onClick={NOOP} />}
+      {def.layout === 'twin' && <FloatingStick node={byId.rstick} u={u} label={presetId === 'isaac' ? 'Fire' : presetId === 'dredge' ? 'Camera' : presetId === 'dave' ? 'Look / Aim' : 'Aim'} zoneOutline onMove={stickMove('r')} onRelease={stickRelease('r')} onClick={NOOP} />}
       {def.actions.map(a => <PadKey key={a.key} node={byId[a.key]} label={a.glyph} actionLabel={a.label} u={u} fontSize={3 * u}
         {...(a.kind === 'trigger' ? trig(a.key) : btn(a.key))} />)}
     </Surface>
