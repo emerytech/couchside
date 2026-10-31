@@ -39,7 +39,7 @@ confirmation and fresh idle manifests are required; no direct file deletion.
 | --- | --- | --- |
 | App source | exact feature head above, green CI | review the full diff against main |
 | Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | shared-output LT hold/release passed on hardware; remaining lifecycle/per-box isolation and final binary smoke |
-| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery, custom copy, A-to-LT label/save/reopen passed; apply/restart and physical acceptance pending; final store binary smoke |
+| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery/copy/save/apply, physical A-to-LT, normal release, PREFS release and background/resume passed; cold restart/isolation and final store smoke pending |
 | Google Play | prior code128 belongs to 2.9.80 | allocate a fresh code after checking Play; build and verify AAB/maps |
 | Linux agent | source still declares2.9.135 with new Decky/uninstall changes | assign fresh version, test exact candidate and signed assets |
 | Windows agent | source still declares0.4.14-win with uninstall addition | reconcile0.4.15-rc1 signing work separately; allocate version and test exact installer |
@@ -84,3 +84,13 @@ store rollout or subscriber email has been performed for this release.
 Subscriber email draft/approval is a separate manual step. Once acceptance
 passes, present exact commits, artifacts, checksums and remaining limitations
 for release authorization.
+
+## Native input checkpoint — 2026-10-31
+
+On iPhone preview 288, the mapped trigger returned to neutral on normal release
+and before disconnect when opening PREFS. A repeated background test recorded
+neutral before disconnect, reconnect after about five seconds, and a fresh
+press/release after return. The first attempt lost its recording during a host
+reboot and was not counted as instrumented evidence. Android Direct 63 also
+passed independent releases of two controls mapped to the same trigger.
+These results do not certify the remaining acceptance gates or final binaries.
