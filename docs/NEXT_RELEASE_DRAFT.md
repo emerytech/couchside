@@ -155,3 +155,24 @@ and final device smoke remain pending. Required CI passed on `7d3e7a8`.
 
 All publication, public download/manifest changes and subscriber emails remain
 on hold.
+
+## Release packaging complete — 2026-10-31
+
+Play 2.9.81 (129) built successfully with an explicit 6 GiB Gradle daemon
+heap. APK and source-map checksums passed; the AAB reports the correct package,
+version and build number, contains the matching Hermes bundle, and was signed
+with the existing Play upload key. Nothing was uploaded to Play.
+
+Decky 0.2.101 is staged in companion draft PR #14, incorporating PR #13's
+Loader compatibility work and the exact Linux 2.9.136 agent. TypeScript,
+navigation/theme/controller tests and production build passed locally. Archive
+version, root ownership and bundled-agent identity passed; its offline checksum
+signature verifies against the installer's embedded trust key. The agent asset
+set is also locally staged and signed, with every checksum verified.
+
+Final artifact inventory is retained privately with source revisions and SHA-256
+hashes. Mobile artifacts use source `a8b6d8c`, Windows uses `08b03c7`, and Decky
+uses `1c96f72`. Subsequent monorepo changes are documentation only. Native final
+iOS binary installation/smoke, final Decky package device smoke and the previously
+listed acceptance gaps remain separate from successful packaging. No tags,
+merges, public assets/manifests, store submissions or emails were performed.
