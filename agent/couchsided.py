@@ -16069,9 +16069,19 @@ def decky_loader_check():
             return 503, {"ok": False, "error": "loader_down", "repair": True,
                          "detail": "unexpected version info"}
         cur, rem, upd = res.get("current"), res.get("remote"), res.get("updatable")
-        val = {"current": str(cur)[:32] if isinstance(cur, str) else None,
-               "remote": str(rem)[:32] if isinstance(rem, str) else None,
-               "updatable": bool(upd) if isinstance(upd, bool) else None,
+        # Decky 3.3.1 returns a GitHub release object, not a version string.
+        # Its `updatable` means the loader supports updates, even when the
+        # installed tag matches. Keep our existing version/availability API
+        # and never expose the release assets or treat missing tags as updates.
+        if isinstance(rem, dict):
+            rem = rem.get("tag_name")
+        cur = cur.strip()[:32] if isinstance(cur, str) else None
+        rem = rem.strip()[:32] if isinstance(rem, str) else None
+        cur, rem = cur or None, rem or None
+        available = (upd and cur != rem) if isinstance(upd, bool) and cur and rem else None
+        val = {"current": cur,
+               "remote": rem,
+               "updatable": available,
                "checked_at": int(time.time()), "channel": _decky_channel()}
         with _DECKY_CHECK_LOCK:
             _DECKY_CHECK["val"] = val
