@@ -99,30 +99,33 @@ function DeckyPluginRow({ p, storeEntry, runningProbe, disabled, installsDisable
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const flags = (['disabled', 'hidden', 'frozen'] as const).filter(k => p[k] === true);
   return <View style={styles.row} testID={`decky-plugin-${p.name}`}>
-    <View style={[styles.icon, styles.iconFallback]}><Ionicons name="extension-puzzle-outline" size={24} color={t.blue} /></View>
-    <View style={styles.rowMain}>
-      <View style={styles.rowTitle}>
-        {runningProbe === 'proc' && typeof p.running === 'boolean' ? <View style={[styles.dot, { backgroundColor: p.running ? t.green : t.textFaint }]} /> : null}
-        <Text style={styles.name}>{p.name}</Text>
-        {p.root ? <Text style={[styles.badgeText, { color: t.amber }]}>ROOT</Text> : null}
-        {!p.protected ? <Pressable onPress={() => onManage(p)} disabled={disabled} style={styles.moreBtn}
-          accessibilityRole="button" accessibilityLabel={`Manage ${p.name}`} testID={`decky-manage-${p.name}`}>
-          <Ionicons name="ellipsis-horizontal" size={22} color={t.textDim} />
-        </Pressable> : null}
+    <View style={styles.pluginHeader}>
+      <View style={[styles.icon, styles.iconFallback]}><Ionicons name="extension-puzzle-outline" size={22} color={t.blue} /></View>
+      <View style={styles.rowMain}>
+        <View style={styles.rowTitle}>
+          {runningProbe === 'proc' && typeof p.running === 'boolean' ? <View style={[styles.dot, { backgroundColor: p.running ? t.green : t.textFaint }]} /> : null}
+          <Text style={styles.name}>{p.name}</Text>
+          {p.root ? <Text style={[styles.badgeText, { color: t.amber }]}>ROOT</Text> : null}
+        </View>
+        <Text style={styles.sub}>{p.author}</Text>
       </View>
-      <Text style={styles.sub}>{p.author}</Text>
-      <View style={styles.badgeRow}>{(['disabled', 'hidden', 'frozen'] as const).filter(k => p[k] === true).map(k =>
-        <View key={k} style={styles.badge}><Text style={styles.badgeText}>{k[0].toUpperCase() + k.slice(1)}</Text></View>)}</View>
-      <View style={styles.pluginFooter}>
-        <Text style={styles.sub}>{p.version ?? 'Version unknown'}{p.update ? ` → ${p.update.version}` : ''}</Text>
-        {!p.protected && p.update && storeEntry ? <Pressable onPress={() => onUpdate(storeEntry, p)} disabled={installsDisabled}
-          testID={`decky-update-${p.name}`} style={[styles.primaryBtn, installsDisabled && styles.pressed]}
-          accessibilityRole="button" accessibilityLabel={`Update ${p.name} to ${p.update.version}`}>
-          <Text style={styles.primaryBtnText}>Update</Text></Pressable> : null}
-      </View>
-      {p.protected ? <Text style={styles.faint}>Managed by the Couchside installer.</Text> : !p.update ? <Text style={styles.installedLabel}>Installed</Text> : !storeEntry ? <Text style={styles.faint}>Update available — open Store.</Text> : null}
+      {!p.protected ? <Pressable onPress={() => onManage(p)} disabled={disabled} style={styles.moreBtn}
+        accessibilityRole="button" accessibilityLabel={`Manage ${p.name}`} testID={`decky-manage-${p.name}`}>
+        <Ionicons name="ellipsis-horizontal" size={22} color={t.textDim} />
+      </Pressable> : null}
     </View>
+    {flags.length ? <View style={styles.badgeRow}>{flags.map(k =>
+      <View key={k} style={styles.badge}><Text style={styles.badgeText}>{k[0].toUpperCase() + k.slice(1)}</Text></View>)}</View> : null}
+    <View style={styles.pluginFooter}>
+      <Text style={styles.sub}>{p.version ?? 'Version unknown'}{p.update ? ` → ${p.update.version}` : ''}</Text>
+      {!p.protected && p.update && storeEntry ? <Pressable onPress={() => onUpdate(storeEntry, p)} disabled={installsDisabled}
+        testID={`decky-update-${p.name}`} style={[styles.primaryBtn, installsDisabled && styles.pressed]}
+        accessibilityRole="button" accessibilityLabel={`Update ${p.name} to ${p.update.version}`}>
+        <Text style={styles.primaryBtnText}>Update</Text></Pressable> : !p.protected && !p.update ? <Text style={styles.installedLabel}>Installed</Text> : null}
+    </View>
+    {p.protected ? <Text style={styles.faint}>Managed by the Couchside installer.</Text> : p.update && !storeEntry ? <Text style={styles.faint}>Update available — open Store.</Text> : null}
   </View>;
 }
 
@@ -160,6 +163,7 @@ function StoreRow({
   const root = e.root ?? installedRoot ?? false;
   return (
     <View style={styles.row} testID={`decky-store-${e.id}`}>
+      <View style={styles.pluginHeader}>
       {showIcon && src ? (
         <Image source={src} style={styles.icon} onError={() => setFailedUri(src.uri)} />
       ) : (
@@ -169,7 +173,7 @@ function StoreRow({
       )}
       <View style={styles.rowMain}>
         <View style={styles.rowTitle}>
-          <Text style={styles.name} numberOfLines={1}>{e.name}</Text>
+          <Text style={styles.name}>{e.name}</Text>
           {root ? (
             <View style={[styles.badge, { borderColor: t.amber }]}>
               <Ionicons name="shield-outline" size={10} color={t.amber} />
@@ -180,7 +184,10 @@ function StoreRow({
         <Text style={styles.sub} numberOfLines={1}>
           {e.author} · {fmtDownloads(e.downloads)} downloads
         </Text>
-        {e.description ? <Text style={styles.desc} numberOfLines={2}>{e.description}</Text> : null}
+      </View>
+      </View>
+      {e.description ? <Text style={styles.desc} numberOfLines={2}>{e.description}</Text> : null}
+      <View style={styles.pluginFooter}>
         <Text style={styles.sub}>{e.installed_version && top && e.installed_version !== top.name ? `${e.installed_version} → ${top.name}` : top?.name}</Text>
         {top ? (
           <View style={styles.actions}>
@@ -969,7 +976,7 @@ const makeStyles = (t: Palette) =>
     stickyControls: { backgroundColor: t.bg, paddingVertical: 8 },
     moreBtn: { minWidth: 44, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, marginLeft: 'auto' },
     badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
-    pluginFooter: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 8 },
+    pluginFooter: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
     installedLabel: { color: t.green, fontSize: 12, fontWeight: '600', alignSelf: 'center' },
     modalBackdrop: { flex: 1, backgroundColor: t.bg + 'ee', justifyContent: 'center', padding: 24 },
     menu: { maxHeight: '90%', backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 20, padding: 20, gap: 14, width: '100%', maxWidth: 440, alignSelf: 'center' },
@@ -1060,22 +1067,23 @@ const makeStyles = (t: Palette) =>
     sortChipText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
     sortChipTextOn: { color: t.blue },
     row: {
-      flexDirection: 'row', gap: 12, padding: 16,
+      gap: 10, padding: 12,
       backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder,
     },
-    rowMain: { flex: 1, gap: 3 },
+    pluginHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    rowMain: { flex: 1, minWidth: 0, gap: 4 },
     rowTitle: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     dot: { width: 8, height: 8, borderRadius: 4 },
-    name: { color: t.text, fontSize: 16, fontWeight: '700', flexShrink: 1 },
+    name: { color: t.text, fontSize: 15, fontWeight: '700', flexShrink: 1 },
     badge: {
       flexDirection: 'row', alignItems: 'center', gap: 3, borderWidth: 1, borderRadius: 999,
       paddingHorizontal: 6, paddingVertical: 1,
     },
     badgeText: { color: t.amber, fontSize: 10, fontWeight: '800' },
     sub: { color: t.textDim, fontSize: 12 },
-    desc: { color: t.textDim, fontSize: 13, lineHeight: 19, marginVertical: 6 },
-    actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
-    icon: { width: 48, height: 48, borderRadius: 12, backgroundColor: t.inset },
+    desc: { color: t.textDim, fontSize: 13, lineHeight: 19 },
+    actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginLeft: 'auto' },
+    icon: { width: 40, height: 40, borderRadius: 10, backgroundColor: t.inset },
     iconFallback: { alignItems: 'center', justifyContent: 'center' },
     msg: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 16, justifyContent: 'center' },
     msgText: { color: t.textFaint, fontSize: 13, lineHeight: 19, textAlign: 'center', flexShrink: 1 },
