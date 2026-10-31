@@ -2822,4 +2822,4 @@ release tags.)_
 - Priority: normal. Risk: medium. Affects: Linux agent, phone Steam appearance/Theme Studio, Decky TV renderer.
 - Depends on: matching companion appearance capability and a working Decky frontend.
 - Validated data packs, local import subset, saved PC library, reversible selection and original defaults. See TV_APPEARANCE_PACKS.md.
-- Local/browser/API and SteamOS/Bazzite TV checks complete, including native picker focus fixes. Original device installations restored. Native phone import/Apply and release packaging remain pending. Not released.
+- Local/browser/API and SteamOS/Bazzite TV checks complete, including native picker focus fixes. Private iPhone 281 verified literal CSS Paste/Preview/Cancel/Apply to Bazzite, restart persistence, default restoration, and clean launches. Original TV installations restored. Earlier unexpected-close entry predates the previews; its cause remains unconfirmed. Release packaging/review remain pending. Not released.

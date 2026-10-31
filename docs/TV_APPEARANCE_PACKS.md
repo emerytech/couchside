@@ -122,6 +122,40 @@ launch remain pending: the owner locked the iPhone, but Mirroring then reported
 the Mac was locked. No TV components were changed during this follow-up. These
 web results do not substitute for its physical iPhone import/Apply check.
 
+### Native iPhone 281 acceptance — 2026-10-30
+
+After Mirroring reconnected, build 281 opened without the unexpected-close banner.
+A synthetic Harbor fixture was copied in iPhone Safari and pasted through the
+native Paste control (iOS requested Allow Paste). Preview accepted all nine
+supported declarations and skipped the one unsupported declaration. API reads
+confirmed Preview and Cancel left appearance null and the saved-pack list empty.
+Explicit Apply saved the exact structured colors/gradients as Harbor iPhone,
+without enabling a launcher. Apply Couchside then enabled it; a native Bazzite
+capture confirmed the Harbor launcher. The pack survived an agent restart.
+Restore layout colors plus Apply cleared appearance while retaining the saved
+pack; Steam default then wrote enabled=false. The color-reset capture showed a
+different screen, so only the API state proves that reset in this session.
+
+A second clean launch (Home, dismiss the backgrounded app in the app switcher,
+reopen) also showed no unexpected-close banner. The app error count stayed at
+three. The newest entry observed before testing was timestamped 18:33, before
+installation of previews 280/281. Its complete details could not be read reliably
+through Mirroring, so the original cause remains unconfirmed; no crash-detection
+logic was changed or logs cleared. This is a passed observed launch check, not
+proof against every possible native crash.
+
+Bazzite's original agent, companion, loader binary/version/settings, configuration
+and pairing-token hashes matched after rollback, both services were active, and
+the originally absent theme file was absent again. Test settings and components
+were archived under the existing staging directory with the 281 suffix. The
+test-only clipboard server was stopped. The iPhone retains private build 281.
+No game was launched or save changed. Nothing was pushed, merged, submitted to
+TestFlight/a store, released or emailed. Native import/Apply is now verified;
+release packaging and final release review remain separate gates.
+Evidence: iphone-checks/import-preview-281.png, import-cancel-281.png,
+iphone-harbor-281.jpg, startup-281.png and relaunch-281.png in the integration
+folder listed below.
+
 Source worktrees:
 - couchside-tv-appearance-packs-20261030 (agent and phone)
 - couchside-decky-appearance-packs-20261030 (companion)
