@@ -38,8 +38,8 @@ confirmation and fresh idle manifests are required; no direct file deletion.
 | Component | Available evidence | Required before production |
 | --- | --- | --- |
 | App source | exact feature head above, green CI | review the full diff against main |
-| Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | physical mapping/lifecycle and per-box isolation acceptance; final versioned binary smoke |
-| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | native editor and physical acceptance; final versioned store binary smoke |
+| Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | shared-output LT hold/release passed on hardware; remaining lifecycle/per-box isolation and final binary smoke |
+| iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery, custom copy, A-to-LT label/save/reopen passed; apply/restart and physical acceptance pending; final store binary smoke |
 | Google Play | prior code128 belongs to 2.9.80 | allocate a fresh code after checking Play; build and verify AAB/maps |
 | Linux agent | source still declares2.9.135 with new Decky/uninstall changes | assign fresh version, test exact candidate and signed assets |
 | Windows agent | source still declares0.4.14-win with uninstall addition | reconcile0.4.15-rc1 signing work separately; allocate version and test exact installer |
