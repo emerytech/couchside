@@ -18,6 +18,13 @@
 export type BackdropAssets = { portrait: unknown; landscape: unknown };
 
 const REGISTRY: Record<string, BackdropAssets> = {
+  'brotato-pad': { portrait: require('../assets/gameThemes/brotato-pad-landscape.png'), landscape: require('../assets/gameThemes/brotato-pad-landscape.png') },
+  'balatro-pad': { portrait: require('../assets/gameThemes/balatro-pad-landscape.png'), landscape: require('../assets/gameThemes/balatro-pad-landscape.png') },
+  'spire-pad': { portrait: require('../assets/gameThemes/spire-pad-landscape.png'), landscape: require('../assets/gameThemes/spire-pad-landscape.png') },
+  'hades-pad': { portrait: require('../assets/gameThemes/hades-pad-landscape.png'), landscape: require('../assets/gameThemes/hades-pad-landscape.png') },
+  'terraria-pad': { portrait: require('../assets/gameThemes/terraria-pad-landscape.png'), landscape: require('../assets/gameThemes/terraria-pad-landscape.png') },
+  'isaac-pad': { portrait: require('../assets/gameThemes/isaac-pad-landscape.png'), landscape: require('../assets/gameThemes/isaac-pad-landscape.png') },
+
   'vampire-pad-ruins': {
     portrait: require('../assets/gameThemes/vampire-ruins-landscape.png'),
     landscape: require('../assets/gameThemes/vampire-ruins-landscape.png'),

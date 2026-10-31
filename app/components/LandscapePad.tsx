@@ -1,3 +1,4 @@
+import { GAME_PADS, type GamePadId } from '@/lib/gamePadCatalog';
 /**
  * The landscape gamepad — a real controller, full screen, no app chrome.
  *
@@ -838,7 +839,7 @@ const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
   variant = 'stardew', background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
-}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'ruins' | 'current'; variant?: 'stardew' | 'vampire' }) {
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'ruins' | 'themed' | 'current'; variant?: 'stardew' | 'vampire' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
   const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
@@ -870,6 +871,29 @@ export function StardewPad({
         accessibilityLabel="Open pad settings" />
     </View>
   );
+}
+
+/** Catalog presets reuse the same native multi-touch surface and release gate. */
+export function CatalogPad({ presetId, background, layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { presetId: GamePadId; background?: string }) {
+  const t = useControllerTheme();
+  const def = GAME_PADS[presetId];
+  const { byId, u } = layout;
+  const controls = useMemo(() => padTouchControls(layout, presetId), [layout, presetId]);
+  const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
+  const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
+  return <View style={StyleSheet.absoluteFill} testID={`${presetId}-pad`}>
+    <GameBackdrop backdrop={background === 'current' ? t.backdrop : { key: `${presetId}-pad`, glow: def.glow }} landscape fitContainer />
+    <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
+      <FloatingStick node={byId.move} u={u} label={def.layout === 'one' && presetId !== 'brotato' ? 'Navigate' : 'Move'} zoneOutline onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
+      {def.layout === 'twin' && <FloatingStick node={byId.rstick} u={u} label={presetId === 'isaac' ? 'Fire' : 'Aim'} zoneOutline onMove={stickMove('r')} onRelease={stickRelease('r')} onClick={NOOP} />}
+      {def.actions.map(a => <PadKey key={a.key} node={byId[a.key]} label={a.glyph} actionLabel={a.label} u={u} fontSize={3 * u}
+        {...(a.kind === 'trigger' ? trig(a.key) : btn(a.key))} />)}
+    </Surface>
+    <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'} onPress={onToggleLock} checked={locked} accessibilityLabel="Toggle orientation lock" />
+    <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit} accessibilityLabel="Exit full-screen controller" />
+    <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings} accessibilityLabel="Open pad settings" />
+  </View>;
 }
 
 /**

@@ -1,9 +1,10 @@
+import { GAME_PADS, GAME_PAD_IDS, isGamePadId } from '@/lib/gamePadCatalog';
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LandscapePad, StardewPad } from '@/components/LandscapePad';
+import { CatalogPad, LandscapePad, StardewPad } from '@/components/LandscapePad';
 import { PadRotationTip } from '@/components/PadRotationTip';
-import { padLayout, stardewLayout, vampireLayout } from '@/lib/padLayout';
+import { padLayout, stardewLayout, vampireLayout, gamePresetLayout } from '@/lib/padLayout';
 import { CURRENT_CONTROLS, normalizePadPreset, padPresetLabel, type PadPreset } from '@/lib/padPresets';
 import { setPref } from '@/lib/prefs';
 import type { Box } from '@/lib/settings';
@@ -23,7 +24,7 @@ function Preview({ preset }: { preset: PadPreset }) {
   const [width, setWidth] = useState(0);
   const win = { width: 844, height: 390 };
   const insets = { left: 47, right: 0, top: 0, bottom: 21 };
-  const layout = preset.id === 'vampire' ? vampireLayout(win, insets, preset.hand) : preset.id === 'current' ? padLayout(win, insets) : stardewLayout(win, insets, preset.size);
+  const layout = isGamePadId(preset.id) ? gamePresetLayout(win, insets, preset.id, preset.hand) : preset.id === 'vampire' ? vampireLayout(win, insets, preset.hand) : preset.id === 'current' ? padLayout(win, insets) : stardewLayout(win, insets, preset.size);
   const scale = width / win.width;
   return (
     <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
@@ -32,7 +33,7 @@ function Preview({ preset }: { preset: PadPreset }) {
       {width > 0 && layout.ok && (
         <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
           style={{ width: win.width, height: win.height, transformOrigin: 'top left', transform: [{ scale }] }}>
-          {preset.id === 'current'
+          {isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} layout={layout} {...previewControls} /> : preset.id === 'current'
             ? <LandscapePad layout={layout} {...previewControls} />
             : <StardewPad variant={preset.id === 'vampire' ? 'vampire' : 'stardew'} background={preset.background} layout={layout} {...previewControls} />}
         </View>
@@ -76,6 +77,18 @@ export function PadPresetSheet({ kind, box, onClose, onApply }: {
             {button('Current controls', () => setDraft(CURRENT_CONTROLS), draft.id === 'current', saving)}
             {button('Stardew Valley', () => setDraft({ version: 1, id: 'stardew', size: 'larger' }), draft.id === 'stardew', saving)}
             {button('Vampire Survivors', () => setDraft({ version: 1, id: 'vampire', size: 'larger', hand: 'right' }), draft.id === 'vampire', saving)}
+            {GAME_PAD_IDS.map(id => button(`${GAME_PADS[id].title} · Beta`, () => setDraft({ version: 1, id, size: 'larger', hand: 'right' }), draft.id === id, saving))}
+            {isGamePadId(draft.id) && <>
+              {body(GAME_PADS[draft.id].hint)}
+              {body('Beta preset — in-game acceptance testing pending. Uses ordinary Xbox inputs; custom bindings may change actions.')}
+              {GAME_PADS[draft.id].layout === 'one' && <View style={{ flexDirection: 'row', gap: 12 }}>
+                {button('Left hand', () => setDraft({ ...draft, hand: 'left' }), draft.hand === 'left', saving)}
+                {button('Right hand', () => setDraft({ ...draft, hand: 'right' }), draft.hand === 'right', saving)}
+              </View>}
+              <Text style={{ color: t.text, fontFamily: mono }}>Background</Text>
+              {button(GAME_PADS[draft.id].art, () => setDraft({ ...draft, background: 'themed' }), draft.background !== 'current', saving)}
+              {button('My usual background', () => setDraft({ ...draft, background: 'current' }), draft.background === 'current', saving)}
+            </>}
             {draft.id === 'vampire' && <>
               {body('One-handed PAD: move with one thumb, then lift to select upgrades. Movement also navigates menus. Attacks are automatic; no fire button or repeated-input macro is needed.')}
               <View style={{ flexDirection: 'row', gap: 12 }}>

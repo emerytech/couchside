@@ -1,3 +1,4 @@
+import { isGamePadId } from '@/lib/gamePadCatalog';
 /**
  * Virtual gamepad + trackpad + keyboard. Emulates an Xbox 360 pad, a relative
  * mouse, and a keyboard on the box over the agent's /ws/gamepad WebSocket
@@ -49,11 +50,11 @@ import { Gated } from '@/components/Gated';
 import { LandscapeLaptop } from '@/components/LandscapeLaptop';
 import { PadTouchSurface, PadTouchRow, useMeasuredPadControl } from '@/components/PadTouchSurface';
 import type { PadAction } from '@/lib/padTouches';
-import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/components/LandscapePad';
+import { CatalogPad, LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
 import { surfaceChanged, createSurfaceInputGate, type PadSurface } from '@/lib/padSurface';
-import { moveLayout, padLayout, stardewLayout, vampireLayout, verticalMoveLayout, portraitRotateFits, PORTRAIT_PAD_CHROME } from '@/lib/padLayout';
+import { moveLayout, padLayout, stardewLayout, vampireLayout, gamePresetLayout, verticalMoveLayout, portraitRotateFits, PORTRAIT_PAD_CHROME } from '@/lib/padLayout';
 import { NotePad } from '@/components/NotePad';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
@@ -1092,6 +1093,8 @@ function PadScreen() {
   const landGeom = useMemo(
     () => (mode === 'move'
       ? (landscape ? moveLayout : verticalMoveLayout)
+      : isGamePadId(preset.id) && mode === 'gamepad'
+        ? (win: { width: number; height: number }, safe: typeof insets) => gamePresetLayout(win, safe, preset.id as import('@/lib/gamePadCatalog').GamePadId, preset.hand)
       : preset.id === 'vampire' && mode === 'gamepad'
         ? (win: { width: number; height: number }, safe: typeof insets) => vampireLayout(win, safe, preset.hand)
       : preset.id === 'stardew' && mode === 'gamepad'
@@ -2123,6 +2126,9 @@ function PadScreen() {
               setMode('gamepad');
             } : undefined}
           />
+        ) : isGamePadId(preset.id) ? (
+          <CatalogPad presetId={preset.id} background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
+            locked={padLock} onToggleLock={() => setPadLock(v => !v)} onExit={exitLandscape} onSettings={openPadSettings} />
         ) : preset.id === 'stardew' || preset.id === 'vampire' ? (
           <StardewPad variant={preset.id} background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
             locked={padLock} onToggleLock={() => setPadLock((v) => !v)} onExit={exitLandscape} onSettings={openPadSettings} />

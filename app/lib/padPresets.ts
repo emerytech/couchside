@@ -1,3 +1,4 @@
+import { GAME_PADS, isGamePadId, type GamePadId } from './gamePadCatalog.ts';
 import type { ButtonKey, TriggerKey } from './gamepad';
 
 /** Xbox defaults verified against https://stardewvalleywiki.com/Controls.
@@ -36,11 +37,11 @@ export function stardewActionInput(action: typeof STARDEW_ACTIONS[number] | type
 /** Local, per-box layout choice. Never copy a preset into the user's prefs. */
 export type PadPreset = {
   version: 1;
-  id: 'current' | 'stardew' | 'vampire';
+  id: 'current' | 'stardew' | 'vampire' | GamePadId;
   hand?: 'left' | 'right';
   size: 'standard' | 'larger';
   /** Omitted means the preset's original art; never mutates the saved app theme. */
-  background?: 'farm' | 'ruins' | 'current';
+  background?: 'farm' | 'ruins' | 'themed' | 'current';
 };
 
 export const CURRENT_CONTROLS: PadPreset = { version: 1, id: 'current', size: 'standard' };
@@ -49,6 +50,10 @@ export const CURRENT_CONTROLS: PadPreset = { version: 1, id: 'current', size: 's
 export function normalizePadPreset(raw: unknown): PadPreset {
   if (!raw || typeof raw !== 'object') return CURRENT_CONTROLS;
   const p = raw as Record<string, unknown>;
+  if (p.version === 1 && isGamePadId(p.id)) {
+    return { version: 1, id: p.id, size: 'larger', hand: p.hand === 'left' ? 'left' : 'right',
+      ...(p.background === 'current' || p.background === 'themed' ? { background: p.background } : {}) };
+  }
   if (p.version === 1 && p.id === 'vampire' && (p.hand === 'left' || p.hand === 'right')) {
     return { version: 1, id: 'vampire', size: 'larger', hand: p.hand,
       ...(p.background === 'current' || p.background === 'ruins' ? { background: p.background } : {}) };
@@ -62,6 +67,7 @@ export function normalizePadPreset(raw: unknown): PadPreset {
 
 export function padPresetLabel(raw: unknown): string {
   const p = normalizePadPreset(raw);
+  if (isGamePadId(p.id)) return `${GAME_PADS[p.id].title} · Beta`;
   return p.id === 'vampire' ? `Vampire Survivors · ${p.hand === 'left' ? 'Left' : 'Right'} hand` : p.id === 'current' ? 'Current controls' : `Stardew Valley · ${p.size === 'larger' ? 'Larger' : 'Standard'}`;
 }
 
