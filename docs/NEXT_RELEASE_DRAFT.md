@@ -107,3 +107,28 @@ auth/refusal tests, core dependency checks and protocol parity also passed.
 Required GitHub checks passed on `b566e71`. These are source/preview checks;
 final versioned release artifacts and real Steam uninstall acceptance remain
 pending. No production version or release channel was changed.
+
+## Candidate reservation and hardware checkpoint — 2026-10-31
+
+Reserved mobile 2.9.81: iOS 289, Play 129 and Direct 64. App Store Connect's
+latest uploaded build was 287, EAS's latest internal build was 288, and Play's
+highest uploaded bundle was 128 when checked. No candidate was submitted.
+The explicit release-candidate EAS profile keeps reserved build numbers fixed.
+
+Linux agent 2.9.136 passed required CI at `f008577` and was installed on the
+SteamOS test box with its prior agent backed up. Public ping, authenticated
+status/library, unauthorized-status refusal and a fresh Decky catalog passed.
+A native iPhone test cancelled uninstall without sending a request, then
+opened Steam's own confirmation for an approved small game. Steam removed the
+game and Couchside's installed library refreshed correctly. Windows uninstall
+remains to verify on its actual candidate installer.
+
+iPhone mapped-input rotation recorded the trigger returning to neutral and
+a clean portrait A press/release afterward. Ordinary handoff worked in both
+directions between iPhone and Android, with mapped trigger press/release after
+each promotion. Original presets were restored on both phones. These checks
+used preview binaries; final candidate binary smoke remains required.
+
+Windows 0.4.15-win is reserved for the additive uninstall change on the existing
+installer/build path. The separate 0.4.15-rc1 SignPath/updater experiment is not
+included, and signing policy is unchanged for this candidate.

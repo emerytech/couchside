@@ -64,6 +64,10 @@
     "device-preview": {
       "extends": "preview",
       "autoIncrement": false
+    },
+    "release-candidate": {
+      "extends": "production",
+      "autoIncrement": false
     }
   },
   "submit": {
