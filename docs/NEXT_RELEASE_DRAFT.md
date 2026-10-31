@@ -132,3 +132,26 @@ used preview binaries; final candidate binary smoke remains required.
 Windows 0.4.15-win is reserved for the additive uninstall change on the existing
 installer/build path. The separate 0.4.15-rc1 SignPath/updater experiment is not
 included, and signing policy is unchanged for this candidate.
+
+## Final artifact checkpoint — 2026-10-31
+
+Windows 0.4.15-win built successfully and upgraded the test PC. Existing pairing,
+configuration and TLS identity bytes and access rules were preserved; the
+interactive startup task remains at normal privileges. Steam uninstall acceptance
+passed on this actual candidate: Cancel retained the approved disposable game,
+then confirmation removed it and the authenticated installed library refreshed.
+A new-candidate reboot test has not been performed.
+
+Direct Android 2.9.81 (64) built, passed artifact/source-map/signing verification
+and upgraded the Android test phone with its existing installation and saved
+connection retained. iOS 2.9.81 (289) completed in EAS cloud; its downloaded IPA
+reports the reserved version/build and passed deep strict code-signature
+verification. It has not been submitted for App Review.
+
+The Play 129 build hit a D8 Java heap exhaustion with the generated 2 GiB
+Gradle daemon limit. A build-only retry uses an explicit 6 GiB daemon heap and
+four workers; source and application behavior are unchanged. Play packaging
+and final device smoke remain pending. Required CI passed on `7d3e7a8`.
+
+All publication, public download/manifest changes and subscriber emails remain
+on hold.
