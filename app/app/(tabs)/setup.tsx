@@ -2643,8 +2643,9 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
       {padSheet && <PadPresetSheet key={`${activeBoxId}:${padSheet}`} kind={padSheet} box={activeBox}
         onClose={() => { setPadPreviewExpanded(false); setPadSheet(null); }}
         onExpandedChange={setPadPreviewExpanded}
-        onApply={async (controlPreset) => {
-          if (activeBoxId) await updateBox(activeBoxId, { controlPreset });
+      onLibrary={async (customPresets, controlPreset) => { if (activeBoxId) await updateBox(activeBoxId, { customPresets, ...(controlPreset ? { controlPreset } : {}) }); }}
+        onApply={async (controlPreset, customPresets) => {
+          if (activeBoxId) await updateBox(activeBoxId, { controlPreset, ...(customPresets ? { customPresets } : {}) });
         }} />}
       <PairingQrModal box={qrBox} onClose={() => setQrBox(null)} />
     </KeyboardAvoidingView>

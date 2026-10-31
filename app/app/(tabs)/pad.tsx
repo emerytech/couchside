@@ -1,3 +1,4 @@
+import { CustomPresetPad } from '@/components/LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
 /**
  * Virtual gamepad + trackpad + keyboard. Emulates an Xbox 360 pad, a relative
@@ -1183,7 +1184,7 @@ function PadScreen() {
   // Chrome transitions retire the old fingers even if a native rotation
   // request is delayed or unavailable. A fresh mount needs a fresh gesture.
   const [padChromeEpoch, setPadChromeEpoch] = useState(0);
-  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}:${preset.hand ?? ""}` : 'current'}:${padChromeEpoch}`;
+  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${JSON.stringify(preset)}` : 'current'}:${padChromeEpoch}`;
   const surface: PadSurface = { mounted: (immersiveLive && landGeom.ok) || (!immersiveLive && padFocused && mode === 'gamepad' && !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false), mode, landscape, layout: layoutIdentity };
   const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked, stale]);
   const inputGate = useMemo(() => createSurfaceInputGate(), []);
@@ -2126,6 +2127,9 @@ function PadScreen() {
               setMode('gamepad');
             } : undefined}
           />
+        ) : preset.custom ? (
+          <CustomPresetPad preset={preset} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
+            locked={padLock} onToggleLock={() => setPadLock(v => !v)} onExit={exitLandscape} onSettings={openPadSettings} onVariant={() => setMode('move')} />
         ) : isGamePadId(preset.id) ? (
           <CatalogPad presetId={preset.id} background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
             locked={padLock} onToggleLock={() => setPadLock(v => !v)} onExit={exitLandscape} onSettings={openPadSettings} />

@@ -1,3 +1,4 @@
+import { normalizeCustomPad, type CustomPad } from './customPad.ts';
 import { GAME_PADS, isGamePadId, type GamePadId } from './gamePadCatalog.ts';
 import type { ButtonKey, TriggerKey } from './gamepad';
 
@@ -37,6 +38,7 @@ export function stardewActionInput(action: typeof STARDEW_ACTIONS[number] | type
 /** Local, per-box layout choice. Never copy a preset into the user's prefs. */
 export type PadPreset = {
   version: 1;
+  custom?: CustomPad;
   id: 'current' | 'stardew' | 'vampire' | GamePadId;
   hand?: 'left' | 'right';
   size: 'standard' | 'larger';
@@ -47,7 +49,7 @@ export type PadPreset = {
 export const CURRENT_CONTROLS: PadPreset = { version: 1, id: 'current', size: 'standard' };
 
 /** Unknown versions/IDs and partial data must retain the familiar controller. */
-export function normalizePadPreset(raw: unknown): PadPreset {
+function normalizeBasePreset(raw: unknown): PadPreset {
   if (!raw || typeof raw !== 'object') return CURRENT_CONTROLS;
   const p = raw as Record<string, unknown>;
   if (p.version === 1 && isGamePadId(p.id)) {
@@ -65,8 +67,24 @@ export function normalizePadPreset(raw: unknown): PadPreset {
     ...(p.background === 'current' || p.background === 'farm' ? { background: p.background } : {}) };
 }
 
+export function normalizePadPreset(raw: unknown): PadPreset {
+  const base = normalizeBasePreset(raw);
+  const p = raw as PadPreset | undefined;
+  const custom = p?.version === 1 && p.id === base.id ? normalizeCustomPad(p.custom) : undefined;
+  return custom ? { ...base, custom } : base;
+}
+export function normalizeCustomPresets(raw: unknown): PadPreset[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.slice(0, 20).map(normalizePadPreset).filter(p => {
+    if (!p.custom || seen.has(p.custom.id)) return false;
+    seen.add(p.custom.id); return true;
+  });
+}
+
 export function padPresetLabel(raw: unknown): string {
   const p = normalizePadPreset(raw);
+  if (p.custom) return p.custom.name;
   if (isGamePadId(p.id)) return `${GAME_PADS[p.id].title} · Beta`;
   return p.id === 'vampire' ? `Vampire Survivors · ${p.hand === 'left' ? 'Left' : 'Right'} hand` : p.id === 'current' ? 'Current controls' : `Stardew Valley · ${p.size === 'larger' ? 'Larger' : 'Standard'}`;
 }

@@ -1,3 +1,6 @@
+import { createCustomPadInputs, type CustomPad, type CustomOutput } from '@/lib/customPad';
+import type { PadPreset } from '@/lib/padPresets';
+import { isGamePadId } from '@/lib/gamePadCatalog';
 import { GAME_PADS, type GamePadId } from '@/lib/gamePadCatalog';
 /**
  * The landscape gamepad — a real controller, full screen, no app chrome.
@@ -13,7 +16,7 @@ import { GAME_PADS, type GamePadId } from '@/lib/gamePadCatalog';
  * Nothing in this file may size a control off the window width, read insets, or
  * use a percentage string. It gets a computed layout and draws it.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useLayoutEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
@@ -92,6 +95,8 @@ const inner = (n: PadNode) => ({
   height: n.rect.h,
 });
 
+const CustomLabels = createContext<CustomPad | undefined>(undefined);
+
 // ---------- A plain momentary button ----------
 
 function PadKey({
@@ -103,6 +108,8 @@ function PadKey({
   const t = useControllerTheme();
   const touch = usePadTouchVisual();
   const Container = touch ? View : Pressable;
+  const customLabel = useContext(CustomLabels)?.bindings[node.id as CustomOutput];
+  if (customLabel) { label = customLabel.output.toUpperCase(); actionLabel = customLabel.label || undefined; }
   const actionKey = node.id === 'steam' ? 'guide' : node.id;
   const [localHeld, setHeld] = useState(false);
   const held = touch ? touch.visual.held.includes(`${node.id === 'lt' || node.id === 'rt' ? 'trigger' : 'button'}:${actionKey}`) : localHeld;
@@ -321,6 +328,7 @@ function Dpad({
 }: {
   node: PadNode; u: number; btn: (k: ButtonKey) => Down;
 }) {
+  const custom = useContext(CustomLabels);
   const t = useControllerTheme();
   // dpadZone returns 'du' | 'dd' | 'dl' | 'dr' | 'a' — every one of them a
   // ButtonKey, so nothing needs widening on the way to the wire.
@@ -416,7 +424,7 @@ function Dpad({
             alignItems: 'center', justifyContent: 'center',
           }}>
           <Text style={{ color: t.green, fontFamily: mono, fontWeight: '700', fontSize: 3.4 * u }}>
-            OK
+            {custom?.bindings.a?.output.toUpperCase() ?? 'OK'}
           </Text>
         </View>
       </View>
@@ -519,6 +527,7 @@ function FaceCluster({
 }: {
   nodes: PadNode[]; u: number; btn: (k: ButtonKey) => Down; colors: Record<FaceId, string>;
 }) {
+  const custom = useContext(CustomLabels);
   const t = useControllerTheme();
   const touch = usePadTouchVisual();
   const [zone, setZone] = useState<FaceId | null>(null);
@@ -612,8 +621,9 @@ function FaceCluster({
                 fontWeight: '700',
                 fontSize: 4.4 * u,
               }}>
-              {id.toUpperCase()}
+              {(custom?.bindings[id]?.output ?? id).toUpperCase()}
             </Text>
+            {custom?.bindings[id]?.label && <Text numberOfLines={2} style={{ color: t.text, fontSize: 1.8 * u, textAlign: 'center' }}>{custom.bindings[id]!.label}</Text>}
           </View>
         );
       })}
@@ -894,6 +904,19 @@ export function CatalogPad({ presetId, background, layout, btn, trig, stickMove,
     <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit} accessibilityLabel="Exit full-screen controller" />
     <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings} accessibilityLabel="Open pad settings" />
   </View>;
+}
+
+/** Mapping is scoped to this full-screen surface, never portrait or other input modes. */
+export function CustomPresetPad({ preset, ...props }: LandscapePadProps & { preset: PadPreset }) {
+  const signature = JSON.stringify(preset.custom);
+  const mapping = useMemo(() => createCustomPadInputs(JSON.parse(signature) as CustomPad, props), [signature, props.btn, props.trig]);
+  useLayoutEffect(() => () => mapping.dispose(), [mapping]);
+  const inputs = { ...props, btn: mapping.btn, trig: mapping.trig };
+  return <CustomLabels.Provider value={preset.custom}>
+    {isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} {...inputs} />
+      : preset.id === 'current' ? <LandscapePad {...inputs} />
+      : <StardewPad variant={preset.id} background={preset.background} {...inputs} />}
+  </CustomLabels.Provider>;
 }
 
 /**
