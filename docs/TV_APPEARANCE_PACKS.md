@@ -61,8 +61,66 @@ without saved packs retain their original render tree.
 Bazzite's original Decky 3.2.7-pre1 frontend failed before Couchside loaded on the
 current Steam client; testing required a compatible loader. Original installations,
 theme settings, pairing/configuration, and Bazzite loader were restored afterward.
-Native phone import/Apply and release packaging remain separate checks. No game
-was launched, and no signing, push, merge, publication or emails occurred.
+At that stage native phone import/Apply and release packaging remained separate
+checks. No game was launched, and no signing, push, merge, publication or emails
+occurred during those TV-only checks.
+
+### Private iPhone preview 280 — 2026-10-30
+
+With owner approval, EAS internal/ad-hoc build
+`93b1f169-a838-4a8d-bb20-0a6584a7bfae` produced 2.9.80 (280) from app/agent
+head `f007219`; companion head was `e287354`. The existing ad-hoc profile was
+refreshed to include the already-declared multicast entitlement. Signature,
+embedded profile, entitlement and registered-device inclusion were verified;
+installation on the iPhone 17 Pro Max was confirmed through device metadata.
+The earlier build 279 failed signing and was not installed. Repository version
+files were restored after EAS's automatic build-number changes.
+
+Native iPhone Mirroring checks passed Forest preview without a server write,
+Cancel to original preview, Apply to Bazzite, persistence across agent restart,
+and Restore layout colors followed by Apply (appearance null, saved Forest
+retained). Steam default wrote enabled=false. A native Bazzite screen capture
+confirmed the Forest launcher. The subsequent color-restore capture showed
+Steam's controller overlay, so that capture does not prove the default-colored
+launcher. Five saved boxes remained, and before/after portrait PAD and SWIPE
+screens retained their existing styling and controls. This was appearance
+validation, not a gameplay or full input regression test.
+
+Native CSS import remains open: Mirroring paste did not insert text, while typed
+double hyphens became smart punctuation. The importer safely rejected the altered
+input without changing the active pack. A successful native import/Apply is not
+claimed; follow up on code-input smart punctuation and actual on-phone paste.
+The first post-install launch showed an unexpected-close banner without a
+captured app error; its origin was not established, and no repeat occurred during
+the observed session. Check a clean launch and diagnostics before release sign-off.
+
+Bazzite's original agent, companion, Decky binary/version/settings, configuration
+and pairing-token hashes all matched after rollback; both services were active,
+and the originally absent theme file was again absent. The phone retains the
+authorized private build 280. Steam Machine was unavailable in this session.
+Nothing was submitted to TestFlight or a store, pushed, merged, released, or emailed.
+Evidence: `couchside-appearance-integration-20261030/iphone-checks` next to the
+source worktree. Release packaging, native import and the launch check remain gates.
+
+### Import follow-up
+
+Commit `16c4b9f` adds a user-initiated Paste control using the existing
+expo-clipboard dependency. Available iOS devices use UIPasteControl for literal
+text; other platforms use a themed Paste CSS action. No clipboard is read on
+mount. Empty or oversized text leaves the existing field intact. The CSS field
+disables autocorrection, capitalization, spellchecking and smart insertion.
+Smart-dash declarations are rejected with guidance to paste the original text;
+they are never normalized into valid input. Server validation is unchanged.
+
+Typecheck, 37 importer/crash-log tests and Expo web export passed. Local browser
+interaction verified literal Paste/Preview (nine accepted, one skipped), smart
+punctuation rejection including mixed valid/altered input, oversized/empty paste,
+and Cancel. EAS internal build `79ee2005-424f-4397-9e3e-17cc30a1b75c` finished;
+the signed 2.9.80 (281) artifact and registered-device profile were verified and
+installed, and device metadata confirmed build 281. Native import/Apply and clean
+launch remain pending: the owner locked the iPhone, but Mirroring then reported
+the Mac was locked. No TV components were changed during this follow-up. These
+web results do not substitute for its physical iPhone import/Apply check.
 
 Source worktrees:
 - couchside-tv-appearance-packs-20261030 (agent and phone)
