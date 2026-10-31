@@ -45,6 +45,7 @@ import {
   confirmDeckyLoaderInstall, confirmDeckyLoaderUninstall, confirmRestartDecky, deckyConfirm,
   toneColor, useDeckyLoaderOp,
 } from '@/components/DeckyCard';
+import { DeckyInstallConfirmation } from '@/components/DeckyInstallConfirmation';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import {
@@ -54,9 +55,9 @@ import {
 } from '@/lib/api';
 import {
   apiErrorHint, canRunLoaderOp, channelLabel, DECKY_BLINK_LINE, DECKY_PANEL_MISSING,
-  DECKY_REPAIR_STABLE, DECKY_UNIT_DRIFTED, deckyHint, describeLoaderState, installConfirmCopy,
+  DECKY_REPAIR_STABLE, DECKY_UNIT_DRIFTED, deckyHint, describeLoaderState,
   installLabel, installType, isJobActive, isLoaderOpActive, jobCopy, loaderOpCopy, searchStore,
-  sortStore, storeLoadMessage, visibleJobNote, type StoreSort,
+  sortStore, storeLoadMessage, visibleJobNote, type InstallConfirmInput, type StoreSort,
 } from '@/lib/deckyPlugins';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -244,6 +245,14 @@ function DeckyContent() {
   const [tab, setTab] = useState<Tab>('installed');
   const [manageOpen, setManageOpen] = useState(false);
   const [menuPlugin, setMenuPlugin] = useState<DeckyPlugin | DeckyStoreEntry | null>(null);
+  const [pendingInstall, setPendingInstall] = useState<{ input: InstallConfirmInput; id: number; boxKey: string } | null>(null);
+  const installConfirmed = useRef(false);
+  const closePluginDialog = useCallback(() => {
+    installConfirmed.current = true;
+    setPendingInstall(null);
+    setMenuPlugin(null);
+  }, []);
+  useEffect(closePluginDialog, [key, closePluginDialog]);
   const [restartSince, setRestartSince] = useState<number | null>(null);
   const [restarting, setRestarting] = useState(false);
 
@@ -464,7 +473,7 @@ function DeckyContent() {
     if (!top) return;
     const installedCopy = installedByName.get(e.name);
     const type = e.install_type ?? installType(e.installed_version ?? installedCopy?.version ?? null, top.name);
-    const copy = installConfirmCopy({
+    const input: InstallConfirmInput = {
       name: e.name,
       author: e.author,
       type,
@@ -472,10 +481,11 @@ function DeckyContent() {
       remoteVersion: top.name,
       root: e.root ?? installedCopy?.root ?? false,
       steamUiUp,
-    });
-    deckyConfirm(copy.title, copy.message, copy.okLabel,
-      () => runPluginJob(() => api.deckyInstall(settings, e.id)), type === 'downgrade');
-  }, [installedByName, steamUiUp, runPluginJob, settings]);
+    };
+    installConfirmed.current = false;
+    setMenuPlugin(null);
+    setPendingInstall({ input, id: e.id, boxKey: key });
+  }, [installedByName, steamUiUp, key]);
 
   const uninstallPlugin = useCallback((p: DeckyPlugin) => {
     const msg = `Decky Loader removes its files and cleans up its settings.`
@@ -927,8 +937,16 @@ function DeckyContent() {
           windowSize={7}
         />
       )}
-      <Modal visible={!!menuPlugin} transparent animationType="fade" onRequestClose={() => setMenuPlugin(null)}>
-        <View style={styles.modalBackdrop}><View style={styles.menu} accessibilityViewIsModal>
+      <Modal visible={!!menuPlugin || !!pendingInstall} transparent animationType="fade" onRequestClose={closePluginDialog}>
+        <Pressable style={styles.modalBackdrop} onPress={closePluginDialog}>
+        {menuPlugin || pendingInstall ? <Pressable style={styles.menu} accessibilityViewIsModal onPress={() => {}}>
+          {pendingInstall ? <DeckyInstallConfirmation input={pendingInstall.input} disabled={installsDisabled}
+            onCancel={closePluginDialog} onConfirm={() => {
+              if (installConfirmed.current || installsDisabled || pendingInstall.boxKey !== key) return;
+              installConfirmed.current = true;
+              setPendingInstall(null);
+              runPluginJob(() => api.deckyInstall(settings, pendingInstall.id));
+            }} /> : <>
           <Text style={styles.title}>{menuPlugin?.name}</Text>
           <Text style={styles.sub}>Plugin actions</Text>
           {menuPlugin && !rowsDisabled ? <>
@@ -939,7 +957,8 @@ function DeckyContent() {
             {storeByName.get(menuPlugin.name) && !installedByName.get(menuPlugin.name)?.protected && !installsDisabled ? <Pressable accessibilityRole="button" style={styles.ghostBtn} onPress={() => { setMenuPlugin(null); installFromStore(storeByName.get(menuPlugin.name) as DeckyStoreEntry); }}><Text style={styles.ghostBtnText}>{installLabel(storeByName.get(menuPlugin.name)?.install_type ?? 'reinstall', storeByName.get(menuPlugin.name)?.versions[0]?.name ?? '')}…</Text></Pressable> : null}
           </> : <Text style={styles.faint}>Wait for the current operation to finish.</Text>}
           <Pressable accessibilityRole="button" style={styles.primaryBtn} onPress={() => setMenuPlugin(null)}><Text style={styles.primaryBtnText}>Close</Text></Pressable>
-        </View></View>
+          </>}
+        </Pressable> : null}</Pressable>
       </Modal>
     </View>
   );
@@ -953,7 +972,7 @@ const makeStyles = (t: Palette) =>
     pluginFooter: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 8 },
     installedLabel: { color: t.green, fontSize: 12, fontWeight: '600', alignSelf: 'center' },
     modalBackdrop: { flex: 1, backgroundColor: t.bg + 'ee', justifyContent: 'center', padding: 24 },
-    menu: { backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 20, padding: 20, gap: 14, width: '100%', maxWidth: 440, alignSelf: 'center' },
+    menu: { maxHeight: '90%', backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 20, padding: 20, gap: 14, width: '100%', maxWidth: 440, alignSelf: 'center' },
     emptyState: { paddingVertical: 20, gap: 14, alignItems: 'center' },
     skeleton: { width: '100%', height: 110, backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 16, padding: 20, gap: 14 },
     skeletonLine: { backgroundColor: t.inset, height: 14, width: '85%', borderRadius: 5 },
