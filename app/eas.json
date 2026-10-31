@@ -60,6 +60,10 @@
       "ios": {
         "simulator": true
       }
+    },
+    "device-preview": {
+      "extends": "preview",
+      "autoIncrement": false
     }
   },
   "submit": {
