@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AppState, View } from 'react-native';
-import { CatalogPad, LandscapePad, StardewPad } from './LandscapePad';
+import { CustomPresetPad, CatalogPad, LandscapePad, StardewPad } from './LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
 import { previewLayout } from '@/lib/padPresetGallery';
 import type { PadPreset } from '@/lib/padPresets';
@@ -33,7 +33,7 @@ export function PadPresetPreview({ preset, interactive, expanded = false }: {
       pointerEvents={interactive ? 'auto' : 'none'} accessibilityElementsHidden={!interactive}
       importantForAccessibility={interactive ? 'auto' : 'no-hide-descendants'}
       style={{ width, height: width * 390 / 844 }}>
-      {isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} layout={layout} {...LOCAL_INPUTS} />
+      {preset.custom ? <CustomPresetPad preset={preset} layout={layout} {...LOCAL_INPUTS} /> : isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} layout={layout} {...LOCAL_INPUTS} />
         : preset.id === 'current' ? <LandscapePad layout={layout} {...LOCAL_INPUTS} />
         : <StardewPad variant={preset.id} background={preset.background} layout={layout} {...LOCAL_INPUTS} />}
     </View>}

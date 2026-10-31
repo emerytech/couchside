@@ -1203,6 +1203,8 @@ export type Journal = {
  * are user-defined argv commands the app can add/delete.
  */
 export type Launcher = {
+  /** Per-game uninstall UI offer. Absent on older agents and non-Steam entries. */
+  uninstall?: 'steam' | 'busy';
   id: string;
   label: string;
   /** "shortcut" = a non-Steam shortcut from Steam's shortcuts.vdf (agent
@@ -2651,6 +2653,10 @@ export const api = {
   },
 
   // ---------- launchers ----------
+
+  steamUninstall(settings: ConnSettings, id: string): Promise<{ ok: boolean; state: 'requested'; id: string }> {
+    return request(settings, '/api/steam/uninstall', { method: 'POST', body: { id, confirm: true } });
+  },
 
   /** List discovered Steam games + user-defined custom launchers. */
   launchers(

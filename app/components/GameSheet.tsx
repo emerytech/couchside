@@ -54,12 +54,14 @@ export function GameSheet({
   coverSource,
   busy,
   onPlay,
+  onUninstall,
   onClose,
 }: {
   launcher: Launcher | null;
   coverSource?: ImageSourcePropType;
   busy?: boolean;
   onPlay: () => void;
+  onUninstall?: () => void;
   onClose: () => void;
 }) {
   const t = useTheme();
@@ -172,6 +174,14 @@ export function GameSheet({
               </Pressable>
             ) : null}
           </View>
+
+          {onUninstall && launcher.uninstall && <Pressable onPress={onUninstall}
+            disabled={busy || launcher.uninstall === 'busy'} accessibilityRole="button"
+            accessibilityLabel="Open uninstall in Steam" accessibilityState={{ disabled: busy || launcher.uninstall === 'busy' }}
+            style={[styles.bookmark, { marginBottom: 12, minHeight: 44, opacity: launcher.uninstall === 'busy' ? 0.5 : 1 }]}>
+            <Ionicons name="trash-outline" size={16} color={t.red} />
+            <Text style={[styles.bookmarkText, { color: t.red }]}>{launcher.uninstall === 'busy' ? 'UNINSTALL UNAVAILABLE WHILE BUSY' : 'UNINSTALL IN STEAM'}</Text>
+          </Pressable>}
 
           <View style={styles.actions}>
             <Pressable

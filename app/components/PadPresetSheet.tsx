@@ -9,10 +9,10 @@ import type { Box } from '@/lib/settings';
 import { useTheme } from '@/lib/theme';
 
 const NOOP = () => {};
-/** A fresh gallery draft on every open. Only Apply writes the box preference. */
-export function PadPresetSheet({ kind, box, onClose, onApply, onExpandedChange = NOOP }: {
+/** A fresh gallery draft on every open. Save writes the library; Apply also selects the active preset. */
+export function PadPresetSheet({ kind, box, onClose, onApply, onLibrary, onExpandedChange = NOOP }: {
   kind: 'presets' | 'help'; box: Box | undefined; onClose(): void;
-  onApply(preset: PadPreset): Promise<void>; onExpandedChange?(expanded: boolean): void;
+  onApply(preset: PadPreset, library?: PadPreset[]): Promise<void>; onLibrary(library: PadPreset[], active?: PadPreset): Promise<void>; onExpandedChange?(expanded: boolean): void;
 }) {
   const t = useTheme(), insets = useSafeAreaInsets();
   const [saving, setSaving] = useState(false);
@@ -26,7 +26,7 @@ export function PadPresetSheet({ kind, box, onClose, onApply, onExpandedChange =
     onRequestClose={() => { if (!saving) onClose(); }}>
     <View style={{ flex: 1, backgroundColor: t.bg, paddingTop: Math.max(insets.top, 8),
       paddingBottom: Math.max(insets.bottom, 8), paddingLeft: insets.left, paddingRight: insets.right }}>
-      {kind === 'presets' ? <PadPresetGallery box={box} onApply={onApply} onClose={onClose}
+      {kind === 'presets' ? <PadPresetGallery box={box} onApply={onApply} onLibrary={onLibrary} onClose={onClose}
         onExpandedChange={onExpandedChange} onSavingChange={setSaving} />
       : <ScrollView contentContainerStyle={{ padding: 20, gap: 16, maxWidth: 720, width: '100%', alignSelf: 'center' }}>
         <Text accessibilityRole="header" style={{ color: t.text, fontSize: 22, fontWeight: '700' }}>Controller help</Text>

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { isValidLanIp } from '../lanIp.ts';
-import { CURRENT_CONTROLS, normalizePadPreset } from '../padPresets.ts';
+import { CURRENT_CONTROLS, normalizeCustomPresets, normalizePadPreset } from '../padPresets.ts';
 
 // A long-paired box must come back from storage with its last-known service
 // version. loadBoxes used to drop Box.version on every cold launch, so
@@ -28,7 +28,7 @@ function coldLaunch(stored: Record<string, string>) {
     setItem: (k: string, v: string) => { stored[k] = v; },
   };
   const context: any = {
-    Platform: { OS: 'web' }, SecureStore: {}, isValidLanIp, normalizePadPreset, window: { localStorage: ls },
+    Platform: { OS: 'web' }, SecureStore: {}, isValidLanIp, normalizeCustomPresets, normalizePadPreset, window: { localStorage: ls },
   };
   runInNewContext(source, context);
   return context as {
@@ -104,4 +104,20 @@ test('corrupt preset does not discard a saved box or its settings', async () => 
     assert.equal(boxes[0].padMode, 'swipe');
     assert.deepEqual(boxes[0].controlPreset, CURRENT_CONTROLS);
   }
+});
+
+
+test('custom library and active mapping survive actual settings save and cold load per box', async () => {
+  const custom = { version: 1, id: 'custom-farm', name: 'My farm', bindings: { x: { output: 'rt', label: 'Tool' } } };
+  const preset = { version: 1, id: 'stardew', size: 'larger', custom };
+  const stored = persisted({ controlPreset: preset, customPresets: [preset] });
+  const loaded = await coldLaunch(stored).loadBoxes();
+  assert.deepEqual(JSON.parse(JSON.stringify(loaded.boxes[0].customPresets)), [preset]);
+  assert.deepEqual(JSON.parse(JSON.stringify(loaded.boxes[0].controlPreset)), preset);
+  loaded.boxes.push({ ...loaded.boxes[0], id: 'box-2', customPresets: [], controlPreset: CURRENT_CONTROLS });
+  await coldLaunch(stored).saveBoxes(loaded);
+  const again = await coldLaunch(stored).loadBoxes();
+  assert.equal(again.boxes[1].customPresets.length, 0);
+  assert.equal(again.boxes[1].controlPreset.id, 'current');
+  assert.equal(again.boxes[0].customPresets[0].custom.name, 'My farm');
 });

@@ -101,7 +101,7 @@ test('the confirmation quotes what install.sh actually prints', async () => {
   assert.ok(INSTALL_COMMAND.includes('couchside.tv/install.sh'), 'the command names the real script');
 });
 
-test('every screen locks orientation except the Pad, which allows landscape', async () => {
+test('screens lock orientation except explicit landscape control and preview surfaces', async () => {
   // Rotation is allowed on exactly ONE screen. This is a source-reading guard
   // because the failure is silent: a new route outside the tab group does not
   // inherit anything, it simply rotates — which is how the first-run flow, added
@@ -135,11 +135,16 @@ test('every screen locks orientation except the Pad, which allows landscape', as
     // fullscreen "Remote Desktop" mode IS the landscape layout (portrait renders
     // the laptop layout). Any OTHER screen that rotates is the silent bug this
     // guard exists to catch.
-    const mayRotate = rel.endsWith('pad.tsx') || rel.endsWith('desktop.tsx');
+    const mayRotate = rel.endsWith('pad.tsx') || rel.endsWith('desktop.tsx') || rel === '(tabs)/setup.tsx';
+    if (rel === '(tabs)/setup.tsx') {
+      assert.ok(src.includes("useLockOrientation(padPreviewExpanded ? 'landscape-locked' : 'portrait')"), 'Settings rotates only while the local preview is expanded');
+      assert.ok(src.includes('onExpandedChange={setPadPreviewExpanded}'));
+      assert.ok(src.includes('setPadPreviewExpanded(false); setPadSheet(null)'));
+    }
     assert.equal(
       mentionsLandscape,
       mayRotate,
-      `only the Pad and the desktop Control screen may allow landscape; ${rel} disagrees`,
+      `only Pad, desktop Control and the expanded Settings preview may allow landscape; ${rel} disagrees`,
     );
     if (rel.endsWith('pad.tsx')) {
       // And even there it is CONDITIONAL on the gamepad mode. A flat

@@ -1129,6 +1129,8 @@ jobs:
       # agent's constant + a digits-only appid, and the enumeration degrades closed.
       - name: Unit tests (steam install — owned-but-uninstalled)
         run: python3 tests/test_steam_install.py
+      - name: Steam uninstall handoff safety
+        run: python3 tests/test_steam_uninstall.py
 
       # Setup -> Utilities (Stage 1: read-only detection). A new surface that will
       # grow state-changing tenants, so the tests pin the §3 properties up front:
