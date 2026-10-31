@@ -910,7 +910,7 @@ export function CatalogPad({ presetId, background, layout, btn, trig, stickMove,
 export function CustomPresetPad({ preset, ...props }: LandscapePadProps & { preset: PadPreset }) {
   const signature = JSON.stringify(preset.custom);
   const mapping = useMemo(() => createCustomPadInputs(JSON.parse(signature) as CustomPad, props), [signature, props.btn, props.trig]);
-  useLayoutEffect(() => () => mapping.dispose(), [mapping]);
+  useLayoutEffect(() => { mapping.activate(); return () => mapping.dispose(); }, [mapping]);
   const inputs = { ...props, btn: mapping.btn, trig: mapping.trig };
   return <CustomLabels.Provider value={preset.custom}>
     {isGamePadId(preset.id) ? <CatalogPad presetId={preset.id} background={preset.background} {...inputs} />

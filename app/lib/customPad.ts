@@ -38,7 +38,7 @@ export function createCustomPadInputs(custom: CustomPad, sink: { btn(k: ButtonKe
       if (n) counts.set(key, n); else { counts.delete(key); output(key).onUp(); }
     },
   });
-  return { btn: (k: ButtonKey) => input(k), trig: (k: TriggerKey) => input(k), dispose() {
+  return { activate() { disposed = false; }, btn: (k: ButtonKey) => input(k), trig: (k: TriggerKey) => input(k), dispose() {
     if (disposed) return; disposed = true;
     const keys = [...counts.keys()]; held.clear(); counts.clear();
     for (const k of keys) output(k).onUp();

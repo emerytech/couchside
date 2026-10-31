@@ -39,3 +39,10 @@ test('per-box data survives JSON roundtrip; duplicates and invalid entries are d
   assert.equal(normalizePadPreset({ ...p, id: 'unknown' }).custom, undefined);
   assert.deepEqual(normalizePadPreset({ version: 1, id: 'current', size: 'standard' }), { version: 1, id: 'current', size: 'standard' });
 });
+
+test('effect replay can reactivate an empty mapper without retaining prior holds', () => {
+  const { input, events } = fixture();
+  input.btn('a').onDown(); input.dispose(); input.activate();
+  input.btn('a').onDown(); input.btn('a').onUp(); input.dispose();
+  assert.deepEqual(events, ['x+', 'x-', 'x+', 'x-']);
+});
