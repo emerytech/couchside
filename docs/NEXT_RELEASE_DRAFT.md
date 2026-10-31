@@ -41,12 +41,12 @@ confirmation and fresh idle manifests are required; no direct file deletion.
 | Android Direct 2.9.80 (63) | signed artifact/map verified; upgrade/portrait fit passed; native custom copy, X-to-LT mapping, label, save without apply, apply and restart persistence passed | shared-output LT hold/release passed on hardware; remaining lifecycle/per-box isolation and final binary smoke |
 | iOS 2.9.80 (288 internal preview) | cloud build from `80db266`; signature/version verified and installed in place, includes portrait fix | gallery/copy/save/apply, physical A-to-LT, normal release, PREFS release and background/resume passed; cold restart and per-box selection isolation passed; final store smoke pending |
 | Google Play | prior code128 belongs to 2.9.80 | allocate a fresh code after checking Play; build and verify AAB/maps |
-| Linux agent | source still declares2.9.135 with new Decky/uninstall changes | assign fresh version, test exact candidate and signed assets |
-| Windows agent | source still declares0.4.14-win with uninstall addition | reconcile0.4.15-rc1 signing work separately; allocate version and test exact installer |
+| Linux agent | candidate 2.9.136 installed on SteamOS test box | live Linux uninstall and catalog passed; prepare signed assets |
+| Windows agent | candidate 0.4.15-win, Windows draft PR #7 | existing installer build running; test exact installer; signing experiment excluded |
 | Decky plugin | separate repository not changed by this task | verify compatibility/source and update bundled agent assets if required |
 
-2.9.81 is the proposed mobile release version, not yet an allocated store
-candidate. Recheck build-number availability before reserving final candidates.
+2.9.81 candidates are reserved below. Recheck store state before any later
+reservation or submission.
 Do not ship changed agents under their existing published versions.
 Windows signing preparation remains a separate workstream; do not silently
 include its updater/installer changes or claim SignPath approval.
