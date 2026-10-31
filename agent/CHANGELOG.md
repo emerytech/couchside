@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.136
+
+- Browse Decky's plugin store with current loader-version negotiation and clearer guidance when Decky itself needs an update.
+- Correct loader version checks so an up-to-date installation is not offered an unnecessary update.
+- Open Steam's uninstall confirmation for a known installed, idle game from its Couchside card. Steam owns the removal; Couchside refreshes the installed library afterward.
+- Support optional validated TV appearance packs through the existing Steam appearance tools.
+- Keep existing pairing, Xbox-compatible controls and helper configuration compatible.
+
 ## 2.9.135
 
 - Add HDMI-CEC source discovery and switching for supported boxes. Devices that do not advertise themselves over CEC may need the TV's own input menu.
