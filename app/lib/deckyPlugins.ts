@@ -21,7 +21,7 @@
  * agent — the store's `?query=` is deliberately not proxied (spec §3 last row).
  */
 import type {
-  DeckyInstallType, DeckyJob, DeckyLoader, DeckyLoaderOp, DeckyPlugin, DeckyStoreEntry,
+  DeckyInstallType, DeckyJob, DeckyLoader, DeckyLoaderOp, DeckyPlugin, DeckyStore, DeckyStoreEntry,
 } from './api';
 
 // ---------- strict semver ----------
@@ -369,6 +369,7 @@ export function apiErrorHint(
   const err = typeof b.error === 'string' ? b.error : '';
   if (status === 403) return { text: `Not enabled on the box. Run: ${DECKY_OPTIN_CMD}` };
   if (status === 409) {
+    if (err === 'loader_update_required') return { text: 'Update Decky Loader before installing plugins. Open Manage to check for updates.' };
     if (b.busy === true) {
       return { text: `The box is busy (${b.what === 'plugin_job' ? 'a plugin job' : 'a loader op'} is running). Try again when it finishes.` };
     }
@@ -424,7 +425,11 @@ const KIND_VERB: Record<DeckyJob['kind'], string> = {
 export function jobCopy(job: DeckyJob, steamUiUp: boolean | undefined): JobCopy {
   const who = job.version ? `${job.name} ${job.version}` : job.name;
   if (!job.done) {
-    return { line: `${KIND_VERB[job.kind] ?? 'Working on'} ${who}… (${job.phase || 'queued'})`, tone: 'action' };
+    const detail = job.phase === 'confirm' ? 'Waiting for Decky confirmation…'
+      : job.phase === 'prompt' ? 'Waiting for Decky. Check the TV for a confirmation prompt.'
+      : job.phase === 'verify' ? 'Checking the installed files…'
+      : job.phase === 'queued' ? 'Waiting to start…' : 'Working on the box…';
+    return { line: `${KIND_VERB[job.kind] ?? 'Working on'} ${who}. ${detail}`, tone: 'action' };
   }
   const ui = steamUiUp ?? job.steam_ui_up;
   // A soft failure the agent flags `retry:true` (prompt timeout, or the socket
@@ -446,7 +451,7 @@ export function jobCopy(job: DeckyJob, steamUiUp: boolean | undefined): JobCopy 
           : { line: `Reload queued for ${job.name} — Decky restarts it in the background.`, tone: 'good' };
       }
       return ui
-        ? { line: `Installed ${who} — reload Decky to see it in the Quick Access Menu.`, tone: 'good', offerReload: true }
+        ? { line: `Installed ${who} — restart Decky to see it in the Quick Access Menu.`, tone: 'good', offerReload: true }
         : { line: `Installed ${who} — it appears next time Steam starts.`, tone: 'good' };
     case 'unknown':
       return { line: `Checking… the box is confirming ${who}.`, tone: 'action' };
@@ -470,4 +475,26 @@ export function channelLabel(channel: 0 | 1 | 2 | null | undefined): string | nu
   if (channel === 1) return 'pre-release';
   if (channel === 2) return 'testing';
   return null;
+}
+
+
+/** Error-first display avoids mistaking a transport failure for an old agent.
+ * Available stale data remains browsable; the screen shows its warning separately. */
+export function storeLoadMessage(store: DeckyStore | null, loading: boolean, failed: boolean, allowed: boolean):
+  { text: string; spinner?: boolean; retry?: boolean } | null {
+  if (store?.available) return null;
+  if (failed) return { text: 'Could not reach the box. Check its connection and try again.', retry: true };
+  if (!store) return loading
+    ? { text: 'Loading the plugin catalog…', spinner: true }
+    : { text: 'The store needs a newer Couchside service on the box.' };
+  if (!allowed) return { text: 'Enable Decky management on the box to browse and install plugins: couchside allow-decky on' };
+  if (store.fetching) return { text: 'Fetching the plugin catalog on the box…', spinner: true };
+  if (store.error_code === 'loader_update_required') return { text: 'Update Decky Loader to use the plugin store. Open Manage above to check for updates.' };
+  return { text: 'The box could not load the plugin catalog. Your installed plugins are still available.', retry: true };
+}
+
+/** A fresh running probe supersedes an earlier stopped/refused operation note.
+ * An unreachable loader is not proof of recovery. Other failures stay visible. */
+export function visibleJobNote<T extends { restartAction?: string; at?: number }>(note: T | null, loaderState: string | undefined, loaderFailed: boolean, lastSuccess: number | null): T | null {
+  return note?.restartAction && note.at != null && lastSuccess != null && lastSuccess > note.at && loaderState === 'running' && !loaderFailed ? null : note;
 }

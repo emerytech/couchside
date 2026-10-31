@@ -453,6 +453,9 @@ export type DeckyStoreEntry = {
 };
 
 export type DeckyStore = {
+  /** Optional diagnostics from newer agents; older agents omit these fields. */
+  error?: string | null;
+  error_code?: 'loader_update_required' | null;
   available: boolean;
   /** A background fetch is running on the box — re-poll, never fetch on demand. */
   fetching: boolean;
