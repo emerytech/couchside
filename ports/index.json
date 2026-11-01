@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "note": "Canonical Couchside-Ports catalog. The agent (agent/couchsided.py `_PORTS`) carries a frozen copy of this list as its install allowlist; tests/test_ports_catalog.py enforces they stay identical. A phone never names a URL or command -- it sends only a port `id`, which the agent looks up here. Engines are redistributable; game dumps are NEVER distributed and are always supplied by the player. Add a port: add an entry here, mirror it into `_PORTS`, cut the port's own GitHub release, then ship an agent update.",
+  "ports": [
+    {
+      "id": "couchside-bbport",
+      "name": "Bloodborne (native port)",
+      "category": "game",
+      "platforms": ["steamos", "bazzite"],
+      "arch": "x86_64",
+      "description": "Native Bloodborne port for the Steam Machine. Engine only -- you supply your own Bloodborne dump (1.09) during setup. No game files are downloaded.",
+      "requires_user_files": true,
+      "user_files_prompt": "Dump your own copy of Bloodborne (any region, 1.09 update merged) and point the launcher at the folder containing eboot.bin.",
+      "installed_check": "~/Applications/couchside-bbport",
+      "source": {
+        "type": "github_release",
+        "repo": "emerytech/Bloodborne-Android",
+        "tag": "couchside-bbport",
+        "appimage": "Bloodborne-bbport-x86_64.AppImage"
+      },
+      "install": {
+        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh"
+      },
+      "uninstall": {
+        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh"
+      },
+      "setup_flow": [
+        "Install drops the runtime AppImage into ~/Applications/couchside-bbport and adds menu + Steam shortcuts.",
+        "The launcher opens so you select YOUR OWN Bloodborne folder; it verifies edition/version and explains any fix.",
+        "Once a verified dump is configured, the Steam shortcut plays directly."
+      ]
+    }
+  ]
+}
