@@ -30,6 +30,7 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import { NewsletterCard } from '@/components/NewsletterCard';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { DeckyCard } from '@/components/DeckyCard';
+import { PortsCard } from '@/components/PortsCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -2513,6 +2514,10 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
                 /api/decky/loader; not pref-gated — the box's `couchside
                 allow-decky on` is the consent (docs/memory/project_decky-manager.md). */}
             <DeckyCard />
+            {/* Couchside-Ports: install native game ports from the phone.
+                Probe-and-appear on /api/ports; the box's `couchside allow-ports
+                on` is the consent (installs run as the desktop user, no root). */}
+            <PortsCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />

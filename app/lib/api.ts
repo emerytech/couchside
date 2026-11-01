@@ -2609,6 +2609,66 @@ const DECKY_PLUGIN_OP_PATH = {
   reload: '/api/decky/plugins/reload',
 } as const;
 
+// ---------- Couchside-Ports ----------
+
+/** One entry in the Couchside-Ports catalogue (GET /api/ports). The agent holds
+ *  the authoritative, frozen catalogue; this is its public, phone-facing view.
+ *  Engines are redistributable; `requires_user_files` ports always have the
+ *  player supply their own game dump (`user_files_prompt` says how). */
+export type Port = {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  platforms: string[];
+  arch: string;
+  requires_user_files: boolean;
+  user_files_prompt: string | null;
+  setup_flow: string[];
+  /** The port's installed_check path exists on the box right now. */
+  installed: boolean;
+};
+
+/** The current (or last) port install/uninstall job the app polls for progress. */
+export type PortInstallJob = {
+  id: string;
+  mode: 'install' | 'uninstall';
+  running: boolean;
+  started: number;
+  finished: number | null;
+  exit_code: number | null;
+  /** null while running; true/false once finished. */
+  ok: boolean | null;
+  requires_user_files: boolean;
+  user_files_prompt: string | null;
+  /** Tail of the install transcript (newest last). */
+  lines: string[];
+};
+
+export type PortsState = {
+  ports: Port[];
+  /** The on-box opt-in (`couchside allow-ports on`) is set — installs are allowed. */
+  allowed: boolean;
+  install: PortInstallJob | null;
+};
+
+/** POST /api/ports/install|uninstall result (additive; fields present per outcome). */
+export type PortActionResult = {
+  started?: boolean;
+  id?: string;
+  mode?: 'install' | 'uninstall';
+  mock?: boolean;
+  /** The box has not opted in yet (403) — surface the `allow-ports on` step. */
+  needs_optin?: boolean;
+  running?: boolean;
+  requires_user_files?: boolean;
+  user_files_prompt?: string | null;
+  error?: string;
+  exit_code?: number;
+  log?: string;
+  lines?: string[];
+};
+
 export const api = {
   /** Stream a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54). */
   uploadFile,
@@ -2700,6 +2760,38 @@ export const api = {
    */
   utilities(settings: ConnSettings): Promise<{ utilities: Utility[] } | null> {
     return probeOrNull(request<{ utilities: Utility[] }>(settings, '/api/utilities'));
+  },
+
+  // ---------- Couchside-Ports ----------
+
+  /**
+   * The Couchside-Ports catalogue + on-box opt-in flag + the current/last
+   * install job (agent >= 2.9.x). Probe-and-appear: null on a 404 (older agent)
+   * hides the whole Ports surface. The AGENT owns the catalogue as its install
+   * allowlist; the phone only ever sends a port `id` back to install/uninstall.
+   * Polled fast while `install.running` so progress paints without a refresh.
+   */
+  ports(settings: ConnSettings): Promise<PortsState | null> {
+    return probeOrNull(request<PortsState>(settings, '/api/ports'));
+  },
+
+  /**
+   * Start a port install on the box (frozen id -> frozen bootstrap URL; the app
+   * never names a URL or command). LONG timeout: the box fetches the small
+   * bootstrap synchronously before it answers `started`, then the engine
+   * AppImage downloads in a detached child the app watches via api.ports().
+   * 403 `needs_optin` until the owner runs `couchside allow-ports on`; the port
+   * ships the engine only, so the player still supplies their own game dump.
+   */
+  installPort(settings: ConnSettings, id: string): Promise<PortActionResult> {
+    return request<PortActionResult>(
+      settings, '/api/ports/install', { method: 'POST', body: { id }, timeoutMs: 60000 });
+  },
+
+  /** Remove an installed port (same frozen-id -> frozen uninstall-bootstrap path). */
+  uninstallPort(settings: ConnSettings, id: string): Promise<PortActionResult> {
+    return request<PortActionResult>(
+      settings, '/api/ports/uninstall', { method: 'POST', body: { id }, timeoutMs: 60000 });
   },
 
   /**

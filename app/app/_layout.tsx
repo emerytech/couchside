@@ -127,6 +127,10 @@ export default function RootLayout() {
             {/* Discover — keyless in-app Steam store search (pushed from Play).
                 App-side, opt-in; see app/discover.tsx. */}
             <Stack.Screen name="discover" options={{ headerShown: false }} />
+            {/* Ports — install Couchside-Ports (native game ports) onto the box.
+                Its own route because the catalogue list virtualises; probe-and-
+                appear — the push only exists where GET /api/ports answered. */}
+            <Stack.Screen name="ports" options={{ headerShown: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />
