@@ -16,6 +16,13 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Couchside-Ports — installable game-port catalog (2026-11-01)
+- **priority:** P2 · **risk:** medium (runs an installer on the box) · **affects:** agent + app + install.sh · **depends_on:** per-port GitHub release (engine AppImage + bootstrap/setup/uninstall).
+- A catalog of native game ports the app lists and installs onto a paired SteamOS/Bazzite box on demand. First + template entry = `couchside-bbport` (native Bloodborne; engine-only; player supplies their own 1.09 dump). Add a port = entry in `ports/index.json` + mirror into the agent's frozen `_PORTS` + cut the port's own release + ship an agent update.
+- **Security:** the catalog IS the allowlist — a phone sends only a port `id`, looked up in frozen `_PORTS` (unknown → 404). The only thing executed is the recipe's frozen https GitHub-release bootstrap (argv lists: https fetch to tmp, then `bash <file>` detached; no shell, no client string, no game data). Runs as the desktop user (no root). OFF until `couchside allow-ports on` (marker-only opt-in) → 403 `needs_optin`.
+- **Built (branch `claude/couchside-ports`):** agent `GET /api/ports` + `POST /api/ports/install|uninstall` (flatpak-style detached-log + poll); `ports/index.json`; install.sh `allow-ports` verb + help + uninstall cleanup; app `api.ports/installPort/uninstallPort`, `lib/ports.ts`, `app/ports.tsx`, `components/PortsCard.tsx` on Setup.
+- **Verified:** agent compiles; `tests/test_ports_catalog.py` + `tests/test_ports_install.py` green (parity, URL safety, auth, unknown-id-runs-nothing, opt-in gate, frozen argv, 409, 502) and registered in CI; install.sh `bash -n`; `lib/__tests__/ports.test.ts` green (6); app typechecks clean except the known stale expo-router generated-type class (same `/ports`-not-assignable artifact as shipped `/discover`, `/steam-themes`). **NOT verified:** UI not pressed in the web harness; not run end-to-end on a real box this session (the bbport release's bootstrap flow was exercised in a prior session).
+
 ### Optional PAD presets and rotation Help (2026-10-29)
 - **priority:** P2 · **risk:** medium (input lifecycle) · **affects:** phone app only · **depends_on:** existing controller transport and host bindings.
 - **Status:** integrated for the next release cycle; gameplay acceptance remains open. No release is included in this change.
