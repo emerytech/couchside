@@ -626,6 +626,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
                /run/couchside/decky-loader.result
     rm -rf "${HOME}/.cache/couchside/decky-icons" "${HOME}/.cache/couchside/decky-job.json"
     note "removed the Decky Loader manager (wrapper, unit template, opt-in); Decky Loader itself is untouched"
+    # Couchside-Ports opt-in marker + install transcript. Installed ports
+    # (~/Applications/...) are left in place — each has its own uninstaller.
+    sudo rm -f /etc/couchside/allow-ports 2>/dev/null || true
+    rm -f "${HOME}/.cache/couchside/ports-install.log"
     sudo rm -rf /run/couchside
     # The block above runs after the earlier daemon-reload, so reload again or
     # systemd keeps ghost helper units until the next boot.
@@ -2683,6 +2687,52 @@ GRANT
       *) echo "usage: couchside allow-system-updates on|off" >&2; exit 2 ;;
     esac
     ;;
+  allow-ports)
+    # OPT-IN: let the phone app install / remove Couchside-Ports (game ports
+    # from the frozen catalogue the agent ships). OFF by default and set HERE on
+    # the box — the app can never enable it itself. UNLIKE allow-decky this
+    # touches NO root: ports install as the desktop user (~/Applications + user
+    # Steam shortcuts), so the only artefact is a marker file whose existence IS
+    # the consent. The agent only ever runs the FROZEN bootstrap URL of a port
+    # the owner installed; a port ships the engine only and the player always
+    # supplies their own game dump — no game data is ever downloaded.
+    PORTS_MARKER="/etc/couchside/allow-ports"
+    case "${2:-}" in
+      on)
+        echo "Couchside-Ports installs a game PORT onto this box: the agent downloads"
+        echo "the port's engine (an AppImage) from its pinned GitHub release over TLS and"
+        echo "runs its installer AS YOUR DESKTOP USER (no root). Game ports ship the engine"
+        echo "ONLY — you always supply your own legally-dumped game files; nothing copies a"
+        echo "game for you."
+        echo
+        echo "Turning this on lets the Couchside app (and so anyone holding this box's"
+        echo "pairing token) install or remove any port in the catalogue the agent ships."
+        echo "Turn it off anytime:  couchside allow-ports off"
+        echo
+        confirm_tty 'Enable? [y/N]'; rc=$?
+        [ "$rc" -eq 2 ] && exit 1
+        [ "$rc" -eq 0 ] || { echo "Cancelled."; exit 0; }
+        sudo mkdir -p /etc/couchside
+        tmpf="$(mktemp)"
+        printf '# Written by `couchside allow-ports on`. While this file exists the Couchside\n# app may install/remove game ports (engine-only) from the agent catalogue.\n# Remove with: couchside allow-ports off\n' > "$tmpf"
+        sudo install -m 0644 -o root -g root "$tmpf" "$PORTS_MARKER"
+        rm -f "$tmpf"
+        echo "Port installs from the app: on"
+        ;;
+      off)
+        sudo rm -f "$PORTS_MARKER"
+        echo "Port installs from the app: off"
+        ;;
+      ""|status)
+        if sudo test -e "$PORTS_MARKER" 2>/dev/null; then
+          echo "Port installs from the app: on"
+        else
+          echo "Port installs from the app: off"
+        fi
+        ;;
+      *) echo "usage: couchside allow-ports on|off|status" >&2; exit 2 ;;
+    esac
+    ;;
   allow-decky)
     # OPT-IN, root-touching: let the phone app install / repair / remove Decky
     # Loader and install its store plugins. OFF by default and must be run
@@ -2918,6 +2968,7 @@ couchside — manage the Couchside agent on this box
   couchside allow-system-updates on|off   let the app run system package updates (root, via fixed wrappers)
   couchside allow-decky on|off|status     let the app install/manage Decky Loader + plugins (root; shows what it grants first)
   couchside allow-launchers on|off let (or stop) the phone app create launchers
+  couchside allow-ports on|off|status     let the app install/remove game ports (engine-only; you supply your own game dump)
   couchside new-token       mint a new pairing token (revokes EVERY paired phone)
   couchside tls on|off|status      the HTTPS listener (on by default; status shows
                             the live cert fingerprints)

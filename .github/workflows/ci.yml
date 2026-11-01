@@ -1141,6 +1141,16 @@ jobs:
       - name: Unit tests (utilities detection)
         run: python3 tests/test_utilities.py
 
+      # Couchside-Ports: the catalogue IS the install allowlist. One step pins
+      # _PORTS == ports/index.json + every executable URL is an https GitHub
+      # release asset; the other proves the install path is bearer-gated, refuses
+      # a non-allowlisted id without running anything, is OFF until the on-box
+      # opt-in, builds an argv LIST (no shell, frozen URL), and runs one job at a time.
+      - name: Unit tests (Couchside-Ports catalogue parity + URL safety)
+        run: python3 tests/test_ports_catalog.py
+      - name: Unit tests (Couchside-Ports install path safety)
+        run: python3 tests/test_ports_install.py
+
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S
       # cannot work: a POSIX ACL grants the user, and mode 000 collapses the

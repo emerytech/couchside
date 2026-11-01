@@ -13729,6 +13729,287 @@ _DECKY_PINNED_UNIT = os.path.join(_DECKY_SERVICES_DIR, ".systemd",
 _DECKY_SETTINGS = os.path.join(_DECKY_HOMEBREW, "settings", "loader.json")
 # The Couchside panel plugin folder (install.sh DECKY_PLUGIN_DIR).
 _DECKY_PANEL_DIR = os.path.join(_DECKY_PLUGINS_DIR, "Couchside")
+# ---------------------------------------------------------------------------
+# Couchside-Ports: a frozen catalogue of installable game PORTS (engine-only;
+# the player always supplies their own game dump). couchside-bbport (native
+# Bloodborne) is the first entry and the template for the rest.
+#
+# SECURITY (CLAUDE.md §3) — the catalogue IS the allowlist. A phone sends only a
+# port `id`; it is looked up in _PORTS_BY_ID and an unknown id is a 404, never a
+# pass-through. The only thing ever executed is the FROZEN recipe's bootstrap
+# URL, chosen HERE: fetched over https to a tmp file (step 1, bounded), then run
+# as `bash <file>` with an argv LIST (step 2, detached) — no shell, no pipe, no
+# client string in argv. No game data is EVER fetched: the bootstrap ships the
+# engine only, and we only run the bootstrap. `ports/index.json` is the
+# canonical copy; tests/test_ports_catalog.py pins _PORTS == that file.
+# ---------------------------------------------------------------------------
+_PORTS_MARKER = "/etc/couchside/allow-ports"
+PORTS_INSTALL_LOG = os.path.expanduser("~/.cache/couchside/ports-install.log")
+
+_PORTS = (
+    {
+        "id": "couchside-bbport",
+        "name": "Bloodborne (native port)",
+        "category": "game",
+        "platforms": ("steamos", "bazzite"),
+        "arch": "x86_64",
+        "description": "Native Bloodborne port for the Steam Machine. Engine only -- you supply your own Bloodborne dump (1.09) during setup. No game files are downloaded.",
+        "requires_user_files": True,
+        "user_files_prompt": "Dump your own copy of Bloodborne (any region, 1.09 update merged) and point the launcher at the folder containing eboot.bin.",
+        "installed_check": "~/Applications/couchside-bbport",
+        "source": {
+            "type": "github_release",
+            "repo": "emerytech/Bloodborne-Android",
+            "tag": "couchside-bbport",
+            "appimage": "Bloodborne-bbport-x86_64.AppImage",
+        },
+        "install": {
+            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh",
+        },
+        "uninstall": {
+            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+        },
+        "setup_flow": (
+            "Install drops the runtime AppImage into ~/Applications/couchside-bbport and adds menu + Steam shortcuts.",
+            "The launcher opens so you select YOUR OWN Bloodborne folder; it verifies edition/version and explains any fix.",
+            "Once a verified dump is configured, the Steam shortcut plays directly.",
+        ),
+    },
+)
+_PORTS_BY_ID = {p["id"]: p for p in _PORTS}
+
+# Current/last port install-or-uninstall job. `proc` is the detached child; the
+# rest is the summary the app polls. Exactly ONE job at a time — a second launch
+# while one runs is refused (409), never allowed to truncate the live transcript
+# or spawn a rival child (the flatpak_update() lesson, KI pattern).
+_PORTS_JOB = {
+    "proc": None, "id": None, "mode": None, "started": 0.0, "finished": 0.0,
+    "exit_code": None, "requires_user_files": False, "user_files_prompt": None,
+}
+_PORTS_JOB_LOCK = threading.Lock()
+
+
+def _ports_allowed():
+    """The on-box opt-in marker (`couchside allow-ports on`). Never raises.
+
+    Installing a port runs an installer from the internet as the desktop user —
+    a new class of phone-triggered action, so it is OFF by default and can only
+    be enabled ON THE BOX, exactly like `allow-decky`. Listing the catalogue is
+    always allowed; only the state-changing install/uninstall is gated."""
+    try:
+        return os.path.exists(_PORTS_MARKER)
+    except Exception:
+        return False
+
+
+def _port_installed(port):
+    """True when the port's installed_check path exists. Degrades to False (a
+    missing/unreadable path reads as 'not installed', never a false 'installed')."""
+    chk = port.get("installed_check")
+    if not chk:
+        return False
+    try:
+        return os.path.exists(os.path.expanduser(chk))
+    except Exception:
+        return False
+
+
+def _ports_read_log(limit=200):
+    """Last `limit` non-blank lines of the install transcript, or []. The PATH IS
+    A CONSTANT — no client input selects a file. Never raises."""
+    try:
+        with open(PORTS_INSTALL_LOG, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    return [ln.rstrip() for ln in lines if ln.strip()][-limit:]
+
+
+def _ports_running():
+    """True while the install/uninstall this agent launched is still executing.
+    poll() on the Popen we hold is authoritative and reaps the child on exit.
+    Degrade-closed toward DONE so a lost handle never strands the card."""
+    proc = _PORTS_JOB["proc"]
+    if proc is None:
+        return False
+    try:
+        return proc.poll() is None
+    except Exception:
+        return False
+
+
+def ports_install_status():
+    """The current/last job summary the app polls, or None if none ran this
+    uptime. Records completion exactly once (first observation)."""
+    with _PORTS_JOB_LOCK:
+        if _PORTS_JOB["id"] is None:
+            return None
+        proc = _PORTS_JOB["proc"]
+        running = False
+        if proc is not None:
+            try:
+                running = proc.poll() is None
+            except Exception:
+                running = False
+            if not running and _PORTS_JOB["finished"] == 0.0:
+                try:
+                    _PORTS_JOB["exit_code"] = proc.returncode
+                except Exception:
+                    _PORTS_JOB["exit_code"] = None
+                _PORTS_JOB["finished"] = time.time()
+        ok = None
+        if not running and _PORTS_JOB["finished"]:
+            ok = _PORTS_JOB["exit_code"] == 0
+        return {
+            "id": _PORTS_JOB["id"], "mode": _PORTS_JOB["mode"],
+            "running": running,
+            "started": int(_PORTS_JOB["started"]),
+            "finished": (int(_PORTS_JOB["finished"]) or None),
+            "exit_code": _PORTS_JOB["exit_code"], "ok": ok,
+            "requires_user_files": bool(_PORTS_JOB["requires_user_files"]),
+            "user_files_prompt": _PORTS_JOB["user_files_prompt"],
+            "lines": _ports_read_log(),
+        }
+
+
+def ports_catalog(mock=False):
+    """Public catalogue for GET /api/ports (frozen; no client input). `mock`
+    forces installed=False so the dev harness never stats the real FS."""
+    out = []
+    for p in _PORTS:
+        out.append({
+            "id": p["id"], "name": p["name"],
+            "category": p.get("category", "game"),
+            "description": p.get("description", ""),
+            "platforms": list(p.get("platforms", ())),
+            "arch": p.get("arch", ""),
+            "requires_user_files": bool(p.get("requires_user_files")),
+            "user_files_prompt": p.get("user_files_prompt"),
+            "setup_flow": list(p.get("setup_flow", ())),
+            "installed": (False if mock else _port_installed(p)),
+        })
+    return out
+
+
+def ports_state(mock=False):
+    """GET /api/ports payload: catalogue + opt-in flag + current/last job. In
+    mock the opt-in reads True (so the harness can exercise the Install button)
+    and no real job/marker/FS is touched."""
+    if mock:
+        return {"ports": ports_catalog(mock=True), "allowed": True, "install": None}
+    return {"ports": ports_catalog(), "allowed": _ports_allowed(),
+            "install": ports_install_status()}
+
+
+def ports_run(port_id, mode):
+    """Start a frozen port install/uninstall, detached, writing to
+    PORTS_INSTALL_LOG. Returns (payload, http_status). `mode` in
+    {install, uninstall}.
+
+    The id is looked up in _PORTS_BY_ID (unknown -> 404, nothing runs). The URL
+    executed is the FROZEN recipe's — never from the client. Two steps, argv
+    lists only: fetch the small bootstrap over https to a tmp file, then run it
+    as `bash <file>` detached (the long AppImage download happens in that child,
+    which writes to the log, never an unread pipe)."""
+    port = _PORTS_BY_ID.get(port_id)
+    if not port:
+        return {"started": False, "error": "unknown port"}, 404
+    if mode not in ("install", "uninstall"):
+        return {"started": False, "error": "unknown mode"}, 400
+    if not _ports_allowed():
+        return {"started": False, "needs_optin": True,
+                "error": "port installs are not enabled "
+                         "(run on the box: couchside allow-ports on)"}, 403
+    url = (port.get(mode) or {}).get("bootstrap_url")
+    # Frozen data, so a bad URL is a catalogue bug, not client input — refuse
+    # closed rather than run something unpinned.
+    if not isinstance(url, str) or not url.startswith("https://github.com/"):
+        return {"started": False,
+                "error": "no %s step for this port" % mode}, 409
+    with _PORTS_JOB_LOCK:
+        if _ports_running():
+            return {"started": False, "running": True, "id": _PORTS_JOB["id"],
+                    "error": "a port %s is already running"
+                             % (_PORTS_JOB["mode"] or "job")}, 409
+        try:
+            os.makedirs(os.path.dirname(PORTS_INSTALL_LOG), exist_ok=True)
+        except OSError:
+            pass
+        try:
+            tmp = tempfile.mkdtemp(prefix="couchside-port-")
+        except OSError as e:
+            return {"started": False, "error": "cannot stage: %s" % e}, 500
+        script = os.path.join(tmp, "bootstrap.sh")
+        try:
+            logf = open(PORTS_INSTALL_LOG, "w")
+        except OSError as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"started": False, "error": "cannot open log: %s" % e}, 500
+        # Step 1 (bounded, synchronous): fetch ONLY the small bootstrap script.
+        # https pinned via --proto; the URL is frozen. argv list, never a shell.
+        fetch = ["curl", "-fL", "--proto", "=https", "--tlsv1.2", "--retry", "3",
+                 "-o", script, url]
+        try:
+            rc = subprocess.run(
+                fetch, stdout=logf, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, timeout=60, env=_user_env()).returncode
+        except Exception as e:
+            logf.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"started": False,
+                    "error": "download failed: %s" % e.__class__.__name__}, 502
+        if rc != 0:
+            logf.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"started": False, "exit_code": rc,
+                    "error": "could not download the installer",
+                    "lines": _ports_read_log()}, 502
+        # Step 2 (detached, long): run the bootstrap. It downloads the engine
+        # AppImage + installer scripts from the SAME frozen release and wires up
+        # the menu / Steam shortcuts, all as the desktop user — no root, no
+        # game data. Output -> the log file (an unread pipe deadlocks on a long
+        # child; see flatpak_update()).
+        try:
+            proc = subprocess.Popen(
+                ["bash", script], cwd=tmp, env=_user_env(),
+                stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as e:
+            logf.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+            return {"started": False, "error": str(e)}, 500
+        finally:
+            try:
+                logf.close()
+            except OSError:
+                pass
+        rf = bool(port.get("requires_user_files")) if mode == "install" else False
+        up = port.get("user_files_prompt") if mode == "install" else None
+        _PORTS_JOB.update({
+            "proc": proc, "id": port_id, "mode": mode,
+            "started": time.time(), "finished": 0.0, "exit_code": None,
+            "requires_user_files": rf, "user_files_prompt": up,
+        })
+    # Short wait so an installer that dies instantly surfaces now, not as a
+    # false 'started'. Outside the lock — the job is already registered.
+    try:
+        rc = proc.wait(timeout=0.8)
+    except subprocess.TimeoutExpired:
+        rc = None
+    if rc is not None and rc != 0:
+        with _PORTS_JOB_LOCK:
+            _PORTS_JOB["exit_code"] = rc
+            _PORTS_JOB["finished"] = time.time()
+        return {"started": False, "id": port_id, "mode": mode, "exit_code": rc,
+                "error": "the installer exited immediately",
+                "lines": _ports_read_log()}, 502
+    print("[ports] %s %s started (log: %s)" % (mode, port_id, PORTS_INSTALL_LOG),
+          flush=True)
+    return {"started": True, "id": port_id, "mode": mode,
+            "requires_user_files": rf, "user_files_prompt": up,
+            "log": PORTS_INSTALL_LOG}, 200
+
+
 _DECKY_MARKER = "/etc/couchside/allow-decky"
 _DECKY_WRAPPER = "/etc/couchside/couchside-decky-loader"
 _DECKY_UNIT_TMPL = "/etc/systemd/system/couchside-decky-loader@.service"
@@ -16409,7 +16690,7 @@ def mock_decky_loader_log(n=None):
 # cannot silently ship.
 _DECKY_MOCK_PLUGINS_SEED = [
     {"name": "Couchside", "folder": "Couchside", "version": "0.2.9",
-     "author": "Emery Tech Solutions", "root": True, "disabled": False,
+     "author": "ETS3D LLC", "root": True, "disabled": False,
      "hidden": False, "frozen": False},
     {"name": "SteamGridDB", "folder": "SteamGridDB", "version": "1.7.0",
      "author": "SteamGridDB", "root": False, "disabled": False,
@@ -28412,6 +28693,13 @@ class Handler(BaseHTTPRequestHandler):
                 # needs_enable/no_adapter). Read-only; the app gates the whole
                 # section behind an opt-in pref.
                 self._send(200, {"utilities": utilities_state(self.mock)}, started)
+            elif path == "/api/ports":
+                # Couchside-Ports: the frozen catalogue of installable game
+                # ports + the on-box opt-in flag + the current/last install job
+                # the app polls for progress. Read-only; the state-changing
+                # install/uninstall live on POST and need the opt-in. Old agents
+                # 404 this route, so the app's probe-and-appear hides the section.
+                self._send(200, ports_state(self.mock), started)
             elif path == "/api/utilities/openpuck/latest":
                 # OPT-IN "check for newer firmware": the fork's newest release vs
                 # the pinned build. Read-only (contacts GitHub, cached 10 min); the
@@ -29942,6 +30230,40 @@ class Handler(BaseHTTPRequestHandler):
                 result = ({"started": True, "log": OS_UPDATE_LOG}
                           if self.mock else os_update_apply())
                 self._send(200, result, started)
+                return
+
+            # POST /api/ports/install | /api/ports/uninstall {"id": "..."}:
+            # install or remove a port from the FROZEN catalogue. The id is
+            # looked up in _PORTS_BY_ID — an unknown id is a 404 and nothing
+            # runs. The only thing executed is the recipe's frozen bootstrap URL
+            # (ports_run: https fetch to a tmp file, then `bash <file>` as the
+            # desktop user; no shell, no client string in argv, no game data).
+            # Gated by the on-box opt-in (couchside allow-ports on) -> 403.
+            if path in ("/api/ports/install", "/api/ports/uninstall"):
+                mode = "install" if path.endswith("install") else "uninstall"
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    pid = req.get("id")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "id required"}, started)
+                    return
+                # Reject (never sanitise) a non-allowlisted id before anything runs.
+                if not isinstance(pid, str) or pid not in _PORTS_BY_ID:
+                    self._send(404, {"error": "unknown port"}, started)
+                    return
+                if self.mock:
+                    port = _PORTS_BY_ID[pid]
+                    rf = bool(port.get("requires_user_files")) if mode == "install" else False
+                    self._send(200, {"started": True, "id": pid, "mode": mode,
+                                     "mock": True, "requires_user_files": rf,
+                                     "user_files_prompt": (port.get("user_files_prompt")
+                                                           if mode == "install" else None)},
+                               started)
+                    return
+                payload, code = ports_run(pid, mode)
+                self._send(code, payload, started)
                 return
 
             # POST /api/wol {"mac": "..."}: broadcast a Wake-on-LAN magic packet
