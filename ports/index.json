@@ -1,12 +1,15 @@
 {
   "version": 1,
-  "note": "Canonical Couchside-Ports catalog. The agent (agent/couchsided.py `_PORTS`) carries a frozen copy of this list as its install allowlist; tests/test_ports_catalog.py enforces they stay identical. A phone never names a URL or command -- it sends only a port `id`, which the agent looks up here. Engines are redistributable; game dumps are NEVER distributed and are always supplied by the player. Add a port: add an entry here, mirror it into `_PORTS`, cut the port's own GitHub release, then ship an agent update.",
+  "note": "Canonical Ports ID allowlist and executable SHA-256/size pins, mirrored into agent/couchsided.py. Install executes verified setup.sh with all scripts and runtime supplied locally; recursive bootstrap.sh is not executed. Review and update pins when changing any dependency. Game files remain player-supplied.",
   "ports": [
     {
       "id": "couchside-bbport",
       "name": "Bloodborne (native port)",
       "category": "game",
-      "platforms": ["steamos", "bazzite"],
+      "platforms": [
+        "steamos",
+        "bazzite"
+      ],
       "arch": "x86_64",
       "description": "Native Bloodborne port for the Steam Machine. Engine only -- you supply your own Bloodborne dump (1.09) during setup. No game files are downloaded.",
       "requires_user_files": true,
@@ -19,10 +22,34 @@
         "appimage": "Bloodborne-bbport-x86_64.AppImage"
       },
       "install": {
-        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh"
+        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/setup.sh",
+        "sha256": "f12e8f264da367cd6984e7030a0425efd0aea77791da0947388d587c3aefb347",
+        "size": 8427,
+        "assets": [
+          {
+            "name": "steam_shortcut.py",
+            "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/steam_shortcut.py",
+            "sha256": "79617daffec2974f2d6455627eddb1765ba5643e78854f029394f49a87f04a64",
+            "size": 6349
+          },
+          {
+            "name": "uninstall.sh",
+            "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+            "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+            "size": 759
+          },
+          {
+            "name": "Bloodborne-bbport-x86_64.AppImage",
+            "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/Bloodborne-bbport-x86_64.AppImage",
+            "sha256": "883f5543e48ff2edfb077f0478eea1421db57148f1bdb5e0df680e88ad71146c",
+            "size": 423868960
+          }
+        ]
       },
       "uninstall": {
-        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh"
+        "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+        "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+        "size": 759
       },
       "setup_flow": [
         "Install drops the runtime AppImage into ~/Applications/couchside-bbport and adds menu + Steam shortcuts.",

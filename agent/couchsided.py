@@ -13734,14 +13734,11 @@ _DECKY_PANEL_DIR = os.path.join(_DECKY_PLUGINS_DIR, "Couchside")
 # the player always supplies their own game dump). couchside-bbport (native
 # Bloodborne) is the first entry and the template for the rest.
 #
-# SECURITY (CLAUDE.md §3) — the catalogue IS the allowlist. A phone sends only a
-# port `id`; it is looked up in _PORTS_BY_ID and an unknown id is a 404, never a
-# pass-through. The only thing ever executed is the FROZEN recipe's bootstrap
-# URL, chosen HERE: fetched over https to a tmp file (step 1, bounded), then run
-# as `bash <file>` with an argv LIST (step 2, detached) — no shell, no pipe, no
-# client string in argv. No game data is EVER fetched: the bootstrap ships the
-# engine only, and we only run the bootstrap. `ports/index.json` is the
-# canonical copy; tests/test_ports_catalog.py pins _PORTS == that file.
+# SECURITY — the catalogue is the ID allowlist AND the content trust root.
+# All setup/runtime dependencies have exact SHA-256 and size pins. The recursive
+# upstream bootstrap is not executed: it would fetch unverified dependencies.
+# A user-service worker verifies the complete recipe before running setup; no
+# client URL, path or command is accepted. JSON catalog and agent pins stay equal.
 # ---------------------------------------------------------------------------
 _PORTS_MARKER = "/etc/couchside/allow-ports"
 PORTS_INSTALL_LOG = os.path.expanduser("~/.cache/couchside/ports-install.log")
@@ -13764,10 +13761,34 @@ _PORTS = (
             "appimage": "Bloodborne-bbport-x86_64.AppImage",
         },
         "install": {
-            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh",
+            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/setup.sh",
+            "sha256": "f12e8f264da367cd6984e7030a0425efd0aea77791da0947388d587c3aefb347",
+            "size": 8427,
+            "assets": [
+                {
+                    "name": "steam_shortcut.py",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/steam_shortcut.py",
+                    "sha256": "79617daffec2974f2d6455627eddb1765ba5643e78854f029394f49a87f04a64",
+                    "size": 6349
+                },
+                {
+                    "name": "uninstall.sh",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+                    "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+                    "size": 759
+                },
+                {
+                    "name": "Bloodborne-bbport-x86_64.AppImage",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/Bloodborne-bbport-x86_64.AppImage",
+                    "sha256": "883f5543e48ff2edfb077f0478eea1421db57148f1bdb5e0df680e88ad71146c",
+                    "size": 423868960
+                }
+            ]
         },
         "uninstall": {
             "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+            "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+            "size": 759
         },
         "setup_flow": (
             "Install drops the runtime AppImage into ~/Applications/couchside-bbport and adds menu + Steam shortcuts.",
@@ -13778,139 +13799,312 @@ _PORTS = (
 )
 _PORTS_BY_ID = {p["id"]: p for p in _PORTS}
 
-# Current/last port install-or-uninstall job. `proc` is the detached child; the
-# rest is the summary the app polls. Exactly ONE job at a time — a second launch
-# while one runs is refused (409), never allowed to truncate the live transcript
-# or spawn a rival child (the flatpak_update() lesson, KI pattern).
-_PORTS_JOB = {
-    "proc": None, "id": None, "mode": None, "started": 0.0, "finished": 0.0,
-    "exit_code": None, "requires_user_files": False, "user_files_prompt": None,
-}
+# Persisted independently of agent uptime. A transient USER service owns the
+# worker: couchside.service's default KillMode=control-group must not kill a
+# download when the agent restarts. No sudo grant or service-template change.
+_PORTS_STATE_DIR = os.path.expanduser("~/.local/state/couchside/ports")
+_PORTS_UNIT = "couchside-ports-job.service"
 _PORTS_JOB_LOCK = threading.Lock()
+_PORTS_LAUNCH_GRACE = 30
 
 
 def _ports_allowed():
-    """The on-box opt-in marker (`couchside allow-ports on`). Never raises.
-
-    Installing a port runs an installer from the internet as the desktop user —
-    a new class of phone-triggered action, so it is OFF by default and can only
-    be enabled ON THE BOX, exactly like `allow-decky`. Listing the catalogue is
-    always allowed; only the state-changing install/uninstall is gated."""
-    try:
-        return os.path.exists(_PORTS_MARKER)
-    except Exception:
-        return False
+    return os.path.exists(_PORTS_MARKER)
 
 
 def _port_installed(port):
-    """True when the port's installed_check path exists. Degrades to False (a
-    missing/unreadable path reads as 'not installed', never a false 'installed')."""
-    chk = port.get("installed_check")
-    if not chk:
-        return False
     try:
-        return os.path.exists(os.path.expanduser(chk))
-    except Exception:
+        return os.path.isdir(os.path.expanduser(port["installed_check"]))
+    except (OSError, KeyError):
         return False
 
 
 def _ports_read_log(limit=200):
-    """Last `limit` non-blank lines of the install transcript, or []. The PATH IS
-    A CONSTANT — no client input selects a file. Never raises."""
+    """Bound both bytes read and output; installer output is not trusted input."""
     try:
-        with open(PORTS_INSTALL_LOG, "r", errors="replace") as f:
-            lines = f.read().splitlines()
+        with open(PORTS_INSTALL_LOG, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 131072))
+            data = f.read(131072).decode("utf-8", "replace")
+        return [line.rstrip() for line in data.splitlines() if line.strip()][-limit:]
     except OSError:
         return []
-    return [ln.rstrip() for ln in lines if ln.strip()][-limit:]
 
 
-def _ports_running():
-    """True while the install/uninstall this agent launched is still executing.
-    poll() on the Popen we hold is authoritative and reaps the child on exit.
-    Degrade-closed toward DONE so a lost handle never strands the card."""
-    proc = _PORTS_JOB["proc"]
-    if proc is None:
-        return False
+def _ports_dir():
+    os.makedirs(_PORTS_STATE_DIR, mode=0o700, exist_ok=True)
+    st = os.lstat(_PORTS_STATE_DIR)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise OSError("Ports state directory must be private to the desktop user")
+    return _PORTS_STATE_DIR
+
+
+def _ports_lock():
+    if fcntl is None:
+        raise OSError("Ports jobs require POSIX file locking")
+    path = os.path.join(_ports_dir(), "job.lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        return proc.poll() is None
-    except Exception:
-        return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _ports_write_job(job):
+    directory = _ports_dir()
+    fd, tmp = tempfile.mkstemp(prefix=".job-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(job, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(directory, "job.json"))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _ports_read_job():
+    path = os.path.join(_ports_dir(), "job.json")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd) as f:
+        job = json.loads(f.read(16385))
+    if (not isinstance(job, dict) or job.get("id") not in _PORTS_BY_ID
+            or job.get("mode") not in ("install", "uninstall")
+            or not re.fullmatch(r"[a-f0-9]{32}", str(job.get("job_id", "")))
+            or type(job.get("started")) not in (int, float)
+            or not isinstance(job.get("running"), bool)):
+        raise ValueError("Invalid Ports job record; refusing a competing job")
+    return job
+
+
+def _ports_unit_active():
+    """None means unavailable evidence: never assume an installer is dead."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", _PORTS_UNIT,
+                            "--property=ActiveState", "--value"],
+                           capture_output=True, text=True, timeout=5, env=_user_env())
+        value = r.stdout.strip()
+        if value in ("active", "activating", "reloading", "deactivating"):
+            return True
+        if value in ("inactive", "failed"):
+            return False
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _ports_reconcile(job):
+    """Called only with the job lock held. Lock + unit closes launch/restart races.
+
+    A dead worker never becomes success from an installed directory or a reused
+    PID. An unavailable user bus stays recovery_pending and refuses a second job.
+    """
+    if not job or not job["running"]:
+        return job
+    active = _ports_unit_active()
+    if active is False and time.time() - job["started"] > _PORTS_LAUNCH_GRACE:
+        job.update(running=False, ok=False, exit_code=None, finished=int(time.time()),
+                   phase="interrupted", error="The port job was interrupted. Review the log, then retry.")
+        _ports_write_job(job)
+        # The dead unit + acquired worker lock prove no process owns this stage.
+        shutil.rmtree(os.path.join(_ports_dir(), "stage-" + job["job_id"]), ignore_errors=True)
+    elif active is None:
+        job = dict(job, recovery_pending=True)
+    return job
 
 
 def ports_install_status():
-    """The current/last job summary the app polls, or None if none ran this
-    uptime. Records completion exactly once (first observation)."""
-    with _PORTS_JOB_LOCK:
-        if _PORTS_JOB["id"] is None:
+    try:
+        job = _ports_read_job()
+        if not job:
             return None
-        proc = _PORTS_JOB["proc"]
-        running = False
-        if proc is not None:
-            try:
-                running = proc.poll() is None
-            except Exception:
-                running = False
-            if not running and _PORTS_JOB["finished"] == 0.0:
-                try:
-                    _PORTS_JOB["exit_code"] = proc.returncode
-                except Exception:
-                    _PORTS_JOB["exit_code"] = None
-                _PORTS_JOB["finished"] = time.time()
-        ok = None
-        if not running and _PORTS_JOB["finished"]:
-            ok = _PORTS_JOB["exit_code"] == 0
-        return {
-            "id": _PORTS_JOB["id"], "mode": _PORTS_JOB["mode"],
-            "running": running,
-            "started": int(_PORTS_JOB["started"]),
-            "finished": (int(_PORTS_JOB["finished"]) or None),
-            "exit_code": _PORTS_JOB["exit_code"], "ok": ok,
-            "requires_user_files": bool(_PORTS_JOB["requires_user_files"]),
-            "user_files_prompt": _PORTS_JOB["user_files_prompt"],
-            "lines": _ports_read_log(),
-        }
+        try:
+            fd = _ports_lock()
+        except BlockingIOError:
+            # Independent worker holds it across download/setup. Atomic JSON
+            # updates can be read without waiting on the full installation.
+            return dict(job, lines=_ports_read_log())
+        try:
+            job = _ports_reconcile(_ports_read_job())
+        finally:
+            os.close(fd)
+        return dict(job, lines=_ports_read_log()) if job else None
+    except (OSError, ValueError, TypeError):
+        # Corruption is not an empty/idle queue. Display recovery and fail closed.
+        return {"id": "", "mode": "install", "running": True, "started": 0,
+                "finished": None, "exit_code": None, "ok": None,
+                "requires_user_files": False, "user_files_prompt": None,
+                "recovery_pending": True, "phase": "recovery",
+                "error": "Port job status is unavailable. Check the box before retrying.",
+                "lines": []}
 
 
 def ports_catalog(mock=False):
-    """Public catalogue for GET /api/ports (frozen; no client input). `mock`
-    forces installed=False so the dev harness never stats the real FS."""
     out = []
     for p in _PORTS:
-        out.append({
-            "id": p["id"], "name": p["name"],
-            "category": p.get("category", "game"),
-            "description": p.get("description", ""),
-            "platforms": list(p.get("platforms", ())),
-            "arch": p.get("arch", ""),
-            "requires_user_files": bool(p.get("requires_user_files")),
-            "user_files_prompt": p.get("user_files_prompt"),
-            "setup_flow": list(p.get("setup_flow", ())),
-            "installed": (False if mock else _port_installed(p)),
-        })
+        out.append({k: p.get(k) for k in
+                    ("id", "name", "category", "description", "arch",
+                     "requires_user_files", "user_files_prompt")})
+        out[-1].update(platforms=list(p["platforms"]), setup_flow=list(p["setup_flow"]),
+                       installed=False if mock else _port_installed(p))
     return out
 
 
 def ports_state(mock=False):
-    """GET /api/ports payload: catalogue + opt-in flag + current/last job. In
-    mock the opt-in reads True (so the harness can exercise the Install button)
-    and no real job/marker/FS is touched."""
-    if mock:
-        return {"ports": ports_catalog(mock=True), "allowed": True, "install": None}
-    return {"ports": ports_catalog(), "allowed": _ports_allowed(),
-            "install": ports_install_status()}
+    return {"ports": ports_catalog(mock), "allowed": True if mock else _ports_allowed(),
+            "install": None if mock else ports_install_status()}
+
+
+def _ports_download(asset, dest):
+    """Stream exact catalogued bytes. Every redirect remains HTTPS on GitHub's
+    release hosts; a downloaded checksum beside an executable is not a trust root.
+    No downloaded byte is executed until the whole recipe has been verified.
+    """
+    def validate(url):
+        u = urllib.parse.urlsplit(url)
+        if (u.scheme != "https" or u.hostname not in
+                ("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+                or u.username or u.password or u.port not in (None, 443)):
+            raise ValueError("Untrusted port download redirect")
+
+    class Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            validate(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    validate(asset["url"])
+    want, size = asset["sha256"], asset["size"]
+    deadline = time.monotonic() + 1800
+    if not re.fullmatch(r"[a-f0-9]{64}", want) or type(size) is not int or not 0 < size <= 1073741824:
+        raise ValueError("Missing port content pin")
+    h, total = hashlib.sha256(), 0
+    try:
+        request = urllib.request.Request(asset["url"], headers={"User-Agent": "Couchside-Ports"})
+        with urllib.request.build_opener(Redirect()).open(request, timeout=30) as r, open(dest, "xb") as f:
+            validate(r.geturl())
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("Port download deadline exceeded")
+                chunk = getattr(r, "read1", r.read)(min(1048576, size + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > size:
+                    raise ValueError("Port download exceeds pinned size")
+                h.update(chunk)
+                f.write(chunk)
+        if total != size or not hmac.compare_digest(h.hexdigest(), want):
+            raise ValueError("Port download failed SHA-256/size verification")
+    except BaseException:
+        if os.path.exists(dest):
+            os.unlink(dest)
+        raise
+
+
+def _ports_recipe(port, mode):
+    step = port[mode]
+    entry = {"name": step["bootstrap_url"].rsplit("/", 1)[-1],
+             "url": step["bootstrap_url"], "sha256": step["sha256"], "size": step["size"]}
+    return entry, [entry] + list(step.get("assets", ()))
+
+
+def _ports_run_recipe(port, mode, stage, log):
+    entry, assets = _ports_recipe(port, mode)
+    for asset in assets:
+        name = asset["name"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name in (".", ".."):
+            raise ValueError("Invalid pinned asset name")
+        print("Verifying %s" % name, file=log, flush=True)
+        _ports_download(asset, os.path.join(stage, name))
+    env = _user_env()
+    for key in list(env):
+        if key.startswith("BBPORT_") or key in ("BB_GAME_DIR", "BASH_ENV", "ENV", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"):
+            del env[key]
+    # The reviewed setup skips network download when this verified runtime is
+    # present. Supply every executable dependency locally; do not run bootstrap.sh,
+    # which fetches unpinned scripts. This is the reviewed bbport recipe contract.
+    appdir = os.path.expanduser(port["installed_check"])
+    if os.path.islink(appdir):
+        raise ValueError("Port installation directory must not be a symlink")
+    if mode == "install":
+        runtime = next(a for a in assets if a["name"] == port["source"]["appimage"])
+        os.makedirs(appdir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".verified-", dir=appdir)
+        try:
+            with os.fdopen(fd, "wb") as f, open(os.path.join(stage, runtime["name"]), "rb") as src:
+                shutil.copyfileobj(src, f, 1048576)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, os.path.join(appdir, runtime["name"]))
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    env.update(BBPORT_APPDIR=appdir, BBPORT_REPO=port["source"]["repo"],
+               BBPORT_TAG=port["source"]["tag"], BBPORT_ASSET=port["source"]["appimage"])
+    return subprocess.run(["bash", os.path.join(stage, entry["name"])], cwd=stage,
+                          env=env, stdin=subprocess.DEVNULL, stdout=log,
+                          stderr=subprocess.STDOUT, close_fds=True).returncode
+
+
+def _ports_worker(job_id):
+    """Internal fixed-recipe worker; never starts the agent server or loads tokens."""
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id) or os.getuid() == 0:
+        return 1
+    # Parent retains the lock until systemd confirms worker exec, so wait briefly
+    # for that exact launch. A rival worker never steals a live installer lock.
+    fd = None
+    for _ in range(100):
+        try:
+            fd = _ports_lock()
+            break
+        except BlockingIOError:
+            time.sleep(0.1)
+    if fd is None:
+        return 1
+    stage = None
+    job = None
+    try:
+        job = _ports_read_job()
+        if not job or job["job_id"] != job_id or not job["running"]:
+            return 1
+        if not _ports_allowed():
+            raise ValueError("Port installs were disabled before the job started")
+        stage = os.path.join(_ports_dir(), "stage-" + job_id)
+        os.mkdir(stage, 0o700)
+        job.update(phase="verifying")
+        _ports_write_job(job)
+        with open(PORTS_INSTALL_LOG, "a") as log:
+            try:
+                rc = _ports_run_recipe(_PORTS_BY_ID[job["id"]], job["mode"], stage, log)
+            except Exception as e:
+                print("Port job failed: %s" % e, file=log, flush=True)
+                rc = 1
+        job.update(running=False, finished=int(time.time()), exit_code=rc,
+                   ok=rc == 0, phase="complete" if rc == 0 else "failed")
+        _ports_write_job(job)
+        return rc
+    except Exception as e:
+        # Even preflight failures must have a durable terminal outcome.
+        try:
+            if job and job.get("job_id") == job_id:
+                job.update(running=False, finished=int(time.time()), exit_code=1,
+                           ok=False, phase="failed", error=str(e))
+                _ports_write_job(job)
+        except Exception:
+            pass
+        return 1
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+        os.close(fd)
 
 
 def ports_run(port_id, mode):
-    """Start a frozen port install/uninstall, detached, writing to
-    PORTS_INSTALL_LOG. Returns (payload, http_status). `mode` in
-    {install, uninstall}.
-
-    The id is looked up in _PORTS_BY_ID (unknown -> 404, nothing runs). The URL
-    executed is the FROZEN recipe's — never from the client. Two steps, argv
-    lists only: fetch the small bootstrap over https to a tmp file, then run it
-    as `bash <file>` detached (the long AppImage download happens in that child,
-    which writes to the log, never an unread pipe)."""
     port = _PORTS_BY_ID.get(port_id)
     if not port:
         return {"started": False, "error": "unknown port"}, 404
@@ -13918,96 +14112,44 @@ def ports_run(port_id, mode):
         return {"started": False, "error": "unknown mode"}, 400
     if not _ports_allowed():
         return {"started": False, "needs_optin": True,
-                "error": "port installs are not enabled "
-                         "(run on the box: couchside allow-ports on)"}, 403
-    url = (port.get(mode) or {}).get("bootstrap_url")
-    # Frozen data, so a bad URL is a catalogue bug, not client input — refuse
-    # closed rather than run something unpinned.
-    if not isinstance(url, str) or not url.startswith("https://github.com/"):
-        return {"started": False,
-                "error": "no %s step for this port" % mode}, 409
+                "error": "port installs are not enabled (run on the box: couchside allow-ports on)"}, 403
     with _PORTS_JOB_LOCK:
-        if _ports_running():
-            return {"started": False, "running": True, "id": _PORTS_JOB["id"],
-                    "error": "a port %s is already running"
-                             % (_PORTS_JOB["mode"] or "job")}, 409
         try:
-            os.makedirs(os.path.dirname(PORTS_INSTALL_LOG), exist_ok=True)
+            fd = _ports_lock()
+        except BlockingIOError:
+            return {"started": False, "running": True, "error": "A port job is already running."}, 409
         except OSError:
-            pass
+            return {"started": False, "error": "Port job storage is unavailable."}, 503
         try:
-            tmp = tempfile.mkdtemp(prefix="couchside-port-")
-        except OSError as e:
-            return {"started": False, "error": "cannot stage: %s" % e}, 500
-        script = os.path.join(tmp, "bootstrap.sh")
-        try:
-            logf = open(PORTS_INSTALL_LOG, "w")
-        except OSError as e:
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "error": "cannot open log: %s" % e}, 500
-        # Step 1 (bounded, synchronous): fetch ONLY the small bootstrap script.
-        # https pinned via --proto; the URL is frozen. argv list, never a shell.
-        fetch = ["curl", "-fL", "--proto", "=https", "--tlsv1.2", "--retry", "3",
-                 "-o", script, url]
-        try:
-            rc = subprocess.run(
-                fetch, stdout=logf, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, timeout=60, env=_user_env()).returncode
-        except Exception as e:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False,
-                    "error": "download failed: %s" % e.__class__.__name__}, 502
-        if rc != 0:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "exit_code": rc,
-                    "error": "could not download the installer",
-                    "lines": _ports_read_log()}, 502
-        # Step 2 (detached, long): run the bootstrap. It downloads the engine
-        # AppImage + installer scripts from the SAME frozen release and wires up
-        # the menu / Steam shortcuts, all as the desktop user — no root, no
-        # game data. Output -> the log file (an unread pipe deadlocks on a long
-        # child; see flatpak_update()).
-        try:
-            proc = subprocess.Popen(
-                ["bash", script], cwd=tmp, env=_user_env(),
-                stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True)
-        except OSError as e:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "error": str(e)}, 500
-        finally:
-            try:
-                logf.close()
-            except OSError:
+            previous = _ports_reconcile(_ports_read_job())
+            if previous and previous["running"]:
+                return {"started": False, "running": True, "error": "A port job is running or awaiting recovery."}, 409
+            job = {"id": port_id, "mode": mode, "job_id": secrets.token_hex(16),
+                   "running": True, "started": int(time.time()), "finished": None,
+                   "exit_code": None, "ok": None, "phase": "starting",
+                   "requires_user_files": bool(port["requires_user_files"]) if mode == "install" else False,
+                   "user_files_prompt": port["user_files_prompt"] if mode == "install" else None}
+            os.makedirs(os.path.dirname(PORTS_INSTALL_LOG), exist_ok=True)
+            with open(PORTS_INSTALL_LOG, "w"):
                 pass
-        rf = bool(port.get("requires_user_files")) if mode == "install" else False
-        up = port.get("user_files_prompt") if mode == "install" else None
-        _PORTS_JOB.update({
-            "proc": proc, "id": port_id, "mode": mode,
-            "started": time.time(), "finished": 0.0, "exit_code": None,
-            "requires_user_files": rf, "user_files_prompt": up,
-        })
-    # Short wait so an installer that dies instantly surfaces now, not as a
-    # false 'started'. Outside the lock — the job is already registered.
-    try:
-        rc = proc.wait(timeout=0.8)
-    except subprocess.TimeoutExpired:
-        rc = None
-    if rc is not None and rc != 0:
-        with _PORTS_JOB_LOCK:
-            _PORTS_JOB["exit_code"] = rc
-            _PORTS_JOB["finished"] = time.time()
-        return {"started": False, "id": port_id, "mode": mode, "exit_code": rc,
-                "error": "the installer exited immediately",
-                "lines": _ports_read_log()}, 502
-    print("[ports] %s %s started (log: %s)" % (mode, port_id, PORTS_INSTALL_LOG),
-          flush=True)
-    return {"started": True, "id": port_id, "mode": mode,
-            "requires_user_files": rf, "user_files_prompt": up,
-            "log": PORTS_INSTALL_LOG}, 200
+            _ports_write_job(job)
+            # Type=exec acknowledges Python exec, not just fork. The user unit
+            # owns this job independently of couchside.service's cgroup/lifetime.
+            argv = ["systemd-run", "--user", "--quiet", "--collect", "--unit=" + _PORTS_UNIT,
+                    "--property=Type=exec", sys.executable, os.path.realpath(__file__),
+                    "--ports-worker", job["job_id"]]
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=15, env=_user_env())
+            if r.returncode:
+                raise OSError("Could not start the Ports user service")
+            return {"started": True, "id": port_id, "mode": mode,
+                    "job_id": job["job_id"], "requires_user_files": job["requires_user_files"],
+                    "user_files_prompt": job["user_files_prompt"], "log": PORTS_INSTALL_LOG}, 200
+        except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+            # A launch timeout is ambiguous: keep the durable claim. Reconcile
+            # against the unit later rather than starting a second installer.
+            return {"started": False, "error": "Port job could not start; check status before retrying."}, 503
+        finally:
+            os.close(fd)
 
 
 _DECKY_MARKER = "/etc/couchside/allow-decky"
@@ -33312,6 +33454,7 @@ def load_token(args):
 
 def main():
     p = argparse.ArgumentParser(description="Couchside box agent")
+    p.add_argument("--ports-worker", default=None, help=argparse.SUPPRESS)
     p.add_argument("--port", type=int, default=None,
                    help="listen port (overrides config; default %d)" % DEFAULT_PORT)
     p.add_argument("--host", default="0.0.0.0")
@@ -33345,6 +33488,8 @@ def main():
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
     args = p.parse_args()
+    if args.ports_worker is not None:
+        return _ports_worker(args.ports_worker)
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)
