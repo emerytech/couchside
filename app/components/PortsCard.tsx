@@ -49,7 +49,7 @@ export function PortsCard() {
       </View>
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>Game Ports · Beta</Text>
+          <Text style={styles.title} numberOfLines={1}>Add-ons · Game Ports</Text>
           <View style={[styles.chip, { borderColor: chipColor }]}>
             <Text style={[styles.chipText, { color: chipColor }]} numberOfLines={1}>{chip}</Text>
           </View>
@@ -57,7 +57,7 @@ export function PortsCard() {
         <Text style={styles.sub} numberOfLines={2}>
           Experimental native game ports. Engine only — you bring your own game files.
         </Text>
-        <Text style={styles.manage}>Browse &amp; install &rsaquo;</Text>
+        <Text style={styles.manage}>Enable &amp; manage · Beta &rsaquo;</Text>
       </View>
       <Ionicons name="chevron-forward" size={18} color={t.textFaint} />
     </Pressable>

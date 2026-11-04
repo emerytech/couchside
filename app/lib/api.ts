@@ -2650,8 +2650,19 @@ export type PortInstallJob = {
   lines: string[];
 };
 
+export type AddonApproval = {
+  supported: boolean;
+  state: 'idle' | 'preparing' | 'pending' | 'approved' | 'declined' | 'expired' | 'failed' | 'locked';
+  remote_paused: boolean;
+  expires_in: number;
+  attempts_remaining: number;
+  enabled: boolean;
+  requested_enabled: boolean | null;
+};
+
 export type PortsState = {
   ports: Port[];
+  addon?: AddonApproval;
   /** The on-box opt-in (`couchside allow-ports on`) is set — installs are allowed. */
   allowed: boolean;
   install: PortInstallJob | null;
@@ -2787,6 +2798,18 @@ export const api = {
    * 403 `needs_optin` until the owner runs `couchside allow-ports on`; the port
    * ships the engine only, so the player still supplies their own game dump.
    */
+  verifyAddon(settings: ConnSettings, pin: string): Promise<AddonApproval> {
+    return request<AddonApproval>(settings, '/api/addons/verify', {
+      method: 'POST', body: { pin },
+    });
+  },
+
+  requestAddon(settings: ConnSettings, enabled: boolean): Promise<AddonApproval> {
+    return request<AddonApproval>(settings, '/api/addons/request', {
+      method: 'POST', body: { id: 'ports', enabled },
+    });
+  },
+
   installPort(settings: ConnSettings, id: string): Promise<PortActionResult> {
     return request<PortActionResult>(
       settings, '/api/ports/install', { method: 'POST', body: { id }, timeoutMs: 60000 });

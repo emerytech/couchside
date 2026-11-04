@@ -13808,8 +13808,225 @@ _PORTS_JOB_LOCK = threading.Lock()
 _PORTS_LAUNCH_GRACE = 30
 
 
+# Add-on permissions are desktop-user settings, not root privileges. The legacy
+# installer marker remains a fallback; a locally approved choice overrides it.
+_ADDON_CHOICE = os.path.expanduser("~/.local/state/couchside/addons/ports.json")
+_ADDON_LOCK = threading.RLock()
+_ADDON_CONDITION = threading.Condition(_ADDON_LOCK)
+_ADDON_ACTIVE = set()
+_ADDON_REQUEST = None
+_ADDON_MOCK_ENABLED = False
+_ADDON_TTL = 120
+_ADDON_COOLDOWN = 150
+_ADDON_ATTEMPTS = 5
+
+
 def _ports_allowed():
-    return os.path.exists(_PORTS_MARKER)
+    try:
+        with open(_ADDON_CHOICE) as f:
+            choice = json.load(f)
+        return isinstance(choice, dict) and choice.get("enabled") is True
+    except FileNotFoundError:
+        return os.path.exists(_PORTS_MARKER)
+    except (OSError, ValueError):
+        return False
+
+
+def _addon_expire():
+    # Called by a daemon timer AND every gate. Recovery needs no phone/browser
+    # polling, and restart discards the volatile challenge (never the permission).
+    with _ADDON_LOCK:
+        req = _ADDON_REQUEST
+        if req and req["state"] in ("preparing", "pending") and time.monotonic() >= req["deadline"]:
+            req["state"] = "expired"
+            req["pin"] = None
+
+
+def addon_paused():
+    with _ADDON_LOCK:
+        _addon_expire()
+        return bool(_ADDON_REQUEST and _ADDON_REQUEST["state"] in ("preparing", "pending"))
+
+
+def addon_remote_guard(method):
+    """Drain existing remote handlers BEFORE a PIN can be rendered. Closing
+    sockets alone is insufficient: cleanup must release held keys and streams.
+    All other controls are paused too, preventing action/menu routes bypassing
+    the input gate. Safe status/verification routes cannot capture or inject.
+    """
+    def guarded(self):
+        path = urlparse(self.path).path.rstrip("/")
+        safe = ((self.command == "GET" and path in (
+                    "/api/ping", "/api/status", "/api/ports", "/addons/confirm", "/api/addons/local-status"))
+                or (self.command == "POST" and path in (
+                    "/api/addons/request", "/api/addons/verify", "/api/addons/confirm")))
+        if safe:
+            return method(self)
+        with _ADDON_CONDITION:
+            paused = addon_paused()
+            if not paused:
+                _ADDON_ACTIVE.add(self)
+        if paused:
+            # Never hold the privacy/timer lock across network IO.
+            self.close_connection = True
+            self._send(423, {"error": "Remote viewing and controls are paused for local add-on confirmation.",
+                             "confirmation_pending": True}, time.monotonic())
+            return
+        try:
+            return method(self)
+        finally:
+            with _ADDON_CONDITION:
+                _ADDON_ACTIVE.discard(self)
+                _ADDON_CONDITION.notify_all()
+    return guarded
+
+
+def addon_status(mock=False):
+    with _ADDON_LOCK:
+        _addon_expire()
+        req = _ADDON_REQUEST
+        # PIN and decline nonce are NEVER returned by an authenticated remote API.
+        return {"supported": True, "state": req["state"] if req else "idle",
+                "enabled": _ADDON_MOCK_ENABLED if mock else _ports_allowed(),
+                "requested_enabled": req["enabled"] if req else None,
+                "remote_paused": addon_paused(),
+                "expires_in": max(0, int(req["deadline"] - time.monotonic())) if req and addon_paused() else 0,
+                "attempts_remaining": req["attempts"] if req else _ADDON_ATTEMPTS}
+
+
+def addon_request(addon_id, enabled, port, mock=False):
+    global _ADDON_REQUEST
+    if addon_id != "ports":
+        return {"error": "unknown add-on"}, 404
+    if type(enabled) is not bool:
+        return {"error": "enabled must be a boolean"}, 400
+    with _ADDON_CONDITION:
+        if addon_paused():
+            return {"error": "A confirmation is already waiting on the computer."}, 409
+        now = time.monotonic()
+        if _ADDON_REQUEST and now - _ADDON_REQUEST["created"] < _ADDON_COOLDOWN:
+            return {"error": "Please wait before requesting another confirmation."}, 429
+        req = {"enabled": enabled, "nonce": secrets.token_hex(32), "pin": None,
+               "state": "preparing", "attempts": _ADDON_ATTEMPTS,
+               "created": now, "deadline": now + _ADDON_TTL}
+        _ADDON_REQUEST = req
+        timer = threading.Timer(_ADDON_TTL, _addon_expire)
+        timer.daemon = True
+        timer.start()
+        active = list(_ADDON_ACTIVE)
+    # No sensitive local display yet. Interrupt blocking reads/writes and wait
+    # for their finally blocks, including virtual input release and portal close.
+    for handler in active:
+        try:
+            handler.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    with _ADDON_CONDITION:
+        drain_deadline = time.monotonic() + 5
+        while _ADDON_ACTIVE and req["state"] == "preparing":
+            remaining = drain_deadline - time.monotonic()
+            if remaining <= 0:
+                req["state"] = "failed"
+                return {"error": "Could not pause every remote session. Close remote viewing and try again."}, 409
+            _ADDON_CONDITION.wait(remaining)
+        if req["state"] != "preparing":
+            return {"error": "Confirmation could not start. Remote access has resumed."}, 409
+        req["pin"] = "%06d" % secrets.randbelow(1000000)
+        req["state"] = "pending"
+    if not mock:
+        pair_show_on_box_url("http://localhost:%d/addons/confirm" % port)
+    return addon_status(mock), 202
+
+
+def addon_decide(nonce, approve, mock=False):
+    # The local page can ONLY decline. Enabling requires the PIN in the app.
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        req = _ADDON_REQUEST
+        if (status["state"] != "pending" or not isinstance(nonce, str)
+                or not hmac.compare_digest(nonce, req["nonce"]) or approve is not False):
+            return {"error": "This confirmation is invalid or expired."}, 403
+        req["state"] = "declined"
+        req["pin"] = None
+        return addon_status(mock), 200
+
+
+def addon_verify(pin, mock=False):
+    global _ADDON_MOCK_ENABLED
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        req = _ADDON_REQUEST
+        if status["state"] != "pending":
+            return {"error": "No active confirmation. Remote access is available."}, 409
+        if not isinstance(pin, str) or len(pin) != 6 or not pin.isascii() or not pin.isdigit():
+            correct = False
+        else:
+            correct = hmac.compare_digest(pin, req["pin"])
+        if not correct:
+            req["attempts"] -= 1
+            if req["attempts"] <= 0:
+                req["state"] = "locked"
+                req["pin"] = None
+            return dict(addon_status(mock), error="Incorrect PIN." if req["attempts"] else "Too many attempts. Nothing changed; remote access has resumed."), 403
+        # Consume once, under the same lock as verification. No replay or double save.
+        req["pin"] = None
+        req["state"] = "failed"
+        if mock:
+            _ADDON_MOCK_ENABLED = req["enabled"]
+        else:
+            directory = os.path.dirname(_ADDON_CHOICE)
+            tmp = None
+            try:
+                os.makedirs(directory, mode=0o700, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(prefix=".choice-", dir=directory)
+                with os.fdopen(fd, "w") as f:
+                    json.dump({"enabled": req["enabled"]}, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, _ADDON_CHOICE)
+            except OSError:
+                return {"error": "Could not save the add-on permission. Remote access has resumed."}, 500
+            finally:
+                if tmp and os.path.exists(tmp):
+                    os.unlink(tmp)
+        req["state"] = "approved"
+        return addon_status(mock), 200
+
+
+def render_addon_confirmation(mock=False):
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        pending = status["state"] == "pending"
+        verb = "Enable" if pending and _ADDON_REQUEST["enabled"] else "Disable"
+        nonce = _ADDON_REQUEST["nonce"] if pending else ""
+        pin = _ADDON_REQUEST["pin"] if pending else "------"
+        request_id = _ADDON_REQUEST["created"] if _ADDON_REQUEST else 0
+    # No token or client text is embedded. PIN appears only behind the existing
+    # loopback + Host gates, once remote handlers are quiescent.
+    return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Couchside · Add-ons</title><style>
+body{background:#10131b;color:#f4f6fa;font:22px system-ui;margin:0;padding:6vh 6vw}
+main{max-width:760px;margin:auto;background:#1b2130;padding:36px;border-radius:24px}
+h1{font-size:36px}p{line-height:1.5;color:#c8d0df}button{font:inherit;border:0;border-radius:14px;padding:18px 28px;cursor:pointer;background:#343e52;color:white}
+button:focus{outline:4px solid white;outline-offset:4px}.pin{font:700 56px monospace;letter-spacing:12px;color:#8fb4ff}
+</style></head><body><main><small>COUCHSIDE · COMPUTER APPROVAL</small>
+<h1>%(verb)s Game Ports?</h1><p>Optional · Beta / experimental</p>
+<p>Enter this PIN in your paired Couchside app to confirm. Enabling downloads nothing; each engine is installed separately. Disabling keeps your games and saves.</p>
+<div class="pin" id="pin">%(pin)s</div>
+<p id="status">Remote viewing and input are paused. They resume automatically when this request ends or expires.</p>
+<button id="decline" autofocus onclick="decline()">Decline</button>
+</main><script>
+const nonce='%(nonce)s';const requestId=%(request_id)s;
+function ended(message){document.getElementById('pin').textContent='------';document.getElementById('decline').disabled=true;document.getElementById('status').textContent=message;}
+async function decline(){try{await fetch('/api/addons/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce,approve:false})});}finally{refresh();}}
+async function refresh(){try{const r=await fetch('/api/addons/local-status');const d=await r.json();
+ if(d.state==='pending' && d.request_id!==requestId){location.reload();return;}
+ if(d.state!=='pending'){ended(d.state==='approved'?'Setting saved. Remote access has resumed.':'No active confirmation. Remote access is available.');}
+ else{document.getElementById('status').textContent='Remote viewing and input paused · '+d.expires_in+' seconds remaining. Access resumes automatically.';}}
+ catch(e){ended('Connection lost. This PIN is no longer displayed. The computer restores remote access automatically at expiry.');}}
+refresh();setInterval(refresh,1000);
+</script></body></html>""" % {"verb": verb if pending else "Manage", "nonce": nonce, "pin": pin, "request_id": request_id}
+
 
 
 def _port_installed(port):
@@ -13957,8 +14174,9 @@ def ports_catalog(mock=False):
 
 
 def ports_state(mock=False):
-    return {"ports": ports_catalog(mock), "allowed": True if mock else _ports_allowed(),
-            "install": None if mock else ports_install_status()}
+    return {"ports": ports_catalog(mock), "allowed": _ADDON_MOCK_ENABLED if mock else _ports_allowed(),
+            "install": None if mock else ports_install_status(),
+            "addon": addon_status(mock)}
 
 
 def _ports_download(asset, dest):
@@ -28911,6 +29129,8 @@ class Handler(BaseHTTPRequestHandler):
         body = html.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -29028,6 +29248,7 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         self._send(204, None, started)
 
+    @addon_remote_guard
     def do_GET(self):
         started = time.monotonic()
         try:
@@ -29065,6 +29286,23 @@ class Handler(BaseHTTPRequestHandler):
                 # self-auths (?token=), then relays opaque SDP/ICE to the portal
                 # helper's webrtcbin. Absent module / no H.264 -> degrades closed.
                 self._handle_webrtc_ws(parsed, started)
+                return
+
+            if path == "/api/addons/local-status":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                with _ADDON_LOCK:
+                    status = addon_status(self.mock)
+                    status["request_id"] = _ADDON_REQUEST["created"] if _ADDON_REQUEST else 0
+                self._send(200, status, started)
+                return
+
+            if path == "/addons/confirm":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_addon_confirmation(self.mock), started)
                 return
 
             if path == "/pair":
@@ -30044,6 +30282,7 @@ class Handler(BaseHTTPRequestHandler):
         body.update(r)
         self._send(200, body, started)
 
+    @addon_remote_guard
     def do_POST(self):
         started = time.monotonic()
         try:
@@ -30059,6 +30298,29 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._read_body()
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            # A separate LOCAL-ONLY approval route. A bearer token cannot approve.
+            # Host prevents DNS rebinding; the unguessable page-only nonce prevents
+            # cross-site form/fetch requests. No CORS, no remote approval endpoint.
+            if path == "/api/addons/confirm":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self.close_connection = True
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                try:
+                    req = json.loads(self._read_body().decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"nonce", "approve"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "invalid confirmation"}, started)
+                    return
+                payload, code = addon_decide(req["nonce"], req["approve"], self.mock)
+                self._send(code, payload, started)
                 return
 
             # UNAUTHENTICATED PIN pairing (the only unauthenticated POSTs): a
@@ -30806,6 +31068,30 @@ class Handler(BaseHTTPRequestHandler):
                 result = ({"started": True, "log": OS_UPDATE_LOG}
                           if self.mock else os_update_apply())
                 self._send(200, result, started)
+                return
+
+            if path == "/api/addons/verify":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"pin"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "PIN required"}, started)
+                    return
+                payload, code = addon_verify(req["pin"], self.mock)
+                self._send(code, payload, started)
+                return
+
+            if path == "/api/addons/request":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"id", "enabled"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "id and enabled required"}, started)
+                    return
+                payload, code = addon_request(req["id"], req["enabled"], self.port, self.mock)
+                self._send(code, payload, started)
                 return
 
             # POST /api/ports/install | /api/ports/uninstall {"id": "..."}:
@@ -31967,6 +32253,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    @addon_remote_guard
     def do_DELETE(self):
         started = time.monotonic()
         try:
@@ -32585,6 +32872,22 @@ class Handler(BaseHTTPRequestHandler):
                     break
         finally:
             if hsock is not None:
+                # WebRTC media travels outside the agent socket. During privacy
+                # preparation, require EOF from the helper AFTER its pipeline
+                # teardown; merely closing signaling is not proof media stopped.
+                if addon_paused():
+                    try:
+                        hsock.shutdown(socket.SHUT_WR)
+                        hsock.settimeout(3)
+                        end = time.monotonic() + 3
+                        while hsock.recv(65536):
+                            if time.monotonic() >= end:
+                                raise OSError("portal did not finish teardown")
+                    except OSError:
+                        with _ADDON_LOCK:
+                            if addon_paused():
+                                _ADDON_REQUEST["state"] = "failed"
+                                _ADDON_REQUEST["pin"] = None
                 try:
                     hsock.close()                      # closing -> helper reaps
                 except OSError:
@@ -32705,6 +33008,8 @@ class Handler(BaseHTTPRequestHandler):
                 waiters = [s for s in GAMEPAD_SESSIONS]
                 promote = next((s for s in waiters if s.get("requested")), None) \
                     or (waiters[0] if waiters else None)
+                if addon_paused():
+                    promote = None
                 if promote is not None:
                     GAMEPAD_HOLDER = promote
             # Destroy OUR devices under nothing (destroy is idempotent); grab
@@ -32883,6 +33188,8 @@ class Handler(BaseHTTPRequestHandler):
         keyboard) are dropped unless this session currently holds control, so a
         connected-but-waiting phone can never move the pointer.
         """
+        if addon_paused():
+            return False
         try:
             msg = json.loads(payload.decode("utf-8"))
             if not isinstance(msg, dict):

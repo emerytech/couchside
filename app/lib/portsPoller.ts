@@ -67,7 +67,7 @@ export class PortsPoller {
     }
     this.changed!(this.state);
     if (!this.active || generation !== this.generation) return;
-    const delay = this.state.error || this.state.data?.install?.running ? PORTS_BUSY_MS : PORTS_IDLE_MS;
+    const delay = this.state.error || this.state.data?.install?.running || this.state.data?.addon?.remote_paused ? PORTS_BUSY_MS : PORTS_IDLE_MS;
     this.timer = this.clock.set(() => { this.timer = undefined; void this.tick(generation); }, delay);
   }
 }

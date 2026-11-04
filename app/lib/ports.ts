@@ -156,3 +156,17 @@ export function uninstallConfirmCopy(port: Pick<Port, 'name'>): {
     okLabel: 'Remove',
   };
 }
+
+/** Permission is always read back from the selected computer, never optimistic. */
+export function addonApprovalCopy(state: string | undefined): string | null {
+  switch (state) {
+    case 'preparing': return 'Pausing remote viewing and input before showing the PIN…';
+    case 'pending': return 'Read the six-digit PIN on your computer’s display and enter it below. Remote viewing and input resume automatically after confirmation or expiry.';
+    case 'locked': return 'Too many incorrect attempts. Nothing changed. Remote viewing and input are available again.';
+    case 'approved': return 'Your computer saved the add-on setting. Remote viewing and input are available again.';
+    case 'declined': return 'Declined on the computer. Nothing changed. Remote viewing and input are available again.';
+    case 'expired': return 'The confirmation expired. Nothing changed. Remote viewing and input resumed automatically.';
+    case 'failed': return 'The confirmation could not complete. Remote access is available. Try again or use the local CLI.';
+    default: return null;
+  }
+}

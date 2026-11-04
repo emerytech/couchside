@@ -20,7 +20,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, View,
+  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -30,7 +30,7 @@ import { usePorts } from '@/hooks/usePorts';
 import { api, hostKey, type Port } from '@/lib/api';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import {
-  installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
+  addonApprovalCopy, installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
   portButton, portJobCopy, uninstallConfirmCopy,
 } from '@/lib/ports';
 import { useSettings } from '@/lib/SettingsContext';
@@ -50,16 +50,55 @@ export default function PortsScreen() {
   const key = hostKey(settings);
 
   const [note, setNote] = useState<Note>(null);
+  const [pin, setPin] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [requesting, setRequesting] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const currentKey = useRef(key);
   currentKey.current = key;
-  useEffect(() => { setNote(null); setExpanded({}); }, [key]);
+  useEffect(() => { setNote(null); setExpanded({}); setRequesting(false); setPin(''); setVerifying(false); }, [key]);
   const state = usePorts(settings);
   const live = state.data;
   const ports = live?.ports ?? [];
   const allowed = live?.allowed ?? true;
   const activeJob = live?.install ?? null;
+
+  const requestAddon = async () => {
+    if (!live?.addon || requesting || live.addon.state === 'pending') return;
+    setRequesting(true);
+    setPin('');
+    setNote(null);
+    try {
+      await api.requestAddon(settings, !allowed);
+      if (currentKey.current === key) state.refresh();
+    } catch (error) {
+      if (currentKey.current === key) {
+        setNote({ tone: 'err', msg: error instanceof Error ? error.message : 'Could not request computer approval.' });
+        state.refresh();
+      }
+    } finally {
+      if (currentKey.current === key) setRequesting(false);
+    }
+  };
+
+  const verifyAddon = async () => {
+    if (!/^\d{6}$/.test(pin) || verifying || live?.addon?.state !== 'pending') return;
+    setVerifying(true);
+    setNote(null);
+    try {
+      await api.verifyAddon(settings, pin);
+      if (currentKey.current === key) { setPin(''); state.refresh(); }
+    } catch (error) {
+      if (currentKey.current === key) {
+        setPin('');
+        setNote({ tone: 'err', msg: error instanceof Error ? error.message : 'Could not verify the PIN. Check the computer status.' });
+        state.refresh();
+      }
+    } finally {
+      if (currentKey.current === key) setVerifying(false);
+    }
+  };
 
   const act = useCallback(
     async (port: Port, mode: 'install' | 'uninstall') => {
@@ -203,7 +242,41 @@ export default function PortsScreen() {
               <Text style={styles.legal}>Experimental feature. Compatibility and setup vary by port.</Text>
               <Text style={styles.legal}>{PORTS_LEGAL_LINE}</Text>
 
-              {!allowed ? (
+              {live?.addon?.supported ? (
+                <View style={[styles.banner, styles.bannerInfo]}>
+                  <Text style={styles.cardTitle}>Game Ports add-on · {allowed ? 'Enabled' : 'Off'}</Text>
+                  <Text style={styles.bannerText}>Optional · Beta / experimental. Enabling downloads nothing. Changes require approval on this computer. Disabling keeps your games and saves.</Text>
+                  <Pressable
+                    testID="ports-addon-toggle"
+                    accessibilityRole="button"
+                    disabled={requesting || live.addon.remote_paused || !!state.error}
+                    onPress={requestAddon}
+                    style={[styles.btn, styles.btnPrimary, (requesting || live.addon.remote_paused || !!state.error) && styles.btnDisabled]}>
+                    <Text style={styles.btnPrimaryText}>{requesting ? 'Requesting…' : live.addon.remote_paused ? 'Waiting for computer PIN…' : allowed ? 'Request disable on computer' : 'Enable with computer approval'}</Text>
+                  </Pressable>
+                  {live.addon.state === 'pending' ? (
+                    <View style={{ gap: 10, marginTop: 12 }}>
+                      <Text style={styles.bannerText}>Remote access paused · {live.addon.expires_in}s remaining · {live.addon.attempts_remaining} attempts</Text>
+                      <TextInput
+                        testID="addon-pin" accessibilityLabel="Six-digit PIN from computer"
+                        value={pin} onChangeText={(value) => setPin(value.replace(/[^0-9]/g, '').slice(0, 6))}
+                        keyboardType="number-pad" inputMode="numeric" maxLength={6}
+                        autoComplete="off" autoCorrect={false} placeholder="000000"
+                        placeholderTextColor={t.textFaint}
+                        style={{ color: t.text, backgroundColor: t.card, borderColor: t.blue,
+                          borderWidth: 1, borderRadius: 12, fontSize: 28, letterSpacing: 12,
+                          textAlign: 'center', padding: 12, fontFamily: mono }}
+                      />
+                      <Pressable accessibilityRole="button" testID="addon-pin-confirm"
+                        onPress={verifyAddon} disabled={pin.length !== 6 || verifying || !!state.error}
+                        style={[styles.btn, styles.btnPrimary, (pin.length !== 6 || verifying || !!state.error) && styles.btnDisabled]}>
+                        <Text style={styles.btnPrimaryText}>{verifying ? 'Checking PIN…' : 'Confirm PIN'}</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {addonApprovalCopy(live.addon.state) ? <Text accessibilityLiveRegion="polite" style={styles.bannerText}>{addonApprovalCopy(live.addon.state)}</Text> : null}
+                </View>
+              ) : !allowed ? (
                 <View style={[styles.banner, styles.bannerInfo]}>
                   <Text style={styles.bannerText}>
                     Port installs are off on this box. Enable them on the box, then try again:

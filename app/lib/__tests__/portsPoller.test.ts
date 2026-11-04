@@ -88,3 +88,17 @@ test('old-agent null response replaces cached catalog and refresh while stopped 
   await settle(); poller.refresh(); await settle(); assert.equal(current.data, null);
   poller.stop(); poller.refresh(); await settle(); assert.equal(calls, 2); assert.equal(clock.tasks.size, 0);
 });
+
+
+test('PIN pause polls quickly until expiry restores remote access', async () => {
+  const clock = new Clock(); const poller = new PortsPoller(clock);
+  const base = { ports: [], allowed: false, install: null };
+  const pending: PortsState = { ...base, addon: { supported: true, state: 'pending', enabled: false,
+    requested_enabled: true, remote_paused: true, expires_in: 2, attempts_remaining: 5 } };
+  const expired: PortsState = { ...base, addon: { ...pending.addon!, state: 'expired', remote_paused: false, expires_in: 0 } };
+  const replies = [pending, expired]; let current!: PortsPollState;
+  poller.start('box', async () => replies.shift()!, (s) => { current = s; });
+  await settle(); assert.equal(clock.next(), PORTS_BUSY_MS); await settle();
+  assert.equal(current.data?.addon?.remote_paused, false);
+  assert.equal(clock.next(), PORTS_IDLE_MS); poller.stop();
+});

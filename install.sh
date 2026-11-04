@@ -2692,7 +2692,7 @@ GRANT
   allow-ports)
     # OPT-IN: let the phone app install / remove Couchside-Ports (game ports
     # from the frozen catalogue the agent ships). OFF by default and set HERE on
-    # the box — the app can never enable it itself. UNLIKE allow-decky this
+    # the box, or approved through the local add-on confirmation page. UNLIKE allow-decky this
     # touches NO root: ports install as the desktop user (~/Applications + user
     # Steam shortcuts), so the only artefact is a marker file whose existence IS
     # the consent. The agent only runs a fixed recipe after every executable
@@ -2722,16 +2722,18 @@ GRANT
         sudo install -m 0644 -o root -g root "$tmpf" "$PORTS_MARKER"
         rm -f "$tmpf"
         sudo rm -f "$PORTS_DECLINED"
+        rm -f "$HOME/.local/state/couchside/addons/ports.json"
         echo "Port installs from the app: on"
         ;;
       off)
         sudo rm -f "$PORTS_MARKER"
         sudo mkdir -p /etc/couchside
         sudo touch "$PORTS_DECLINED"
+        rm -f "$HOME/.local/state/couchside/addons/ports.json"
         echo "Port installs from the app: off"
         ;;
       ""|status)
-        if sudo test -e "$PORTS_MARKER" 2>/dev/null; then
+        if python3 -c 'import json,os,sys; p=os.path.expanduser("~/.local/state/couchside/addons/ports.json"); sys.exit(0 if (json.load(open(p)).get("enabled") is True if os.path.exists(p) else os.path.exists("/etc/couchside/allow-ports")) else 1)' 2>/dev/null; then
           echo "Port installs from the app: on"
         else
           echo "Port installs from the app: off"
@@ -3703,7 +3705,7 @@ offer_decky_optin
 offer_ports_optin() {
     [ -x "$CLI" ] || return 0
     decky_steam_root_present || return 0
-    if sudo test -e "$PORTS_MARKER" 2>/dev/null || sudo test -e "$PORTS_DECLINED" 2>/dev/null; then
+    if [ -f "$HOME/.local/state/couchside/addons/ports.json" ] || sudo test -e "$PORTS_MARKER" 2>/dev/null || sudo test -e "$PORTS_DECLINED" 2>/dev/null; then
         return 0
     fi
     decky_have_tty || return 0

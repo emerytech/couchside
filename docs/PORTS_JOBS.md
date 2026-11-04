@@ -110,3 +110,41 @@ Legion SteamOS acceptance: all 21 job tests passed. A real systemd user worker
 kept the same PID across restart of an isolated parent service and completed
 once. This used a synthetic 30-second recipe and did not install a game. The
 installed Couchside service and user game files were untouched.
+
+## App-requested add-on approval (release candidate)
+
+Game Ports is the first allowlisted add-on (`ports`). The app can request enable
+or disable through bearer-authenticated `POST /api/addons/request`; it cannot
+send a command, URL, path, or an arbitrary permission name. The local computer
+shows a fresh six-digit PIN. `POST /api/addons/verify` requires both the pairing
+token and that PIN. Five failed attempts consume the request. Requests last
+120 seconds and are rate-limited to one per 150 seconds.
+
+Before rendering a PIN, the agent blocks new remote control/viewing requests,
+shuts down active remote connections, and waits for their handler cleanup.
+If cleanup cannot finish within five seconds, no PIN is shown and permission
+is unchanged. The WebRTC relay additionally waits for helper EOF after pipeline
+teardown because media travels separately from signaling. The local page is
+loopback/Host guarded, cannot be framed, and may only decline. Remote API
+responses contain status/countdown/attempts, never the PIN or local nonce.
+
+Approval, decline, exhausted attempts, failure, expiry, or agent restart removes
+the temporary pause. Expiry is enforced by a daemon timer and every request gate;
+it does not depend on a connected app or browser. Status and PIN verification
+remain available while paused. Existing clients may need their normal reconnect
+cycle after a socket closes. No permanent input/screen configuration is changed.
+
+The desktop-user permission choice is atomically saved with mode 0600 under
+`~/.local/state/couchside/addons/ports.json`. It overrides the legacy installer
+marker. Explicit CLI on/off clears the override, so the CLI remains authoritative
+when used locally. Enabling downloads nothing; disabling does not delete games
+or saves. This is a desktop-user feature permission, not a root privilege grant.
+The privacy barrier covers Couchside, not independent remote-access software or
+an attacker already executing code as the desktop user.
+
+Validation: local web UI wrong/correct PIN flow; ten Python consent/lifecycle
+checks including a live mock gamepad socket teardown/reconnect and timer expiry
+without browser polling; Ports app polling tests and existing gamepad, capture,
+H.264, WebRTC and Ports job regressions. Native SteamOS desktop/Game Mode and
+mobile reconnect acceptance remains required before release. Windows has no
+Ports add-on and does not advertise this Linux-only permission route.

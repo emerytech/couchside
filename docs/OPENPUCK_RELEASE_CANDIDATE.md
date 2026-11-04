@@ -96,3 +96,13 @@ Do not imply that the phone flashes a USB board attached directly to the phone.
 Combined local acceptance: TypeScript, all 881 app tests, 21 Ports job tests,
 Ports catalog parity, OpenPuck device/auth/refusal suites and utilities pass.
 Final binary checks and exact-head CI remain distinct from these source tests.
+
+### Add-on confirmation addition — November 4
+The release candidate now includes optional Ports enable/disable requests from
+mobile, confirmed with a six-digit PIN visible only on the computer while
+Couchside remote viewing/input is temporarily paused. Expiry restores access
+automatically. Local preview and automated checks are complete; physical Linux
+and native mobile privacy/reconnect checks remain gates. Previously built
+2.9.82 iOS290/Play130/Direct65 and Linux/Decky artifacts predate this addition:
+**do not publish them as containing the PIN flow**. Rebuild the affected artifacts
+from the final validated source before release; recheck build-number availability.
