@@ -31,12 +31,14 @@ The Android connection regression reproduces two stalled TLS handshakes blocking
 a healthy host on the dependency's two-worker executor. The patched native code
 times out and closes those attempts, allowing the healthy host to connect.
 Certificate pinning remains unchanged. Automated regression, codec/connection,
-OpenPuck logic and TypeScript checks pass. Physical host-switch acceptance of the
-rebuilt APK is still pending.
+OpenPuck logic and TypeScript checks pass. Physical host-switch acceptance passed on Thor using source a42e1f5: the
+offline Windows preview entry displayed Secure link down, then selecting Legion
+restored live Console and Actions data without restarting the app. Device logs
+confirmed native attempts expired after 4000 ms. The preview APK SHA-256 is
+`194f7033048dde96e35248555bfc55cdfbab43f0f21656df13b4c9aba61ff6c4`.
 
 ## Remaining release checks
 
-- Complete native Android offline-host to Legion switching on the rebuilt APK.
 - Complete iPhone layout and lifecycle acceptance for the new receiver controls.
 - Review the final diff against current main and rerun required exact-head CI.
 - Allocate fresh app/store and changed-agent versions after checking live release
