@@ -63,6 +63,15 @@ def test_status_and_pairing():
         assert m._op_pair_plan('PUCK', 'CONTROLLER', pb, cb)['controller_record'][:8] == b'ABCDEFGH'
 
 
+def test_write_reboot_error_requires_complete_transfer():
+    for m in (linux, windows):
+        assert m._op_reboot_write_error(9, 512, 512, 'syncing', 'win32')
+        assert not m._op_reboot_write_error(9, 0, 512, 'syncing', 'win32')
+        assert not m._op_reboot_write_error(9, 512, 512, 'writing', 'win32')
+        assert not m._op_reboot_write_error(9, 512, 512, 'syncing', 'linux')
+        assert not m._op_reboot_write_error(13, 512, 512, 'syncing', 'win32')
+
+
 def test_all_blocks_verified():
     m = linux
     n = 736
@@ -196,6 +205,6 @@ def test_pair_commit_and_partial_failure():
 
 
 if __name__ == '__main__':
-    for fn in (test_shared_implementation, test_status_and_pairing, test_all_blocks_verified,
+    for fn in (test_shared_implementation, test_status_and_pairing, test_all_blocks_verified, test_write_reboot_error_requires_complete_transfer,
                test_rejections_and_locks, test_diagnostics_no_false_pass, test_pair_commit_and_partial_failure, test_http_auth):
         fn(); print('PASS', fn.__name__)
