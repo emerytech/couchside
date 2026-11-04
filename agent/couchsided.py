@@ -14010,18 +14010,24 @@ main{max-width:760px;margin:auto;background:#1b2130;padding:36px;border-radius:2
 h1{font-size:36px}p{line-height:1.5;color:#c8d0df}button{font:inherit;border:0;border-radius:14px;padding:18px 28px;cursor:pointer;background:#343e52;color:white}
 button:focus{outline:4px solid white;outline-offset:4px}.pin{font:700 56px monospace;letter-spacing:12px;color:#8fb4ff}
 </style></head><body><main><small>COUCHSIDE · COMPUTER APPROVAL</small>
-<h1>%(verb)s Game Ports?</h1><p>Optional · Beta / experimental</p>
-<p>Enter this PIN in your paired Couchside app to confirm. Enabling downloads nothing; each engine is installed separately. Disabling keeps your games and saves.</p>
+<h1 id="heading">%(verb)s Game Ports?</h1><p>Optional · Beta / experimental</p>
+<p id="instructions">Enter this PIN in your paired Couchside app to confirm. Enabling downloads nothing; each engine is installed separately. Disabling keeps your games and saves.</p>
 <div class="pin" id="pin">%(pin)s</div>
 <p id="status">Remote viewing and input are paused. They resume automatically when this request ends or expires.</p>
 <button id="decline" autofocus onclick="decline()">Decline</button>
 </main><script>
-const nonce='%(nonce)s';const requestId=%(request_id)s;
+const nonce='%(nonce)s';const requestId=%(request_id)s;let finished=false;
 function ended(message){document.getElementById('pin').textContent='------';document.getElementById('decline').disabled=true;document.getElementById('status').textContent=message;}
 async function decline(){try{await fetch('/api/addons/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce,approve:false})});}finally{refresh();}}
 async function refresh(){try{const r=await fetch('/api/addons/local-status');const d=await r.json();
  if(d.state==='pending' && d.request_id!==requestId){location.reload();return;}
- if(d.state!=='pending'){ended(d.state==='approved'?'Setting saved. Remote access has resumed.':'No active confirmation. Remote access is available.');}
+ if(d.state!=='pending'){
+ ended(d.state==='approved'?'Setting saved. Remote access has resumed.':'No changes made. Remote access is available.');
+ document.getElementById('heading').textContent=d.state==='approved'?(d.enabled?'Game Ports enabled':'Game Ports disabled'):'Confirmation ended';
+ document.getElementById('pin').hidden=true;document.getElementById('decline').hidden=true;
+ document.getElementById('instructions').textContent='Press B (Back) to return to Steam, or close this browser window.';
+ if(!finished){finished=true;setTimeout(()=>{window.close();},1200);}
+ }
  else{document.getElementById('status').textContent='Remote viewing and input paused · '+d.expires_in+' seconds remaining. Access resumes automatically.';}}
  catch(e){ended('Connection lost. This PIN is no longer displayed. The computer restores remote access automatically at expiry.');}}
 refresh();setInterval(refresh,1000);
