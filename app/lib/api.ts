@@ -2631,6 +2631,11 @@ export type Port = {
 
 /** The current (or last) port install/uninstall job the app polls for progress. */
 export type PortInstallJob = {
+  /** Durable identity/status from restart-safe agents; absent on older agents. */
+  job_id?: string;
+  phase?: string;
+  recovery_pending?: boolean;
+  error?: string;
   id: string;
   mode: 'install' | 'uninstall';
   running: boolean;
@@ -2776,10 +2781,9 @@ export const api = {
   },
 
   /**
-   * Start a port install on the box (frozen id -> frozen bootstrap URL; the app
-   * never names a URL or command). LONG timeout: the box fetches the small
-   * bootstrap synchronously before it answers `started`, then the engine
-   * AppImage downloads in a detached child the app watches via api.ports().
+   * Start a verified fixed-recipe job on the box. The worker is independent of
+   * the agent and downloads/verifies in the background. A POST timeout is
+   * ambiguous; reconcile api.ports() instead of automatically retrying a POST.
    * 403 `needs_optin` until the owner runs `couchside allow-ports on`; the port
    * ships the engine only, so the player still supplies their own game dump.
    */

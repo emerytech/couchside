@@ -14064,6 +14064,8 @@ def _ports_worker(job_id):
             break
         except BlockingIOError:
             time.sleep(0.1)
+        except OSError:
+            return 1
     if fd is None:
         return 1
     stage = None
@@ -33047,7 +33049,7 @@ def main():
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
     args = p.parse_args()
     if args.ports_worker is not None:
-        return _ports_worker(args.ports_worker)
+        raise SystemExit(_ports_worker(args.ports_worker))
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)

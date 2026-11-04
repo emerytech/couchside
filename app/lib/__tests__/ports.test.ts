@@ -49,9 +49,9 @@ test('button: install when absent, remove when installed, busy while its job run
     { label: 'Installing…', action: null, busy: true });
   assert.deepEqual(portButton({ ...BB, installed: true }, job({ mode: 'uninstall', running: true })),
     { label: 'Removing…', action: null, busy: true });
-  // CONTROL: a job for a DIFFERENT port does not make this row busy.
+  // One global install queue: a different active port must block this row too.
   assert.deepEqual(portButton(BB, job({ id: 'other', running: true })),
-    { label: 'Install', action: 'install', busy: false });
+    { label: 'Job in progress…', action: null, busy: true });
 });
 
 test('job active helpers key on id + running', () => {
@@ -107,4 +107,11 @@ test('confirm copy carries the legal line, and the dump step only when needed', 
   const un = uninstallConfirmCopy(BB);
   assert.equal(un.okLabel, 'Remove');
   assert.ok(un.message.includes('left where they are'));
+});
+
+test('recovery/interrupt status cannot claim success or invite a concurrent job', () => {
+  const pending = job({ id: '', recovery_pending: true, running: true });
+  assert.equal(portButton(BB, pending).action, null);
+  assert.equal(portJobCopy(pending)?.tone, 'warn');
+  assert.match(portJobCopy(job({ phase: 'interrupted', running: false, ok: false }))!.line, /interrupted/);
 });
