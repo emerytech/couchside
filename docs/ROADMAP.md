@@ -2830,3 +2830,8 @@ release tags.)_
 - Depends on: matching companion appearance capability and a working Decky frontend.
 - Validated data packs, local import subset, saved PC library, reversible selection and original defaults. See TV_APPEARANCE_PACKS.md.
 - Local/browser/API and SteamOS/Bazzite TV checks complete, including native picker focus fixes. Private iPhone 281 verified literal CSS Paste/Preview/Cancel/Apply to Bazzite, restart persistence, default restoration, and clean launches. Original TV installations restored. Earlier unexpected-close entry predates the previews; its cause remains unconfirmed. Release packaging/review remain pending. Not released.
+
+### In progress — App-managed add-ons with local PIN approval (2026-11-04)
+- Priority P1; affects mobile app and Linux agent. Game Ports first, Beta/experimental.
+- App requests a fixed permission; computer displays a six-digit PIN while Couchside remote viewing/input is paused. Automatic expiry restores access without user intervention.
+- Local preview and automated lifecycle checks completed. Physical SteamOS desktop/Game Mode and native mobile acceptance remain required before release.

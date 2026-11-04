@@ -298,6 +298,8 @@ DECKY_MARKER="${ETC_DIR}/allow-decky"
 # Written when the owner answers "n" to the one-time install-time offer, so a
 # re-run (or the app-driven update) never nags. `allow-decky on` removes it.
 DECKY_DECLINED="${ETC_DIR}/decky-optin-declined"
+PORTS_MARKER="${ETC_DIR}/allow-ports"
+PORTS_DECLINED="${ETC_DIR}/ports-optin-declined"
 # Opt-in grant: two EXACT systemctl argvs starting the two unit instances.
 # The wrapper itself gets no grant, so the grant cannot run it with other
 # arguments. Separate file, like zz-couchside-updates, so it is one file to
@@ -628,7 +630,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed the Decky Loader manager (wrapper, unit template, opt-in); Decky Loader itself is untouched"
     # Couchside-Ports opt-in marker + install transcript. Installed ports
     # (~/Applications/...) are left in place — each has its own uninstaller.
-    sudo rm -f /etc/couchside/allow-ports 2>/dev/null || true
+    sudo rm -f /etc/couchside/allow-ports /etc/couchside/ports-optin-declined 2>/dev/null || true
     rm -f "${HOME}/.cache/couchside/ports-install.log"
     sudo rm -rf /run/couchside
     # The block above runs after the earlier daemon-reload, so reload again or
@@ -2690,17 +2692,19 @@ GRANT
   allow-ports)
     # OPT-IN: let the phone app install / remove Couchside-Ports (game ports
     # from the frozen catalogue the agent ships). OFF by default and set HERE on
-    # the box — the app can never enable it itself. UNLIKE allow-decky this
+    # the box, or approved through the local add-on confirmation page. UNLIKE allow-decky this
     # touches NO root: ports install as the desktop user (~/Applications + user
     # Steam shortcuts), so the only artefact is a marker file whose existence IS
-    # the consent. The agent only ever runs the FROZEN bootstrap URL of a port
-    # the owner installed; a port ships the engine only and the player always
+    # the consent. The agent only runs a fixed recipe after every executable
+    # passes its pinned size and SHA-256 checks; a port ships the engine only and the player always
     # supplies their own game dump — no game data is ever downloaded.
     PORTS_MARKER="/etc/couchside/allow-ports"
+    PORTS_DECLINED="/etc/couchside/ports-optin-declined"
     case "${2:-}" in
       on)
-        echo "Couchside-Ports installs a game PORT onto this box: the agent downloads"
-        echo "the port's engine (an AppImage) from its pinned GitHub release over TLS and"
+        echo "Game Ports is Beta / experimental. Enabling it downloads no games."
+        echo "When you choose Install in the app, Couchside downloads"
+        echo "the port's engine and verifies pinned sizes and SHA-256 hashes before it"
         echo "runs its installer AS YOUR DESKTOP USER (no root). Game ports ship the engine"
         echo "ONLY — you always supply your own legally-dumped game files; nothing copies a"
         echo "game for you."
@@ -2717,14 +2721,19 @@ GRANT
         printf '# Written by `couchside allow-ports on`. While this file exists the Couchside\n# app may install/remove game ports (engine-only) from the agent catalogue.\n# Remove with: couchside allow-ports off\n' > "$tmpf"
         sudo install -m 0644 -o root -g root "$tmpf" "$PORTS_MARKER"
         rm -f "$tmpf"
+        sudo rm -f "$PORTS_DECLINED"
+        rm -f "$HOME/.local/state/couchside/addons/ports.json"
         echo "Port installs from the app: on"
         ;;
       off)
         sudo rm -f "$PORTS_MARKER"
+        sudo mkdir -p /etc/couchside
+        sudo touch "$PORTS_DECLINED"
+        rm -f "$HOME/.local/state/couchside/addons/ports.json"
         echo "Port installs from the app: off"
         ;;
       ""|status)
-        if sudo test -e "$PORTS_MARKER" 2>/dev/null; then
+        if python3 -c 'import json,os,sys; p=os.path.expanduser("~/.local/state/couchside/addons/ports.json"); sys.exit(0 if (json.load(open(p)).get("enabled") is True if os.path.exists(p) else os.path.exists("/etc/couchside/allow-ports")) else 1)' 2>/dev/null; then
           echo "Port installs from the app: on"
         else
           echo "Port installs from the app: off"
@@ -3690,6 +3699,33 @@ offer_decky_optin() {
     fi
 }
 offer_decky_optin
+
+# Optional game-port installation is a separate, remembered desktop-user choice.
+# Do not grant it or stamp a decline during unattended updates.
+offer_ports_optin() {
+    [ -x "$CLI" ] || return 0
+    decky_steam_root_present || return 0
+    if [ -f "$HOME/.local/state/couchside/addons/ports.json" ] || sudo test -e "$PORTS_MARKER" 2>/dev/null || sudo test -e "$PORTS_DECLINED" 2>/dev/null; then
+        return 0
+    fi
+    decky_have_tty || return 0
+    echo
+    say "Optional: Game Ports (Beta / experimental)"
+    note "Enable game-port installs from the app. Each engine is downloaded only"
+    note "when you choose Install; you supply any required game files."
+    note "Compatibility and setup vary by port. Nothing is downloaded now."
+    if ask_yn "Enable Game Ports (Beta / experimental)?"; then
+        "$CLI" allow-ports on || note "not enabled — run 'couchside allow-ports on' later to try again"
+    else
+        local tmpf
+        tmpf="$(mktemp)"
+        printf '# Owner declined optional Game Ports. Enable later: couchside allow-ports on\n' > "$tmpf"
+        sudo install -m 0644 -o root -g root "$tmpf" "$PORTS_DECLINED"
+        rm -f "$tmpf"
+        note "Game Ports remains off. Enable later with: couchside allow-ports on"
+    fi
+}
+offer_ports_optin
 
 # Theme choice is independent of the service and remembered across upgrades.
 # Non-interactive runs never opt in. No Steam files or rootfs are patched here.
