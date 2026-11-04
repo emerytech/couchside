@@ -184,3 +184,15 @@ subscriber sends are part of this audit.
 - No fresh native-device, live install/remove, signed Windows, long-soak, store
   upload or production deployment test was run. This document identifies remaining
   work; it does not mark those gates complete.
+
+
+## Ports implementation checkpoint — November 3, 2026
+
+Download-content verification and durable independent job tracking are implemented
+on `codex/ports-verification-recovery-20261103`; see [Ports job contract](PORTS_JOBS.md).
+All catalogued executable bytes, including the runtime, passed the new downloader.
+Local Ports agent tests and the app suite passed, with delayed-response and
+process-interruption controls. The exported-app fixture passed install/completion,
+remove and backend-disconnect/reconnect reconciliation without duplicate mutation.
+The earlier checklist stays open until real systemd user-service, native-phone and
+approved disposable-target acceptance. Nothing is released or deployed by this work.
