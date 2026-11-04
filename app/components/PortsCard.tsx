@@ -42,20 +42,20 @@ export function PortsCard() {
       onPress={() => { hapticLight(); router.push('/ports'); }}
       testID="ports-card"
       accessibilityRole="button"
-      accessibilityLabel={`Game ports, ${chip}`}
+      accessibilityLabel={`Game ports beta, experimental, ${chip}`}
       style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.iconWrap}>
         <Ionicons name="game-controller-outline" size={22} color={t.blue} />
       </View>
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>Game Ports</Text>
+          <Text style={styles.title} numberOfLines={1}>Game Ports · Beta</Text>
           <View style={[styles.chip, { borderColor: chipColor }]}>
             <Text style={[styles.chipText, { color: chipColor }]} numberOfLines={1}>{chip}</Text>
           </View>
         </View>
         <Text style={styles.sub} numberOfLines={2}>
-          Native game ports for your Steam Machine. Engine only — you bring your own game files.
+          Experimental native game ports. Engine only — you bring your own game files.
         </Text>
         <Text style={styles.manage}>Browse &amp; install &rsaquo;</Text>
       </View>

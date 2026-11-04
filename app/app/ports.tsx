@@ -186,7 +186,7 @@ export default function PortsScreen() {
         <Pressable onPress={() => router.back()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={26} color={t.text} />
         </Pressable>
-        <Text style={styles.title}>Ports</Text>
+        <Text style={styles.title}>Ports · Beta</Text>
         <View style={{ width: 26 }} />
       </View>
 
@@ -200,6 +200,7 @@ export default function PortsScreen() {
           contentContainerStyle={{ padding: 14, paddingBottom: insets.bottom + 24 }}
           ListHeaderComponent={
             <View>
+              <Text style={styles.legal}>Experimental feature. Compatibility and setup vary by port.</Text>
               <Text style={styles.legal}>{PORTS_LEGAL_LINE}</Text>
 
               {!allowed ? (
