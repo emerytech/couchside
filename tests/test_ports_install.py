@@ -57,8 +57,8 @@ class PortsTests(unittest.TestCase):
         cs._ports_write_job(j)
         return j
 
-    def server(self):
-        handler = type('TestHandler', (cs.Handler,), dict(token=TOKEN, token_file=None, mock=True, port=0))
+    def server(self, mock=True):
+        handler = type('TestHandler', (cs.Handler,), dict(token=TOKEN, token_file=None, mock=mock, port=0))
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -89,6 +89,19 @@ class PortsTests(unittest.TestCase):
         port = self.server()
         with patch.object(cs.subprocess,'run',side_effect=AssertionError('spawned')):
             self.assertTrue(self.request(port,'POST','/api/ports/install',{'id':BB})[1]['started'])
+
+    def test_install_and_uninstall_routes_select_distinct_worker_modes(self):
+        for mock in (True, False):
+            port = self.server(mock=mock)
+            with patch.object(cs, 'ports_run', return_value=({'started': True}, 200)) as run:
+                for mode in ('install', 'uninstall'):
+                    code, result = self.request(port, 'POST', '/api/ports/'+mode, {'id': BB})
+                    self.assertEqual(code, 200)
+                    if mock:
+                        self.assertEqual(result['mode'], mode)
+                        run.assert_not_called()
+                    else:
+                        run.assert_called_with(BB, mode)
 
     def test_optin_and_unknown_refuse_before_storage_or_process(self):
         self.marker.unlink()

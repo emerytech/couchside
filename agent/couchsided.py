@@ -31108,7 +31108,7 @@ class Handler(BaseHTTPRequestHandler):
             # No client URL, command or game data is accepted.
             # Gated by the on-box opt-in (couchside allow-ports on) -> 403.
             if path in ("/api/ports/install", "/api/ports/uninstall"):
-                mode = "install" if path.endswith("install") else "uninstall"
+                mode = "install" if path == "/api/ports/install" else "uninstall"
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}
                     if not isinstance(req, dict):
