@@ -2974,6 +2974,11 @@ export const api = {
    * anything — flashing a newer build is a separate, explicit
    * runUtility(settings, 'openpuck', 'latest').
    */
+  openpuckDevice(settings: ConnSettings, op: 'inspect' | 'test' | 'prepare_pair' | 'pair' | 'bootloader', body: { serial?: string; confirmation?: string }): Promise<import('./openpuck').PuckResult | null> {
+    return probeOrNull(request<import('./openpuck').PuckResult>(settings,
+      `/api/utilities/openpuck/device/${op}`, { method: 'POST', body, timeoutMs: 75000 }));
+  },
+
   openpuckLatest(settings: ConnSettings): Promise<OpenpuckLatest | null> {
     return probeOrNull(
       request<OpenpuckLatest>(settings, '/api/utilities/openpuck/latest'));
