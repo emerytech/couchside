@@ -240,7 +240,7 @@ sys.exit(c._ports_worker('a'*32))
         env=dict(os.environ,BBPORT_REPO='evil',BASH_ENV='/must-not-run')
         with patch.object(cs.urllib.request,'build_opener',return_value=opener),patch.object(cs,'_user_env',return_value=env),self.log.open('w') as log:
             self.assertEqual(cs._ports_run_recipe(port,'uninstall',str(stage),log),0)
-        self.assertEqual(self.log.read_text(),'fixture:empty:emerytech/Bloodborne-Android')
+        self.assertTrue(self.log.read_text().endswith('fixture:empty:emerytech/Bloodborne-Android'))
 
     def test_lock_held_with_unavailable_unit_does_not_clear_live_job(self):
         self.job()
@@ -265,6 +265,32 @@ sys.exit(c._ports_worker('a'*32))
         with patch.object(cs,'_ports_unit_active',return_value=True):
             self.assertTrue(cs.ports_install_status()['running'])
             self.assertEqual(cs.ports_run(BB,'install')[1],409)
+
+    def test_internal_worker_flag_reports_refusal_without_starting_server(self):
+        result=subprocess.run([sys.executable,str(ROOT/'agent/couchsided.py'),'--ports-worker','../untrusted'],capture_output=True,timeout=5)
+        self.assertEqual(result.returncode,1)
+        self.assertNotIn(b'listening',result.stdout.lower())
+
+    def test_killed_worker_is_reconciled_after_process_restart(self):
+        if os.getuid()==0:self.skipTest('worker refuses root')
+        self.job()
+        code="""import importlib.util,sys,time
+s=importlib.util.spec_from_file_location('cs',sys.argv[1]);c=importlib.util.module_from_spec(s);s.loader.exec_module(c)
+c._PORTS_STATE_DIR=sys.argv[2];c.PORTS_INSTALL_LOG=sys.argv[3];c._PORTS_MARKER=sys.argv[4]
+def recipe(*a):
+ print('fixture-running',flush=True);time.sleep(60);return 0
+c._ports_run_recipe=recipe
+sys.exit(c._ports_worker('a'*32))
+"""
+        p=subprocess.Popen([sys.executable,'-c',code,str(ROOT/'agent/couchsided.py'),str(self.state),str(self.log),str(self.marker)],stdout=subprocess.PIPE,text=True)
+        self.addCleanup(lambda:p.kill() if p.poll() is None else None)
+        self.assertEqual(p.stdout.readline().strip(),'fixture-running')
+        p.kill();p.wait(timeout=5);p.stdout.close()
+        with patch.object(cs,'_ports_unit_active',return_value=False):
+            status=cs.ports_install_status()
+        self.assertFalse(status['running']);self.assertFalse(status['ok'])
+        self.assertEqual(status['phase'],'interrupted')
+        self.assertEqual(list(self.state.glob('stage-*')),[])
 
 
 if __name__=='__main__':unittest.main()

@@ -54,6 +54,9 @@ export function portButton(
   port: Pick<Port, 'id' | 'installed'>,
   job: PortInstallJob | null | undefined,
 ): { label: string; action: 'install' | 'uninstall' | null; busy: boolean } {
+  if (job?.running && job.id !== port.id) {
+    return { label: 'Job in progress…', action: null, busy: true };
+  }
   if (portJobActive(job, port.id)) {
     const verb = job && job.mode === 'uninstall' ? 'Removing…' : 'Installing…';
     return { label: verb, action: null, busy: true };
@@ -73,6 +76,12 @@ export function portJobCopy(
   portName?: string,
 ): { line: string; tone: Tone; needsDump: boolean } | null {
   if (!job) return null;
+  if (job.recovery_pending) {
+    return { line: 'Checking the existing port job on the box. A second job will not start.', tone: 'warn', needsDump: false };
+  }
+  if (job.phase === 'interrupted') {
+    return { line: job.error || 'The port job was interrupted. Review the log, then retry.', tone: 'warn', needsDump: false };
+  }
   const who = portName || job.id;
   const verb = job.mode === 'uninstall' ? 'Removing' : 'Installing';
   if (job.running) {
@@ -126,7 +135,7 @@ export function installConfirmCopy(port: Pick<Port, 'name' | 'requires_user_file
 } {
   const lines: string[] = [
     `Install ${port.name} on your Steam Machine?`,
-    'The box downloads the port engine from its pinned GitHub release over TLS and installs it as your desktop user (no root).',
+    'The box downloads the port engine from its pinned GitHub release, verifies every executable by SHA-256 and size, and installs it as your desktop user (no root).',
     PORTS_LEGAL_LINE,
   ];
   if (port.requires_user_files && port.user_files_prompt) {
