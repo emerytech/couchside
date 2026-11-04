@@ -13929,7 +13929,7 @@ def ports_install_status():
         except BlockingIOError:
             # Independent worker holds it across download/setup. Atomic JSON
             # updates can be read without waiting on the full installation.
-            return dict(job, lines=_ports_read_log())
+            return dict(_ports_read_job() or job, lines=_ports_read_log())
         try:
             job = _ports_reconcile(_ports_read_job())
         finally:
@@ -30379,9 +30379,9 @@ class Handler(BaseHTTPRequestHandler):
             # POST /api/ports/install | /api/ports/uninstall {"id": "..."}:
             # install or remove a port from the FROZEN catalogue. The id is
             # looked up in _PORTS_BY_ID — an unknown id is a 404 and nothing
-            # runs. The only thing executed is the recipe's frozen bootstrap URL
-            # (ports_run: https fetch to a tmp file, then `bash <file>` as the
-            # desktop user; no shell, no client string in argv, no game data).
+            # runs. A fixed user-service worker verifies the full executable
+            # recipe (pinned hashes/sizes), then runs setup as the desktop user.
+            # No client URL, command or game data is accepted.
             # Gated by the on-box opt-in (couchside allow-ports on) -> 403.
             if path in ("/api/ports/install", "/api/ports/uninstall"):
                 mode = "install" if path.endswith("install") else "uninstall"

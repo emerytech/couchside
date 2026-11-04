@@ -30,7 +30,7 @@ import { usePorts } from '@/hooks/usePorts';
 import { api, hostKey, type Port } from '@/lib/api';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import {
-  anyPortJobActive, installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
+  installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
   portButton, portJobCopy, uninstallConfirmCopy,
 } from '@/lib/ports';
 import { useSettings } from '@/lib/SettingsContext';
