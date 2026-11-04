@@ -475,12 +475,20 @@ def test_flash_clean_copy_is_success():
     ready, fw = _media_tree({'NICENANO': True}), _fw_file()
     mount = os.path.join(ready, 'deck', 'NICENANO')
     original_exists = os.path.exists
+    original_open = os.open
+    binary_flag = 0x20000000
+    def binary_open(path, flags, mode=0o777):
+        if str(path).endswith('.UF2'):
+            assert flags & binary_flag, 'Firmware must use binary mode on Windows'
+        return original_open(path, flags & ~binary_flag, mode)
     def exists(path):
         return False if path == mount else original_exists(path)
     try:
         with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw), \
                 patch.object(cs, '_op_usb_inventory', side_effect=[[], [{'pid': 0x1304, 'serial': 'NEWPUCK'}]]), \
-                patch.object(cs.os.path, 'exists', side_effect=exists):
+                patch.object(cs.os.path, 'exists', side_effect=exists), \
+                patch.object(cs.os, 'O_BINARY', binary_flag, create=True), \
+                patch.object(cs.os, 'open', side_effect=binary_open):
             r = cs.real_openpuck_flash()
             check('full write + new USB -> verified success', r['ok'], True)
             check('firmware written under an exclusive filename', len([n for n in os.listdir(mount) if n.endswith('.UF2')]), 1)

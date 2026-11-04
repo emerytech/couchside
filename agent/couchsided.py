@@ -17534,7 +17534,7 @@ def _op_pair(token):
         os.makedirs(folder, mode=0o700, exist_ok=True)
         backup = dict(plan, wireless=wireless)
         with os.fdopen(os.open(os.path.join(folder, secrets.token_hex(12)+'.json'),
-                               os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as f:
+                               os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'w') as f:
             json.dump(backup, f, default=lambda b: list(b))
         wrote = True
         usb.transfer(bytes([0x0d, plan['puck_slot'], 1]) + plan['puck_record'])
@@ -17635,6 +17635,13 @@ def _op_board_identity(mount):
     return os.stat(mount).st_dev, info
 
 
+def _op_reboot_write_error(err, written, total, phase, platform):
+    # Windows CRT reports EBADF when the UF2 device disappears during _commit.
+    # Only after ALL bytes were written may sync/close errors enter USB verification.
+    return written == total and (err in (5, 6, 19) or
+        (platform == 'win32' and phase == 'syncing' and err in (9, 22)))
+
+
 def real_openpuck_flash(variant='pinned'):
     """Use the existing firmware resolver; success requires a full write and a new USB puck.
 
@@ -17669,21 +17676,23 @@ def real_openpuck_flash(variant='pinned'):
         if _op_board_identity(mount) != identity:
             return done(False, 'The connected board changed. Retry after checking USB.')
         written = 0
+        phase = 'writing'
         try:
             # Exclusive, random filename prevents following an existing removable-media link.
             fd = os.open(os.path.join(mount, 'CS'+secrets.token_hex(3).upper()+'.UF2'),
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
             try:
                 while written < len(data):
                     n = os.write(fd, data[written:written+16384])
                     if not n:
                         raise OSError('Board stopped accepting firmware.')
                     written += n
+                phase = 'syncing'
                 os.fsync(fd)
             finally:
                 os.close(fd)
         except OSError as e:
-            if written != len(data) or e.errno not in (5, 6, 19, 22):
+            if not _op_reboot_write_error(e.errno, written, len(data), phase, sys.platform):
                 return done(False, 'Firmware write was not confirmed complete: '+str(e))
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
