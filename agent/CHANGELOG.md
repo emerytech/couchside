@@ -22,6 +22,7 @@ deciding whether to press "Update now" on a machine across the room.
 
 - OpenPuck receiver information, connection diagnostics and confirmed USB controller pairing are now available from Couchside 2.9.82. Pairing verifies both devices and preserves other slots.
 - Responsive sealed receivers can enter update mode from the app. Firmware flashing validates the full UF2 image and confirms the complete write and receiver reboot before reporting success.
+- Interactive setup offers Game Ports as an optional Beta / experimental add-on, defaulting to No and remembering the choice. Enabling downloads nothing; individual ports remain separate installs.
 - Game Ports is a Beta / experimental, opt-in Linux feature. Downloads are verified before execution, install jobs survive service restarts, and reconnecting the phone resumes progress checks. Supply your own required game files; compatibility varies by port.
 - The companion Windows agent 0.4.16-win adds OpenPuck device tools and binary-safe firmware writes. Ports remains Linux-only.
 

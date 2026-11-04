@@ -96,3 +96,17 @@ restart on a supported Linux desktop. Then test actual native phones and a
 specifically approved disposable install/remove target, preserving player files
 and settings. A synthetic process and browser fixture do not certify that device
 acceptance, game launch, Steam shortcuts or real runtime installation.
+
+## Optional installer offer (2.9.82)
+
+Interactive CLI setup offers Game Ports as Beta / experimental. The default is
+No; accepting delegates to the existing local consent command. Enabling downloads
+no engine: each installation is explicitly requested from the catalog later.
+Unattended updates neither enable Ports nor record a decline. Existing enabled
+or declined choices are preserved; `couchside allow-ports off` also records the
+choice so upgrades do not ask again. `on` clears that stamp after confirmation.
+
+Legion SteamOS acceptance: all 21 job tests passed. A real systemd user worker
+kept the same PID across restart of an isolated parent service and completed
+once. This used a synthetic 30-second recipe and did not install a game. The
+installed Couchside service and user game files were untouched.

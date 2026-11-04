@@ -1153,6 +1153,8 @@ jobs:
         run: python3 tests/test_ports_catalog.py
       - name: Unit tests (Couchside-Ports install path safety)
         run: python3 tests/test_ports_install.py
+      - name: Ports installer optional add-on
+        run: python3 tests/test_ports_optin.py
 
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S
