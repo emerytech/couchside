@@ -1,6 +1,1 @@
-Couchside 2.9.82
-
-• Inspect OpenPuck receivers, check connections, pair controllers and update firmware with the updated Linux or Windows service.
-• Compact, collapsible receiver tools match your Couchside theme.
-• More reliable Android connections when switching computers.
-• Game Ports arrives as a Beta / experimental Linux feature, with verified downloads and install-job recovery. Bring your own required game files.
+OpenPuck receiver tools now show device info, check connections, pair controllers and update firmware through your computer. Compact controls match Couchside’s theme. Android reconnects more reliably when switching computers. Optional Game Ports (Beta / experimental) adds verified engine downloads and job recovery. Enable it from the app with a PIN shown on your computer; remote viewing and input pause during confirmation and resume automatically.

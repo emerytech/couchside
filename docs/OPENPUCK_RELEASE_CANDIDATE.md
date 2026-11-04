@@ -62,9 +62,9 @@ build 289; Direct latest numbered APK 64; Linux 2.9.136; Windows 0.4.15-win.
 
 | Component | Reserved candidate | Delivery and checks |
 | --- | --- | --- |
-| iPhone/iPad | 2.9.82 (290) | EAS release-candidate, cloud distribution build; verify IPA/signature; TestFlight/device acceptance; App Review with manual release |
-| Google Play | 2.9.82 (130) | Signed AAB, verify package/upload certificate and matching map; internal/device acceptance, then production |
-| Android Direct | 2.9.82 (65) | Existing Direct package/key; archive APK/map; preserve launcher aliases; in-place upgrade; publish numbered APK and checksums before update manifest |
+| iPhone/iPad | 2.9.82 (291) | EAS release-candidate, cloud distribution build; verify IPA/signature; TestFlight/device acceptance; App Review with manual release |
+| Google Play | 2.9.82 (131) | Signed AAB, verify package/upload certificate and matching map; internal/device acceptance, then production |
+| Android Direct | 2.9.82 (66) | Existing Direct package/key; archive APK/map; preserve launcher aliases; in-place upgrade; publish numbered APK and checksums before update manifest |
 | Linux agent | 2.9.137 | Stdlib source, signed complete asset set; Linux runtime and Ports restart checks; preserve pairing/config; publish before mobile feature announcement |
 | Windows agent | 0.4.16-win | Existing installer workflow, matching monorepo source, install/upgrade smoke; no SignPath experiment |
 | Decky | assess bundled agent | Keep plugin behavior unchanged; if bundled agent requires refresh, package and verify the exact 2.9.137 source with a new plugin version |
@@ -106,3 +106,5 @@ and native mobile privacy/reconnect checks remain gates. Previously built
 2.9.82 iOS290/Play130/Direct65 and Linux/Decky artifacts predate this addition:
 **do not publish them as containing the PIN flow**. Rebuild the affected artifacts
 from the final validated source before release; recheck build-number availability.
+
+Final candidate build numbers reserved after the PIN addition: iOS291, Play131, Direct66. Live ASC highest upload289 and Play highest bundle129; earlier EAS290/130 completed but remain unsubmitted and superseded. GitHub Direct latest remains build64. Native side-by-side acceptance uses fc8bfe2 app code at QA version130; final source differs only in release metadata unless otherwise recorded.
