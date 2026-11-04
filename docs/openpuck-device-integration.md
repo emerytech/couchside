@@ -12,6 +12,8 @@ on the selected Couchside computer; the phone does not need USB access.
 - Existing upstream configurator launcher stays available for advanced settings.
 - The existing “Pair a controller” action opens Steam's Bluetooth screen. It is
   separate from direct USB OpenPuck/controller pairing.
+- The lightweight macOS agent explicitly reports `utilities: false`; Mac users
+  retain the standalone utility.
 - Windows now provides the same OpenPuck utility routes and existing `utilities`
   capability. Other Linux utilities are not advertised on Windows.
 
@@ -71,11 +73,24 @@ old “write error means success” behavior. Mobile pure logic and TypeScript c
 cover firmware comparisons and honest diagnostic results. The web harness must
 press all new controls through the real mock HTTP routes.
 
-Physical Linux checks on the Legion passed native inspection (0.9.40/protocol 19),
-firmware reinstall with USB reboot confirmation, unchanged pairing-table
-fingerprint, and twenty USB/wireless diagnostic samples. Direct USB pairing is
-still pending controller enumeration. Windows currently has no puck attached;
-its native flash/pairing/diagnostic paths remain unverified. Both platforms still
-need disconnect/permission failure acceptance.
-The standalone utility's earlier hardware results do not validate these native
-agent transports. No agent or mobile release is implied by this source change.
+Physical checks on both Legion (SteamOS) and Emery-PC (Windows) passed:
+
+- Native inspection of firmware 0.9.40 / status protocol 19 and device identity.
+- Firmware reinstall with full write and USB reboot confirmation.
+- Pairing-table fingerprint unchanged by flashing.
+- Direct USB same-device pairing, both records read back, unrelated slots preserved.
+- Controller USB removed; twenty USB replies and twenty wireless-activity samples.
+- Original puck pairing-table fingerprint still unchanged after re-pairing.
+
+Windows testing exposed CRT text-mode expansion of UF2 bytes and EBADF during
+flush after the device rebooted. Explicit binary writes fix the first. The second
+enters USB confirmation only after a complete write in the sync/close phase;
+permission errors and incomplete writes remain failures. Both fixes have
+regression coverage and the corrected native Windows flash passed on hardware.
+
+The app's web harness pressed every new control through authenticated mock routes,
+including pairing/bootloader confirmation and the old-agent 404 hint. TypeScript,
+agent compilation, utility/device/auth/partial-failure suites, capability parity,
+macOS capability compatibility, CI wiring and app logic checks passed locally.
+These checks do not replace native iPhone/Android layout and lifecycle acceptance.
+No installed agent replacement, native mobile build, merge or release is included.
