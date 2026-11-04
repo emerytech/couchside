@@ -21,6 +21,7 @@ These are fixtures, not live hardware; the box-side truth (openpuck=puck_present
 cec=enabled on bazzite 2026-08-08) was observed separately.
 """
 import errno
+from unittest.mock import patch
 import http.client
 import importlib.util
 import json
@@ -72,7 +73,7 @@ class Patch:
 def _media_tree(volumes):
     """Build a fake udisks automount root: {volume_label: has_marker_bool}.
     Returns a dir usable as a single entry of _MEDIA_ROOTS (root/<user>/<vol>)."""
-    root = tempfile.mkdtemp(prefix="util-media-")
+    root = os.path.realpath(tempfile.mkdtemp(prefix="util-media-"))
     user = os.path.join(root, "deck")
     os.makedirs(user)
     for label, has_marker in volumes.items():
@@ -80,7 +81,7 @@ def _media_tree(volumes):
         os.makedirs(vol)
         if has_marker:
             with open(os.path.join(vol, "INFO_UF2.TXT"), "w") as f:
-                f.write("UF2 Bootloader\nModel: nice!nano\n")
+                f.write("UF2 Bootloader\nModel: nice!nano\nBoard-ID: nRF52840-nicenano\n")
     return root
 
 
@@ -373,25 +374,9 @@ def _fw_file():
     """A minimal but STRUCTURALLY-VALID UF2 file: one 512-byte block carrying the
     UF2 magic words, so it passes the agent's _is_uf2 sanity check."""
     fd, p = tempfile.mkstemp(prefix="openpuck-", suffix=".uf2")
-    os.write(fd, struct.pack("<II", 0x0A324655, 0x9E5D5157) + b"\x00" * (512 - 8))
+    os.write(fd, _uf2_bytes(1))
     os.close(fd)
     return p
-
-
-class copyfile_raising:
-    """Force cs's shutil.copyfile to raise a chosen OSError, restore after."""
-
-    def __init__(self, err):
-        self._err = err
-
-    def __enter__(self):
-        self._old = cs.shutil.copyfile
-        def boom(*a, **k):
-            raise OSError(self._err, os.strerror(self._err))
-        cs.shutil.copyfile = boom
-
-    def __exit__(self, *a):
-        cs.shutil.copyfile = self._old
 
 
 class flash_env:
@@ -424,6 +409,7 @@ class flash_env:
             _OPENPUCK_FW_MIN_SIZE=1,
             _openpuck_cache_path=(lambda c=cache: c),
             _openpuck_download=_offline,
+            _op_usb_inventory=lambda: [],
         )
         self._p.__enter__()
         return self
@@ -485,55 +471,47 @@ def test_flash_rejects_invalid_firmware():
 
 
 def test_flash_clean_copy_is_success():
-    """Board ready + firmware present + copy completes cleanly -> success, and the
-    bytes actually land in the bootloader mount."""
-    print("test_flash_clean_copy_is_success")
-    ready = _media_tree({"NICENANO": True})
-    fw = _fw_file()
+    """Full write plus disappearance plus a newly enumerated puck is required."""
+    ready, fw = _media_tree({'NICENANO': True}), _fw_file()
+    mount = os.path.join(ready, 'deck', 'NICENANO')
+    original_exists = os.path.exists
+    def exists(path):
+        return False if path == mount else original_exists(path)
     try:
-        with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
+        with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw), \
+                patch.object(cs, '_op_usb_inventory', side_effect=[[], [{'pid': 0x1304, 'serial': 'NEWPUCK'}]]), \
+                patch.object(cs.os.path, 'exists', side_effect=exists):
             r = cs.real_openpuck_flash()
-            check("clean copy -> ok True", r["ok"], True)
-            landed = os.path.join(ready, "deck", "NICENANO", os.path.basename(fw))
-            check("firmware copied into the mount", os.path.isfile(landed), True)
+            check('full write + new USB -> verified success', r['ok'], True)
+            check('firmware written under an exclusive filename', len([n for n in os.listdir(mount) if n.endswith('.UF2')]), 1)
+        with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw), \
+                patch.object(cs.time, 'monotonic', side_effect=[0, 0, 21, 21]):
+            check('clean write without confirmed reboot -> failure', cs.real_openpuck_flash()['ok'], False)
     finally:
-        shutil.rmtree(ready, ignore_errors=True)
-        os.unlink(fw)
+        shutil.rmtree(ready, ignore_errors=True); os.unlink(fw)
 
 
-def test_flash_device_yank_errno_is_success():
-    """THE inverted rule: the board reboots and yanks its drive mid-write, so the
-    copy raises ENXIO/EIO on a SUCCESSFUL flash. Must read as success."""
-    print("test_flash_device_yank_errno_is_success")
-    ready = _media_tree({"NICENANO": True})
-    fw = _fw_file()
+def test_flash_early_device_yank_is_not_success():
+    """Regression: an early EIO/ENXIO is NOT sufficient proof of success."""
+    ready, fw = _media_tree({'NICENANO': True}), _fw_file()
     try:
         for err in (errno.ENXIO, errno.EIO):
-            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
-                with copyfile_raising(err):
-                    r = cs.real_openpuck_flash()
-                    check("errno %d -> ok True" % err, r["ok"], True)
+            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw), \
+                    patch.object(cs.os, 'write', side_effect=OSError(err, 'unplugged')):
+                check('early write error -> no success', cs.real_openpuck_flash()['ok'], False)
     finally:
-        shutil.rmtree(ready, ignore_errors=True)
-        os.unlink(fw)
+        shutil.rmtree(ready, ignore_errors=True); os.unlink(fw)
 
 
 def test_flash_other_errno_is_failure():
-    """CONTROL for the inverted rule: an unrelated OSError (EPERM/EACCES) is a
-    genuine failure, not success. Without this, 'any error = success' would pass
-    every other test too."""
-    print("test_flash_other_errno_is_failure")
-    ready = _media_tree({"NICENANO": True})
-    fw = _fw_file()
+    ready, fw = _media_tree({'NICENANO': True}), _fw_file()
     try:
         for err in (errno.EPERM, errno.EACCES, errno.ENOSPC):
-            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
-                with copyfile_raising(err):
-                    r = cs.real_openpuck_flash()
-                    check("errno %d -> ok False" % err, r["ok"], False)
+            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw), \
+                    patch.object(cs.os, 'write', side_effect=OSError(err, 'denied')):
+                check('write denied -> no success', cs.real_openpuck_flash()['ok'], False)
     finally:
-        shutil.rmtree(ready, ignore_errors=True)
-        os.unlink(fw)
+        shutil.rmtree(ready, ignore_errors=True); os.unlink(fw)
 
 
 def test_flash_target_is_not_client_supplied():
@@ -555,10 +533,10 @@ print("\nruntime firmware fetch (2.9.77): verify + resolve, OFFLINE (no network)
 # ---------------------------------------------------------------------------
 
 def _uf2_bytes(nblocks=736):
-    """Bytes of a structurally-valid UF2 of `nblocks` 512-byte blocks (default 736
-    ~= 376 KB, a real OpenPuck size), first block carrying the magic words."""
-    head = struct.pack("<II", 0x0A324655, 0x9E5D5157) + b"\x00" * (512 - 8)
-    return head + b"\x00" * (512 * (nblocks - 1))
+    """Synthetic application-only UF2: full headers let every-block validation run."""
+    return b''.join(struct.pack('<8I', 0x0a324655, 0x9e5d5157, 0x2000,
+                    0x26000+i*256, 256, i, nblocks, 0xada52840)
+                    + bytes(476) + struct.pack('<I', 0x0ab16f30) for i in range(nblocks))
 
 
 def test_fw_valid_both_directions():
@@ -604,7 +582,7 @@ def test_pick_asset_prefers_standard_never_factory_reset():
         {"name": "OpenPuck-0.9.41-factory-reset.uf2", "browser_download_url": "r"},
         {"name": "OpenPuck-0.9.41.uf2", "browser_download_url": "keep"},
     ]
-    check("skips factory-reset", cs._openpuck_pick_asset(only)["browser_download_url"], "keep")
+    check("refuses reset and non-standard assets", cs._openpuck_pick_asset(only), None)
     # ONLY a factory-reset image -> refuse (None), never default to it.
     check("factory-reset only -> None",
           cs._openpuck_pick_asset(
@@ -695,6 +673,7 @@ def test_resolve_pinned_offline_falls_back_to_seed():
     try:
         with Patch(_OPENPUCK_FW_SHA256=sha, _OPENPUCK_FW_MIN_SIZE=1,
                    _openpuck_cache_path=(lambda: cache), _openpuck_download=_offline,
+            _op_usb_inventory=lambda: [],
                    _OPENPUCK_FIRMWARE=seed):
             path, err = cs._openpuck_resolve_pinned()
             check("offline -> seed used", path, seed)
@@ -702,6 +681,7 @@ def test_resolve_pinned_offline_falls_back_to_seed():
         # A seed whose sha does NOT match the pin is refused (never flash a wrong build).
         with Patch(_OPENPUCK_FW_SHA256="0" * 64, _OPENPUCK_FW_MIN_SIZE=1,
                    _openpuck_cache_path=(lambda: cache), _openpuck_download=_offline,
+            _op_usb_inventory=lambda: [],
                    _OPENPUCK_FIRMWARE=seed):
             path, err = cs._openpuck_resolve_pinned()
             check("offline + wrong-sha seed -> refused", path, None)
@@ -897,7 +877,7 @@ if __name__ == "__main__":
                test_flash_missing_firmware_degrades_closed,
                test_flash_rejects_invalid_firmware,
                test_flash_clean_copy_is_success,
-               test_flash_device_yank_errno_is_success,
+               test_flash_early_device_yank_is_not_success,
                test_flash_other_errno_is_failure,
                test_flash_target_is_not_client_supplied,
                test_fw_valid_both_directions,
