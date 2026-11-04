@@ -1138,6 +1138,9 @@ jobs:
       # OpenPuck flash target needs a known label AND the UF2 marker (a mislabelled
       # stick is refused — the control), detection degrades closed, and the route is
       # behind the bearer gate.
+      # USB mutations must reject untrusted commands and preserve existing bonds.
+      - name: Unit tests (OpenPuck device operations)
+        run: python3 tests/test_openpuck_device.py
       - name: Unit tests (utilities detection)
         run: python3 tests/test_utilities.py
 
