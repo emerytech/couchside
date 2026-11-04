@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.137
+
+- OpenPuck receiver information, connection diagnostics and confirmed USB controller pairing are now available from Couchside 2.9.82. Pairing verifies both devices and preserves other slots.
+- Responsive sealed receivers can enter update mode from the app. Firmware flashing validates the full UF2 image and confirms the complete write and receiver reboot before reporting success.
+- Game Ports is a Beta / experimental, opt-in Linux feature. Downloads are verified before execution, install jobs survive service restarts, and reconnecting the phone resumes progress checks. Supply your own required game files; compatibility varies by port.
+- The companion Windows agent 0.4.16-win adds OpenPuck device tools and binary-safe firmware writes. Ports remains Linux-only.
+
+
 ## 2.9.136
 
 - Browse Decky's plugin store with current loader-version negotiation and clearer guidance when Decky itself needs an update.
