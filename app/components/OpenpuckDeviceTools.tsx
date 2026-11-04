@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, Text, View } from 'react-native';
 import { api, type OpenpuckLatest } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -8,15 +9,16 @@ import { useConfirm } from './ConfirmDialog';
 
 /** Adds device operations inside the existing Utilities card. Firmware selection,
  * download, flash, batch mode and upstream configurator remain in that card. */
-export function OpenpuckDeviceTools({ busy, setBusy, latest, afterBootloader }: {
+export function OpenpuckDeviceTools({ busy, setBusy, latest, afterBootloader, children, autoflash }: {
   busy: boolean; setBusy: (value: boolean) => void;
-  latest: OpenpuckLatest | null; afterBootloader: () => void;
+  latest: OpenpuckLatest | null; afterBootloader: () => void; children: ReactNode; autoflash: boolean;
 }) {
   const { settings } = useSettings();
   const t = useTheme(), confirm = useConfirm();
   const [info, setInfo] = useState<PuckInfo | null>(null);
   const [plan, setPlan] = useState<PuckPairPlan | null>(null);
   const [message, setMessage] = useState('Connect your puck to this computer, then inspect it.');
+  const [section, setSection] = useState<string | null>(null);
   const epoch = useRef(0);
   const pending = useRef(false);
   useEffect(() => {
@@ -52,25 +54,52 @@ export function OpenpuckDeviceTools({ busy, setBusy, latest, afterBootloader }: 
   }
   const button = (label: string, op: Parameters<typeof run>[0], disabled = false) => (
     <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={() => void run(op)}
-      disabled={busy || disabled} style={{ padding: 10, marginTop: 6, borderWidth: 1, borderRadius: 8,
-        borderColor: t.blue, opacity: busy || disabled ? .5 : 1 }}>
-      <Text style={{ color: t.blue }}>{label}</Text>
+      disabled={busy || disabled} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8,
+        alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 14, marginTop: 10,
+        borderWidth: 1, borderRadius: 10, borderColor: t.blue, opacity: busy || disabled ? .5 : pressed ? .8 : 1 })}>
+      <Ionicons name={op === 'inspect' ? 'information-circle-outline' : op === 'test' ? 'pulse-outline' : op === 'bootloader' ? 'download-outline' : 'link-outline'} size={16} color={t.blue} />
+      <Text style={{ color: t.blue, fontSize: 13, fontWeight: '700' }}>{label}</Text>
     </Pressable>
   );
+  const panel = (id: string, label: string, icon: React.ComponentProps<typeof Ionicons>['name'], content: ReactNode) => (
+    <View style={{ borderTopWidth: 1, borderTopColor: t.cardBorder }}>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded: section === id }}
+        onPress={() => setSection(section === id ? null : id)}
+        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 48, opacity: pressed ? .7 : 1 })}>
+        <Ionicons name={icon} size={17} color={t.textFaint} />
+        <Text style={{ flex: 1, color: t.text, fontSize: 13, fontWeight: '600' }}>{label}</Text>
+        <Ionicons name={section === id ? 'chevron-down' : 'chevron-forward'} size={15} color={t.textFaint} />
+      </Pressable>
+      <View style={section === id ? { paddingBottom: 12 } : { display: 'none' }}>{content}</View>
+    </View>
+  );
   const comparison = info && latest?.available && latest.tag ? comparePuckFirmware(info.build, latest.tag, info.dirty) : null;
+  const hint = <Text style={{ color: t.textFaint, fontSize: 12, lineHeight: 17 }}>Inspect the puck in Device information first.</Text>;
   return <View testID="openpuck-device-tools" style={{ marginTop: 12 }}>
-    {button('Inspect puck', 'inspect')}
-    {info && <>
-      <Text style={{ color: t.text, marginTop: 8 }}>Firmware {info.build}{info.dirty ? ' (modified)' : ''} · Protocol {info.protocol}</Text>
-      <Text selectable style={{ color: t.textFaint }}>Puck {info.serial} · {info.new_reports} new reports/s</Text>
-      {info.slots.map(slot => <Text key={slot.slot} style={{ color: t.textFaint }}>Slot {slot.slot}: {slot.connected ? 'Online' : 'Offline'}{slot.connected && slot.battery != null ? ` · ${slot.battery}%` : ''}{slot.connected && slot.rssi != null ? ` · ${slot.rssi} dBm` : ''}</Text>)}
-      {comparison && <Text style={{ color: t.text }}>{comparison === 'current' ? 'Firmware is up to date.' : comparison === 'older' ? `Update available: ${latest!.tag}. Enter bootloader, then choose firmware below.` : comparison === 'newer' ? 'This puck is newer than the release. No downgrade needed.' : 'Custom or unrecognized build; update need cannot be determined.'}</Text>}
-      {button('Run connection check', 'test')}
-      <Text style={{ color: t.textFaint, marginTop: 8 }}>For pairing, connect the powered-on controller by USB to the same computer and close Steam.</Text>
-      {button('Find USB controller', 'prepare_pair')}
-      {plan && button('Pair controller', 'pair')}
-      {button('Enter bootloader for update or reinstall', 'bootloader')}
+    {!autoflash && <>
+      {panel('info', 'Device information', 'information-circle-outline', <>
+        {button('Inspect puck', 'inspect')}
+        {info && <View style={{ marginTop: 10, padding: 12, borderRadius: 10, backgroundColor: t.inset }}>
+          <Text style={{ color: t.text, fontSize: 13, fontWeight: '600' }}>Firmware {info.build}{info.dirty ? ' (modified)' : ''} · Protocol {info.protocol}</Text>
+          <Text selectable style={{ color: t.textFaint, fontSize: 12, marginTop: 4 }}>Puck {info.serial} · {info.new_reports} new reports/s</Text>
+          {info.slots.map(slot => <Text key={slot.slot} style={{ color: t.textFaint, fontSize: 12, marginTop: 4 }}>Slot {slot.slot}: {slot.connected ? 'Online' : 'Offline'}{slot.connected && slot.battery != null ? ` · ${slot.battery}%` : ''}{slot.connected && slot.rssi != null ? ` · ${slot.rssi} dBm` : ''}</Text>)}
+          {comparison && <Text style={{ color: t.text, fontSize: 12, marginTop: 6 }}>{comparison === 'current' ? 'Firmware is up to date.' : comparison === 'older' ? `Update available: ${latest!.tag}. Open Firmware & updates to install.` : comparison === 'newer' ? 'This puck is newer than the release. No downgrade needed.' : 'Custom or unrecognized build; update need cannot be determined.'}</Text>}
+        </View>}
+      </>)}
+      {panel('diagnostics', 'Connection diagnostics', 'pulse-outline', info ? <>
+        <Text style={{ color: t.textFaint, fontSize: 12, lineHeight: 17 }}>Keep the controller on and move its sticks during the 10-second check.</Text>
+        {button('Run connection check', 'test')}
+      </> : hint)}
+      {panel('pair', 'Controller pairing', 'link-outline', info ? <>
+        <Text style={{ color: t.textFaint, fontSize: 12, lineHeight: 17 }}>Connect the powered-on controller by USB to the same computer and close Steam.</Text>
+        {button('Find USB controller', 'prepare_pair')}
+        {plan && button('Pair controller', 'pair')}
+      </> : hint)}
     </>}
-    <Text accessibilityLiveRegion="polite" style={{ color: t.textFaint, marginTop: 8 }}>{message}</Text>
+    {panel('firmware', 'Firmware & updates', 'download-outline', <>
+      {info && !autoflash && button('Enter bootloader for update or reinstall', 'bootloader')}
+      {children}
+    </>)}
+    <Text accessibilityLiveRegion="polite" style={{ color: t.textFaint, fontSize: 12, lineHeight: 17, marginTop: 8 }}>{message}</Text>
   </View>;
 }
