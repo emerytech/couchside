@@ -92,5 +92,11 @@ The app's web harness pressed every new control through authenticated mock route
 including pairing/bootloader confirmation and the old-agent 404 hint. TypeScript,
 agent compilation, utility/device/auth/partial-failure suites, capability parity,
 macOS capability compatibility, CI wiring and app logic checks passed locally.
-These checks do not replace native iPhone/Android layout and lifecycle acceptance.
-No installed agent replacement, native mobile build, merge or release is included.
+Native Android acceptance on Thor subsequently passed inspection, pairing,
+bootloader, firmware reinstall and 20/20 wireless samples before and after flash
+against a separate Windows preview agent (source 6f95d79). Pairing records remained
+unchanged. The temporary Windows listener and firewall rule were removed afterward.
+The Android connection fix at a42e1f5 also passed offline-host to live-Legion
+switching without restarting the preview. Native iPhone acceptance remains.
+The Android build uses a separate QA package and debug signing; installed store
+apps and agent services were preserved. No merge or release is included.
