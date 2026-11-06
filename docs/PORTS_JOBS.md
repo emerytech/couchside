@@ -96,3 +96,35 @@ restart on a supported Linux desktop. Then test actual native phones and a
 specifically approved disposable install/remove target, preserving player files
 and settings. A synthetic process and browser fixture do not certify that device
 acceptance, game launch, Steam shortcuts or real runtime installation.
+
+## Native acceptance checklist
+
+Use a specifically authorized Linux test box and preserve its existing agent,
+configuration, pairing credentials, Ports state and player files. Record the
+candidate source digest separately from the installed version label. Never infer
+candidate deployment from the version label alone.
+
+1. Establish the installed agent's service scope, desktop user, executable path,
+   user-manager availability and existing Ports job state before changing anything.
+   Do not interrupt an existing job. Retain a rollback copy of the installed agent.
+2. Start one approved Ports job and record its job ID. Confirm the fixed transient
+   worker service and API agent belong to distinct systemd control groups. Record
+   actual progress before restarting the API agent service only.
+3. After restart, confirm the worker was not restarted, the job ID is unchanged,
+   progress continues, competing mutations remain blocked, and the terminal result
+   and staging cleanup agree with the worker's exit status. A mere active unit or
+   an installed directory is not completion evidence.
+4. On a native phone containing the candidate polling code, open Ports while the
+   job is active. Background and return, then interrupt only the test connection
+   or API service and restore it. Verify reconnect feedback, disabled mutations
+   while offline, automatic reconciliation, and the same job ID on return.
+5. Count mutation requests across the complete test: reconnect and foregrounding
+   must produce no additional install/remove POST. Verify the terminal result
+   remains visible after a second agent restart. Inspect retained user data and
+   restore any temporary QA state and phone selection.
+
+A synthetic payload on real systemd can establish worker lifetime and reconnect
+behavior without certifying a consumer game installation. Label that evidence
+separately; actual runtime setup, Steam shortcuts and game launch require their
+own approved install test. Keep machine addresses, tokens, detailed transcripts
+and rollback locations in the private handoff rather than this repository.
