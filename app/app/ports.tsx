@@ -18,7 +18,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
@@ -26,11 +26,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useConfirm } from '@/components/ConfirmDialog';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type Port, type PortsState } from '@/lib/api';
+import { usePorts } from '@/hooks/usePorts';
+import { api, hostKey, type Port } from '@/lib/api';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import {
-  anyPortJobActive, installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
+  installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
   portButton, portJobCopy, uninstallConfirmCopy,
 } from '@/lib/ports';
 import { useSettings } from '@/lib/SettingsContext';
@@ -52,18 +52,14 @@ export default function PortsScreen() {
   const [note, setNote] = useState<Note>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const state = usePoll<PortsState | null>(
-    () => api.ports(settings), 30 * 1000, configured, key);
-  const job = state.data?.install ?? null;
-  const running = anyPortJobActive(job);
-
-  // Tighten to 2 s only while a job runs, so progress paints without a refresh.
-  const fast = usePoll<PortsState | null>(
-    () => api.ports(settings), 2000, configured && running, key);
-  const live = fast.data ?? state.data;
+  const currentKey = useRef(key);
+  currentKey.current = key;
+  useEffect(() => { setNote(null); setExpanded({}); }, [key]);
+  const state = usePorts(settings);
+  const live = state.data;
   const ports = live?.ports ?? [];
   const allowed = live?.allowed ?? true;
-  const activeJob = live?.install ?? job;
+  const activeJob = live?.install ?? null;
 
   const act = useCallback(
     async (port: Port, mode: 'install' | 'uninstall') => {
@@ -72,13 +68,14 @@ export default function PortsScreen() {
         title: copy.title, message: copy.message,
         confirmText: copy.okLabel, destructive: mode === 'uninstall',
       });
-      if (!ok) return;
+      if (!ok || currentKey.current !== key) return;
       hapticLight();
       setNote({ tone: 'info', msg: mode === 'install' ? `Starting ${port.name}…` : `Removing ${port.name}…` });
       try {
         const r = mode === 'install'
           ? await api.installPort(settings, port.id)
           : await api.uninstallPort(settings, port.id);
+        if (currentKey.current !== key) return;
         const err = portActionError(r);
         if (err) {
           hapticWarning();
@@ -88,13 +85,14 @@ export default function PortsScreen() {
         hapticSuccess();
         setNote(null);
         state.refresh();
-        fast.refresh();
+
       } catch (e) {
+        if (currentKey.current !== key) return;
         hapticWarning();
         setNote({ tone: 'err', msg: e instanceof Error ? e.message : 'Could not reach the box.' });
       }
     },
-    [confirm, settings, state, fast],
+    [confirm, settings, state, key],
   );
 
   const jobLine = portJobCopy(
@@ -143,13 +141,13 @@ export default function PortsScreen() {
         <View style={styles.actionRow}>
           <Pressable
             onPress={() => btn.action && act(item, btn.action)}
-            disabled={btn.busy || !btn.action}
+            disabled={btn.busy || !btn.action || !!state.error}
             accessibilityRole="button"
             accessibilityLabel={`${btn.label} ${item.name}`}
             style={({ pressed }) => [
               styles.btn,
               btn.action === 'uninstall' ? styles.btnDanger : styles.btnPrimary,
-              (btn.busy || !btn.action) && styles.btnDisabled,
+              (btn.busy || !btn.action || !!state.error) && styles.btnDisabled,
               pressed && styles.pressed,
             ]}>
             {btn.busy ? <ActivityIndicator size="small" color={t.onAccent} /> : null}
@@ -213,6 +211,15 @@ export default function PortsScreen() {
                 </View>
               ) : null}
 
+              {state.error ? (
+                <View style={[styles.banner, styles.bannerErr]}>
+                  <Text style={styles.bannerText}>Connection interrupted. Checking the box again. Any running port job continues on the box.</Text>
+                  <Pressable onPress={state.refresh} accessibilityRole="button" accessibilityLabel="Retry Ports connection">
+                    <Text style={styles.cmd}>Retry connection</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
               {note ? (
                 <View style={[
                   styles.banner,
@@ -243,7 +250,8 @@ export default function PortsScreen() {
           ListEmptyComponent={
             state.loading
               ? <ActivityIndicator style={{ marginTop: 40 }} color={t.textDim} />
-              : <Text style={styles.empty}>No ports available for this box.</Text>
+              : state.error ? null
+                : <Text style={styles.empty}>{live ? 'No ports available for this box.' : 'This box does not provide a Ports catalog.'}</Text>
           }
         />
       )}

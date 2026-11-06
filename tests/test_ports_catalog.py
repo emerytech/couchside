@@ -21,6 +21,7 @@ because the app surfaces that step and the legal line depends on it.
 import importlib.util
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -106,6 +107,22 @@ def test_every_bootstrap_url_is_pinned_github_release():
                   True)
 
 
+def test_executable_closure_has_exact_content_pins():
+    for p in cs._PORTS:
+        for mode in ("install", "uninstall"):
+            entry, assets = cs._ports_recipe(p, mode)
+            check("%s %s unique file names" % (p["id"], mode), len(assets), len({a["name"] for a in assets}))
+            for asset in assets:
+                label = "%s %s" % (mode, asset["name"])
+                check(label + " sha256", bool(re.fullmatch(r"[a-f0-9]{64}", asset["sha256"])), True)
+                check(label + " size", type(asset["size"]) is int and 0 < asset["size"] <= 1073741824, True)
+                check(label + " same release", asset["url"].startswith("https://github.com/" + p["source"]["repo"] + "/releases/download/" + p["source"]["tag"] + "/"), True)
+            if mode == "install":
+                check("bbport full executable closure", {a["name"] for a in assets},
+                      {"setup.sh", "steam_shortcut.py", "uninstall.sh", p["source"]["appimage"]})
+                check("recursive bootstrap not executed", entry["name"], "setup.sh")
+
+
 def test_install_step_required_for_every_port():
     """A port with no install step could never be installed — and ports_run's
     frozen-URL check would refuse it (409). Catch it here instead."""
@@ -166,6 +183,7 @@ if __name__ == "__main__":
                test_by_id_index_is_consistent,
                test_every_bootstrap_url_is_pinned_github_release,
                test_install_step_required_for_every_port,
+               test_executable_closure_has_exact_content_pins,
                test_required_fields_present,
                test_byo_dump_ports_declare_it,
                test_public_catalog_omits_nothing_the_app_needs_and_mock_installed_false):

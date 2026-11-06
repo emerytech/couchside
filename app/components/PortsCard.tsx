@@ -13,9 +13,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type PortsState } from '@/lib/api';
-import { anyPortJobActive } from '@/lib/ports';
+import { usePorts } from '@/hooks/usePorts';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -25,15 +23,8 @@ export function PortsCard() {
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const configured = settings.host.trim().length > 0;
-  const key = hostKey(settings);
-
-  const state = usePoll<PortsState | null>(
-    () => api.ports(settings), 30 * 1000, configured, key);
-  const running = anyPortJobActive(state.data?.install);
-
-  const fast = usePoll<PortsState | null>(
-    () => api.ports(settings), 2000, configured && running, key);
-  const live = fast.data ?? state.data;
+  const state = usePorts(settings);
+  const live = state.data;
 
   // Probe-and-appear: nothing until GET /api/ports answers.
   if (!configured || !live) return null;
@@ -41,7 +32,7 @@ export function PortsCard() {
   const count = live.ports.length;
   const installed = live.ports.filter((p) => p.installed).length;
   const job = live.install;
-  const chip = job?.running
+  const chip = state.error ? 'Reconnecting…' : job?.running
     ? (job.mode === 'uninstall' ? 'Removing…' : 'Installing…')
     : installed > 0 ? `${installed} installed` : `${count} available`;
   const chipColor = job?.running ? t.blue : installed > 0 ? t.green : t.textFaint;
