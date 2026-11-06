@@ -14022,7 +14022,9 @@ def _ports_run_recipe(port, mode, stage, log):
             raise ValueError("Invalid pinned asset name")
         print("Verifying %s" % name, file=log, flush=True)
         _ports_download(asset, os.path.join(stage, name))
-    env = _user_env()
+    # A user manager launched from boot/SSH may have no graphical variables.
+    # The reviewed setup opens a launcher to let the player select their files.
+    env = _session_env()
     for key in list(env):
         if key.startswith("BBPORT_") or key in ("BB_GAME_DIR", "BASH_ENV", "ENV", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"):
             del env[key]

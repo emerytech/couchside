@@ -231,16 +231,16 @@ sys.exit(c._ports_worker('a'*32))
 
 
     def test_verified_synthetic_script_executes_with_source_overrides_removed(self):
-        script = b'#!/bin/bash\nprintf "fixture:%s:%s" "${BASH_ENV:-empty}" "$BBPORT_REPO"\n'
+        script = b'#!/bin/bash\nprintf "fixture:%s:%s:%s" "${BASH_ENV:-empty}" "$BBPORT_REPO" "$DISPLAY"\n'
         asset=self.asset(script)
         port=dict(cs._PORTS_BY_ID[BB], installed_check=str(self.root/'app'))
         port['uninstall']=dict(bootstrap_url=asset['url'],sha256=asset['sha256'],size=asset['size'])
         stage=self.root/'stage';stage.mkdir()
         opener=type('Opener',(),{'open':lambda *a,**k:Response(script)})()
-        env=dict(os.environ,BBPORT_REPO='evil',BASH_ENV='/must-not-run')
-        with patch.object(cs.urllib.request,'build_opener',return_value=opener),patch.object(cs,'_user_env',return_value=env),self.log.open('w') as log:
+        env=dict(os.environ,BBPORT_REPO='evil',BASH_ENV='/must-not-run',DISPLAY=':7')
+        with patch.object(cs.urllib.request,'build_opener',return_value=opener),patch.object(cs,'_session_env',return_value=env),self.log.open('w') as log:
             self.assertEqual(cs._ports_run_recipe(port,'uninstall',str(stage),log),0)
-        self.assertTrue(self.log.read_text().endswith('fixture:empty:emerytech/Bloodborne-Android'))
+        self.assertTrue(self.log.read_text().endswith('fixture:empty:emerytech/Bloodborne-Android::7'))
 
     def test_lock_held_with_unavailable_unit_does_not_clear_live_job(self):
         self.job()
