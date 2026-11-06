@@ -176,3 +176,42 @@ establishes native Android polling/reconnect against a controlled HTTPS fixture
 backed by a real worker. Direct phone-to-candidate API deployment, actual runtime
 installation/game launch, iOS acceptance and final release binaries remain separate
 gates. No production agent update, game install/remove, merge or release occurred.
+
+### November 5 direct API and real engine-install evidence
+
+The candidate was temporarily deployed to the actual Bazzite API service with a
+rollback copy. A real catalog install verified all four published executable
+assets and placed the runtime with the pinned SHA-256. Restarting the actual API
+during verification retained the worker PID. The installer wrote its engine
+receipt, application-menu entries and a Steam shortcut. No game data was supplied
+or downloaded.
+
+This exposed a real setup defect: the user manager lacked graphical environment
+variables, so the launcher could not initialize GTK. The Ports recipe now uses
+the existing `_session_env` helper while retaining its source-override filtering.
+The regression test proves the discovered display reaches the executed synthetic
+script while unsafe source/environment overrides are removed. All 21 Ports tests,
+catalog parity, protocol parity and dependency checks passed locally.
+
+With that fix, the launcher process stayed alive, but its window was not visible
+in Game Mode. Screen-frame captures and owner observation showed Steam instead.
+An isolated software-renderer probe did not establish a visible launcher either.
+Only the test launcher processes were terminated, allowing the reviewed setup to
+finish with exit zero. Thus engine placement and setup output are verified;
+interactive file selection and game launch are **not** accepted. The installer
+can report success despite a launcher warning, so its exit code alone does not
+close that gate.
+
+A physical Razr connected directly to the candidate's pinned HTTPS endpoint,
+displayed the actual running install, showed reconnect feedback when the real
+API was stopped, and recovered the same job after restart. The worker PID stayed
+unchanged. This used no loopback fixture. The temporary phone package was removed
+with its test pairing afterward.
+
+The original installed agent was restored with its pre-test digest, configuration
+was byte-identical, the service was active, and the originally absent Ports opt-in
+marker was removed. The verified engine/menu entries/Steam shortcut remain on the
+authorized test box for follow-up. Private backups, job receipts and screenshots
+are in the local handoff. No merge, version bump or release occurred. Release
+acceptance remains open for the Game Mode launcher/file-selection flow and actual
+user-supplied game launch.
