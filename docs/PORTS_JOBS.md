@@ -233,3 +233,40 @@ Steam-managed launch and test its actual navigation before accepting it. Do not
 interpret a live GTK process, a shortcut file or installer exit zero as controller
 or visible-window evidence. Required CI was green for `370df16`; this does not
 replace these remaining hardware gates.
+
+### November 6 Steam Machine results
+
+After owner-enabled Ports consent, the candidate API performed a real verified
+engine install on SteamOS. A pre-existing configured game folder caused setup to
+finish without opening its first-run picker. The installer returned zero and the
+physical Razr displayed the completed job through direct pinned HTTPS.
+
+A separate QA desktop entry registered through `steamos-add-to-steam` and launched
+through Steam made the launcher visibly appear in Game Mode (screen-frame proof).
+On this image the registration tool rejected a shell-script wrapper as an
+unsupported MIME type; the desktop entry succeeded. The owner confirmed D-pad and
+A/B did nothing in the GTK launcher, but Couchside Mouse mode could close it and
+return to Steam. Therefore visibility and mouse-close pass; gamepad navigation
+fails. Closing a first-run picker to complete its worker remains untested: this
+machine's existing configuration skipped that branch.
+
+The installer reused an existing same-named Steam shortcut pointing to a different
+AppImage path. Both old and new AppImages were byte-identical to the pinned hash,
+so that shortcut was also tested: a frame captured the actual Bloodborne main
+menu using the owner's already-present files. No gameplay input was sent and no
+game files were downloaded. A different target path with a different digest would
+not have certified this candidate. Name-only shortcut reuse should be reconciled
+before relying on an existing entry on other machines.
+
+The original agent digest and configuration were restored and the temporary
+Android QA package/pairing removed. Existing game-folder settings and the original
+Steam shortcut were preserved. The new engine and a clearly named QA Steam
+shortcut remain for follow-up. Removing the root-owned consent marker requires
+owner authentication under this box's scoped sudo policy; restoration to off was
+requested and must be verified separately.
+
+Required CI was green at `29bf5c8`. No final builds or release were prepared.
+Remaining gates: automatic Steam-managed setup integrated into the fixed recipe,
+launcher controller navigation or an explicit keyboard/mouse fallback, first-run
+picker close-to-worker completion, consent cleanup, and final-candidate/iOS
+acceptance. Screen captures and private hardware receipts are in the local handoff.
