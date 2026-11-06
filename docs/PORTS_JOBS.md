@@ -150,3 +150,29 @@ the candidate API service deployment, downloaded recipe, game setup, or native
 phone polling. Android disconnected repeatedly before app inspection, so phone
 reconnect acceptance remains pending. Detailed receipts and test-only harness
 paths are retained privately.
+
+### November 5 native Android reconnect evidence
+
+A separate test-only Android package built from `ec49a7e` was installed on a
+physical Motorola Razr 2023. The built package identity, APK checksum and matching
+Hermes source map were verified. Existing Play and Direct packages were preserved.
+The native app used a pinned HTTPS loopback fixture forwarded through ADB; the
+fixture asynchronously read the disposable worker's real Bazzite job record.
+Other controls were mocked. Synchronous SSH was initially too slow for the app's
+request timeout; that fixture issue was corrected before acceptance.
+
+Native background/return reconciled to the active worker and displayed advancing
+progress. Pausing the fixture produced reconnect feedback while retaining known
+job state. Resuming it automatically recovered the same job ID and subsequently
+displayed completion. A separate outage after completion confirmed the Remove
+button was disabled in the native accessibility tree. No install/remove POST was
+sent by the phone across these tests; disposable jobs were started explicitly
+from the test harness. An earlier port-forward removal did not establish an
+outage and is not counted as disconnect evidence.
+
+The temporary QA package and ADB forwards were removed afterward; APK, source map,
+checksums, accessibility snapshots and worker receipts remain private. This
+establishes native Android polling/reconnect against a controlled HTTPS fixture
+backed by a real worker. Direct phone-to-candidate API deployment, actual runtime
+installation/game launch, iOS acceptance and final release binaries remain separate
+gates. No production agent update, game install/remove, merge or release occurred.
