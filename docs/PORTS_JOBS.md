@@ -215,3 +215,21 @@ authorized test box for follow-up. Private backups, job receipts and screenshots
 are in the local handoff. No merge, version bump or release occurred. Release
 acceptance remains open for the Game Mode launcher/file-selection flow and actual
 user-supplied game launch.
+
+### Steam Machine follow-up preparation
+
+The next acceptance target is a SteamOS Steam Machine in Game Mode. Read-only
+preflight confirmed an active agent, an idle Ports user unit, no existing bbport
+engine and availability of `steam` and `steamos-add-to-steam`. Original agent and
+configuration were backed up privately. Ports opt-in is absent; the machine's
+scoped sudo policy cannot create it without owner authentication. Live install
+and launcher/controller acceptance have not started on this target.
+
+Existing screensaver/player implementations document the relevant compositor
+constraint: Game Mode surfaces applications launched through Steam. The bbport
+setup currently executes its GUI directly. This is a concrete integration lead,
+not proof of a completed Ports fix. Verify the launcher visually through a
+Steam-managed launch and test its actual navigation before accepting it. Do not
+interpret a live GTK process, a shortcut file or installer exit zero as controller
+or visible-window evidence. Required CI was green for `370df16`; this does not
+replace these remaining hardware gates.
