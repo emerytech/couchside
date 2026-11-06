@@ -128,3 +128,25 @@ behavior without certifying a consumer game installation. Label that evidence
 separately; actual runtime setup, Steam shortcuts and game launch require their
 own approved install test. Keep machine addresses, tokens, detailed transcripts
 and rollback locations in the private handoff rather than this repository.
+
+### November 5 Linux lifetime evidence
+
+On a real Bazzite desktop, the candidate's `ports_run` and `_ports_worker` were
+loaded into a private test harness. Only the recipe body and storage paths were
+substituted with a disposable 45-second progress payload; no game was installed
+or removed. The launch used the production fixed user-unit name and launch path.
+The installed API agent remained unchanged.
+
+The worker occupied the desktop user manager's app slice, separately from the
+actual API agent's system slice. Restarting the actual `couchside.service` kept
+the same worker PID and job ID, with advancing progress. A competing launch was
+rejected with 409. The worker completed with exit code zero and systemd success;
+its staging directory was removed. A second actual agent restart preserved the
+terminal job result. The installed agent digest was unchanged afterward.
+
+This verifies real user-manager launch, control-group independence, concurrency
+and terminal persistence for the candidate job functions. It does **not** verify
+the candidate API service deployment, downloaded recipe, game setup, or native
+phone polling. Android disconnected repeatedly before app inspection, so phone
+reconnect acceptance remains pending. Detailed receipts and test-only harness
+paths are retained privately.
