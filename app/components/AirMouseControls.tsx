@@ -49,6 +49,14 @@ export function AirMouseControls(props: Props) {
   const subscription = useRef<{ remove(): void } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engine = useRef(new AirMouseIntegrator());
+  // Local QA counters only: no host, credentials, coordinates or sample values.
+  const timing=useRef({samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:0});
+  useEffect(()=>{
+    if(process.env.EXPO_PUBLIC_AIR_DIAGNOSTICS!=='1')return;
+    const timer=setInterval(()=>{const q=timing.current;console.info('AirMouseQA',JSON.stringify({on:latched.current,available:latest.current.available,...q,last:undefined}));timing.current={samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:q.last};},2000);
+    return()=>clearInterval(timer);
+  },[]);
+
   const stop = useCallback(() => {
     latched.current = false; handoff.current.invalidate(); shake.current.reset();
     if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=null;
@@ -102,9 +110,10 @@ export function AirMouseControls(props: Props) {
       setMessage(calibrate ? 'Keep the phone still for one second…' : '');
       subscription.current = Gyroscope.addListener(rawSample => {
         const sample = airMouseGripSample(rawSample, grip);
-        if (!current()) return;
+        const q=timing.current, now=Date.now();q.samples++;if(q.last){const gap=now-q.last;q.maxGap=Math.max(q.maxGap,gap);if(gap>80)q.gaps++;}q.last=now;
+        if (!current()) {q.blocked++;return;}
         if (calibrate) { samples.push(sample); return; }
-        if(!handoff.current.allows(Date.now())) {engine.current.reset();return;}
+        if(!handoff.current.allows(Date.now())) {q.touch++;engine.current.reset();return;}
         if(shakeEnabled && largeCursor && latest.current.onCursor) {
           const gesture=shake.current.step(rawSample);
           if(gesture.triggered) {setCursorBoost(true);if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=setTimeout(()=>{if(mounted.current)setCursorBoost(false);},1500);}
@@ -113,7 +122,9 @@ export function AirMouseControls(props: Props) {
         const generation=handoff.current.generation;
         const motionCurrent=()=>current()&&handoff.current.generation===generation&&handoff.current.allows(Date.now());
         const delta = engine.current.step(sample, gain * AIR_MOUSE_REMOTE_GAIN);
+        if(busy.current)q.busy++;
         if (!delta || busy.current || Math.abs(delta.dx) + Math.abs(delta.dy) < .05) return;
+        q.sent++;
         busy.current = true;
         Promise.resolve().then(() => { if (motionCurrent()) return latest.current.onMove(delta.dx, delta.dy, motionCurrent); })
           .catch(() => { if (current()) { stop(); setMessage('Connection interrupted. Hold again to retry, or use the touchpad.'); } })
