@@ -2431,13 +2431,8 @@ function PadScreen() {
       ) : mode === 'trackpad' ? (
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
-          <AirMouseControls key={hostKey(settings)} targetKey={hostKey(settings)} pauseSignal={airMousePause}
-            available={status === 'connected' && !stale && inputBlocked == null}
-            onCursor={(enabled, lease) => api.airMouseCursor(settings, enabled, lease)}
-            onStop={() => client.cancelMouseMove()}
-            onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
-            onClick={current => { if (current()) tpLeft(); }} />
-          <View style={styles.tpWrap} onTouchStart={() => setAirMousePause(v => v + 1)}>
+          <View style={styles.tpWrap}>
+            <View style={{flex:1}} onTouchStart={() => setAirMousePause(v => v + 1)}>
             <Trackpad
               onMove={tpMove}
               onLeftClick={tpLeft}
@@ -2446,6 +2441,13 @@ function PadScreen() {
               onDragStart={tpDragStart}
               onDragEnd={tpDragEnd}
             />
+            </View>
+          <AirMouseControls floating key={hostKey(settings)} targetKey={hostKey(settings)} pauseSignal={airMousePause}
+            available={status === 'connected' && !stale && inputBlocked == null}
+            onCursor={(enabled, lease) => api.airMouseCursor(settings, enabled, lease)}
+            onStop={() => client.cancelMouseMove()}
+            onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
+            onClick={current => { if (current()) tpLeft(); }} />
             {padToggleChip}
           </View>
           {!largePad && (showMouseRow || showSteamRow) && (

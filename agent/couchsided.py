@@ -27751,7 +27751,7 @@ class Image(c.Structure):
  _fields_=[('x',c.c_short),('y',c.c_short),('width',c.c_ushort),('height',c.c_ushort),('xhot',c.c_ushort),('yhot',c.c_ushort),('serial',c.c_ulong),('pixels',c.POINTER(c.c_ulong)),('atom',c.c_ulong),('name',c.c_char_p)]
 class Cursor(c.Structure):
  _fields_=[('version',c.c_uint),('size',c.c_uint),('width',c.c_uint),('height',c.c_uint),('xhot',c.c_uint),('yhot',c.c_uint),('delay',c.c_uint),('pixels',c.POINTER(c.c_uint))]
-saved=[]
+saved=[]; enlarged=False
 try:
  x=c.CDLL('libX11.so.6');f=c.CDLL('libXfixes.so.3');u=c.CDLL('libXcursor.so.1')
  x.XOpenDisplay.argtypes=[c.c_char_p];x.XOpenDisplay.restype=c.c_void_p
@@ -27782,7 +27782,11 @@ try:
   original=make(d,pixels,w,h,hx,hy,1);large=make(d,pixels,w,h,hx,hy,3)
   f.XFixesSetCursorName(d,large,name)
   saved.append((d,original,large,name));f.XFixesChangeCursorByName(d,large,name);x.XSync(d,0)
- print(json.dumps({'ok':bool(saved)}),flush=True)
+  check=f.XFixesGetCursorImage(d)
+  if check:
+   enlarged = enlarged or (check.contents.width >= min(96,w*3) and check.contents.height >= min(96,h*3))
+   x.XFree(check)
+ print(json.dumps({'ok':enlarged}),flush=True)
  deadline=time.monotonic()+8;maximum=time.monotonic()+600
  while saved and time.monotonic()<min(deadline,maximum):
   if select.select([sys.stdin],[],[],max(0,min(deadline,maximum)-time.monotonic()))[0]:

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { AppState, Dimensions, PanResponder, Platform, Pressable, Text, View } from 'react-native';
+import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type MotionSample } from '@/lib/airMouse';
 import { usePref, usePrefsReady } from '@/lib/prefs';
+import { useReducedMotion } from '@/lib/skin/motion';
 import { useTheme } from '@/lib/theme';
 
 type Props = {
   targetKey: string;
+  floating?: boolean;
   pauseSignal?: number;
   available?: boolean;
   onMove: (dx: number, dy: number, current: () => boolean) => void | Promise<void>;
@@ -19,6 +21,11 @@ type Props = {
 };
 /** Opt-in, portrait hold-to-point. No subscription or permission prompt until a user action. */
 export function AirMouseControls(props: Props) {
+  const reducedMotion = useReducedMotion();
+  const {width} = useWindowDimensions();
+  const [menuOpen,setMenuOpen] = useState(false);
+  const fan = useRef(new Animated.Value(0)).current;
+  useEffect(()=>{Animated.timing(fan,{toValue:menuOpen?1:0,duration:reducedMotion?0:180,useNativeDriver:false}).start();return()=>fan.stopAnimation();},[menuOpen,reducedMotion,fan]);
   const t = useTheme(); const latest = useRef(props); latest.current = props;
   const [message, setMessage] = useState('');
   const enabled = usePref('airMouseEnabled'), largeCursor = usePref('airMouseLargeCursor');
@@ -98,8 +105,8 @@ export function AirMouseControls(props: Props) {
     let pending = Promise.resolve();
     const renew = () => {
       pending = Promise.resolve().then(() => latest.current.onCursor?.(true, lease)).then(() => {
-        if (!retired) timer = setTimeout(renew, 4000);
-      }).catch(() => { if (!retired) setMessage('Large pointer unavailable on this box. Air Mouse still works.'); });
+        if (!retired) { setMessage(m => m.startsWith('Large pointer unavailable') ? '' : m); timer = setTimeout(renew, 4000); }
+      }).catch(() => { if (!retired) { setMessage('Large pointer unavailable on this box. Air Mouse still works.'); timer = setTimeout(renew, 4000); } });
     };
     renew();
     return () => { retired = true; if (timer) clearTimeout(timer); void pending.then(() => latest.current.onCursor?.(false, lease)).catch(() => {}); };
@@ -132,19 +139,25 @@ export function AirMouseControls(props: Props) {
     onPanResponderTerminate: stop,
     onPanResponderTerminationRequest: () => true,
   }));
-  const button = { minHeight: 42, justifyContent: 'center' as const, paddingHorizontal: 10, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
-  return <View style={{ gap: 4 }}>
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+  const button = { minHeight: 42, justifyContent: 'center' as const, minWidth:44, alignItems:'center' as const, paddingHorizontal: 7, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
+  return <View pointerEvents="box-none" style={props.floating ? {position:'absolute',right:8,bottom:8,zIndex:20,alignItems:'flex-end',gap:4} : {gap:4,alignItems:'flex-end'}}>
+    {menuOpen && !!message && <Text numberOfLines={2} style={{color:t.textDim,fontSize:12,maxWidth:Math.max(180,width-60),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
+    <View style={{alignItems:'center',gap:4}}>
+    <Animated.View pointerEvents={menuOpen?'auto':'none'} accessibilityElementsHidden={!menuOpen} importantForAccessibility={menuOpen?'auto':'no-hide-descendants'} style={{overflow:'hidden',width:52,height:fan.interpolate({inputRange:[0,1],outputRange:[0,236]}),opacity:fan,transform:[{translateY:fan.interpolate({inputRange:[0,1],outputRange:[18,0]})}]}}>
+    <View style={{ alignItems: 'center',gap:4 }}>
+
       <Pressable accessibilityRole="switch" accessibilityLabel="Air Mouse" accessibilityState={{ checked: toggleOn }} disabled={props.available === false}
         onPress={() => { if (latched.current) stop(); else void begin(false, true); }} style={button}>
-        <Text style={{ color: toggleOn ? t.blue : t.textDim, fontWeight: '700', fontSize: 13 }}>◉ Air {toggleOn ? 'ON' : 'OFF'}</Text>
+        <Text style={{ color: toggleOn ? t.blue : t.textDim, fontWeight: '700', fontSize: 13 }}>{toggleOn ? 'ON' : 'OFF'}</Text>
       </Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={props.available === false} onPress={() => { const id=epoch.current; const current=()=>mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false; void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);}).catch(()=>{if(current())setMessage('Click failed. Check connection.');}); }}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
-    {!!message && <Text numberOfLines={2} style={{ color: t.textDim, fontSize: 12 }}>{message}</Text>}
+    </Animated.View>
+    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}><Text style={{color:toggleOn?t.blue:t.textDim,fontSize:22}}>{menuOpen?'×':'◉'}</Text></Pressable>
+    </View>
     {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}><Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text></View>}
   </View>;
 }
