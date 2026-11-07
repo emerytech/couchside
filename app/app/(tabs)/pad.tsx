@@ -1,3 +1,4 @@
+import { useInputLatency } from '@/hooks/useInputLatency';
 import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
 import { AirMouseControls } from '@/components/AirMouseControls';
 import { portraitPadMetrics } from '@/lib/portraitPad';
@@ -1144,6 +1145,7 @@ function PadScreen() {
   // polled from the client, it turns the pill amber + tap-to-retry live BEFORE
   // the pong watchdog acts, instead of showing a green pill over a dead pipe.
   const [stale, setStale] = useState(false);
+  useInputLatency(padFocused && status === 'connected');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
   // desktop / an elevated window has focus); the string is the hint to show.
