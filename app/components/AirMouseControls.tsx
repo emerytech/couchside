@@ -11,6 +11,7 @@ import { useTheme } from '@/lib/theme';
 type Props = {
   targetKey: string;
   floating?: boolean;
+  onActiveChange?: (active:boolean)=>void;
   touchpadActive?: boolean;
   available?: boolean;
   onMove: (dx: number, dy: number, current: () => boolean) => void | Promise<void>;
@@ -40,6 +41,7 @@ export function AirMouseControls(props: Props) {
   const autoStarted = useRef(false); const [focusVersion, setFocusVersion] = useState(0);
   const [holding, setHolding] = useState(false);
   const [toggleOn, setToggleOn] = useState(false);
+  useLayoutEffect(()=>{props.onActiveChange?.(toggleOn);return()=>props.onActiveChange?.(false);},[toggleOn,props.onActiveChange]);
   const grip = 'remote' as const;
   const latched = useRef(false);
   const epoch = useRef(0), mounted = useRef(true), focused = useRef(false), busy = useRef(false);

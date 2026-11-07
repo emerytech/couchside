@@ -933,6 +933,7 @@ const MODES: { key: PadMode; label: string }[] = [
 
 function PadScreen() {
   const [airMouseTouch, setAirMouseTouch] = useState(false);
+  const [airMouseActive,setAirMouseActive]=useState(false);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
@@ -1035,7 +1036,7 @@ function PadScreen() {
   // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
   // Declared before useLockOrientation because the policy below reads it.
   const laptopEligible =
-    !((mode === 'trackpad' || mode === 'swipe') && airMouseEnabled) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+    !((mode === 'trackpad' || mode === 'swipe') && (airMouseEnabled || airMouseActive)) && !(mode === 'remote' && airMouseActive) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
   const laptop = laptopEligible && landscape && !exited;
 
   useLockOrientation(
@@ -2365,7 +2366,7 @@ function PadScreen() {
         </>
       ) : mode === 'remote' ? (
         <>
-          <RemoteView client={client} settings={settings} />
+          <RemoteView client={client} settings={settings} onAirMouseActive={setAirMouseActive} />
           {keyboardBar}
         </>
       ) : mode === 'swipe' || tvNav ? (
@@ -2382,7 +2383,7 @@ function PadScreen() {
               onSelect={tvNav ? tvClick : selectTap}
             />
             </View>
-            <AirMouseControls floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
+            <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
               available={status === 'connected' && !stale && inputBlocked == null}
               onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
               onStop={()=>client.cancelMouseMove()}
@@ -2451,7 +2452,7 @@ function PadScreen() {
               onDragEnd={tpDragEnd}
             />
             </View>
-          <AirMouseControls floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
+          <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
             available={status === 'connected' && !stale && inputBlocked == null}
             onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
             onStop={() => client.cancelMouseMove()}
