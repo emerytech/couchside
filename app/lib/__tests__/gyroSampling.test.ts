@@ -12,3 +12,8 @@ test('gyro requests game-rate sampling without high-rate permission; patch is na
   assert.match(after, /else \{\n      SensorManager.SENSOR_DELAY_NORMAL/);
   assert.throws(() => patchSource('upstream changed'), /review gyro patch/);
 });
+
+test('Android builds the patched sensors module rather than its precompiled AAR', () => {
+  const config = require('../../package.json');
+  assert.deepEqual(config.expo.autolinking.android.buildFromSource, ['expo-sensors']);
+});
