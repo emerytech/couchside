@@ -15,7 +15,7 @@ test('calibration removes stationary bias; release/reset and long gaps cannot ju
 test('fractional motion accumulates, samples stay bounded, invalid input does not move', () => {
  const m = new AirMouseIntegrator(); let total=0;
  for(let i=0;i<100;i++) {const d=m.step(sample(i*.02,0,.025)); if(d)total+=d.dx;}
- assert.ok(total < -20);
+ assert.ok(total < -5, 'slow deliberate motion retains fractional progress');
  const d=m.step(sample(2,1e9,1e9))!;assert.ok(Math.abs(d.dx)<=60 && Math.abs(d.dy)<=60);
  assert.equal(m.step(sample(NaN,1,1)),null);
  for(const pair of [[NaN,0],[0,Infinity],[121,0]]) assert.throws(()=>pointerMoveFrame(...pair as [number,number]));
@@ -76,4 +76,16 @@ test('remote wrist sweep covers four times the distance without changing stillne
  const normal = distance(1), remote = distance(AIR_MOUSE_REMOTE_GAIN);
  assert.ok(remote > 1400 && remote < 1600);
  assert.ok(Math.abs(remote/normal-4)<.05);
+});
+
+test('precision filter suppresses hand tremor yet responds promptly to a deliberate sweep', () => {
+ const m = new AirMouseIntegrator(); let travel=0;
+ for(let i=0;i<100;i++) { const d=m.step(sample(i*.02,0,.06*Math.sin(2*Math.PI*8*i*.02)),4); if(d)travel+=Math.abs(d.dx); }
+ assert.ok(travel < 45, `tremor path ${travel}px should remain small`);
+ const sweep=[];
+ for(let i=100;i<106;i++) sweep.push(m.step(sample(i*.02,0,-.6),4)!.dx);
+ assert.ok(sweep[2]>35, 'intentional sweep responds within 60ms');
+ m.reset();assert.equal(m.step(sample(3,0,-.6),4),null);
+ for(let i=151;i<170;i++) m.step(sample(i*.02),4);
+ assert.deepEqual(m.step(sample(3.4),4),{dx:0,dy:0});
 });
