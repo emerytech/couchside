@@ -15,3 +15,9 @@ export function startSyntheticGyro(sample:(s:MotionSample)=>void,complete:()=>vo
   },20);
   return {remove:()=>clearInterval(timer)};
 }
+/** QA loopback route only; identity/pairing is retained and nothing is saved. */
+export function syntheticUsbRoute<T extends {host:string;port:number;lastIp?:string;secure?:boolean;pinModulus?:string;tlsPort?:number}>(settings:T,enabled:boolean):T {
+  if(!enabled)return settings;
+  if(!settings.secure||!settings.pinModulus||!settings.tlsPort)throw new Error('USB QA requires an existing TLS-paired box');
+  return {...settings,host:'127.0.0.1',lastIp:undefined,port:18787,tlsPort:18788};
+}

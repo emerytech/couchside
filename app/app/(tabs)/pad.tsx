@@ -1,3 +1,4 @@
+import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
 import { AirMouseControls } from '@/components/AirMouseControls';
 import { portraitPadMetrics } from '@/lib/portraitPad';
 import { CustomPresetPad } from '@/components/LandscapePad';
@@ -25,7 +26,7 @@ import { getPref, setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -967,7 +968,10 @@ function PadScreen() {
   // of force-locking to portrait. See the laptop derivation and early return below.
   const landscapeLaptopPref = usePref('landscapeLaptop');
   const airMouseEnabled = usePref('airMouseEnabled');
-  const { settings, ready, update } = useSettings();
+  const { settings: savedSettings, ready, update } = useSettings();
+  const qaParams=useLocalSearchParams<{syntheticGyro?:string;syntheticUsb?:string}>();
+  const usbQa=process.env.EXPO_PUBLIC_AIR_SYNTHETIC==='1' && qaParams.syntheticGyro==='1' && qaParams.syntheticUsb==='1';
+  const settings=useMemo(()=>syntheticUsbRoute(savedSettings,usbQa),[savedSettings,usbQa]);
   const { activeBox } = useBoxes();
   const preset = normalizePadPreset(activeBox?.controlPreset);
   const prefsReady = usePrefsReady();
