@@ -148,6 +148,7 @@ export function PadKey({
             fontFamily: mono,
             fontWeight: '700',
             fontSize: fontSize ?? 3.4 * u,
+            textAlign: 'center',
           }}>
           {label}
         </Text>

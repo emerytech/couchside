@@ -50,8 +50,8 @@ export function Bg3MovePad({layout,client,targetKey,available,locked,onToggleLoc
  return <View style={[StyleSheet.absoluteFill,{backgroundColor:t.bg}]}>
   <PadTouchSurface controls={usable&&extras.ok?controls:[]} excluded={excluded} btn={btn} trig={noTrigger} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
    <FloatingStick node={n.move} u={u} label={cameraMode?'Camera · WASD':'Cursor'} zoneOutline onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={()=>{}}/>
-   <PadKey node={n.a} u={u} label="A ↵" fontSize={3.5*u} {...btn('a')}/>
-   <PadKey node={n.b} u={u} label="B Esc" fontSize={3*u} {...btn('b')}/>
+   <PadKey node={n.a} u={u} label={"Confirm /\nEnter"} fontSize={2.5*u} {...btn('a')}/>
+   <PadKey node={n.b} u={u} label={"Back /\nEsc"} fontSize={2.5*u} {...btn('b')}/>
   </PadTouchSurface>
   {extras.ok&&<>
    <Bg3Touchpad rect={extras.pad} enabled={usable} label={'TOUCHPAD\nTap to select · two fingers to scroll'+(camera&&!client.supportsCameraKeys()?'\nCursor mode · update agent for WASD':'')}
