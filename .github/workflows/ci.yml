@@ -517,6 +517,15 @@ jobs:
       # (flatpak vs system browser, known browsers only, url passed verbatim).
       - name: Unit tests (pairing PIN kiosk launch)
         run: python3 tests/test_pair_kiosk.py
+      # New local guide must retain both host gates and authenticated launch.
+      - name: Air Mouse guided setup dispatch
+        run: |
+          python3 tests/test_air_mouse_guide.py
+          python3 tests/test_tv_pointer_stream.py
+          python3 tests/test_camera_key_lease.py
+      # Exercise the four targets and exit/restart without browser dependencies.
+      - name: Air Mouse guided setup target sequence
+        run: node tests/air_mouse_guide_ui.cjs
 
       # Game-mode (gamescope / Big Picture) pointer input: the {t:'gm'} verb.
       # The portal is absent in Game Mode, so absolute menu nav rides an xdotool

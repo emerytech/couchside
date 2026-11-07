@@ -99,7 +99,7 @@ const CustomLabels = createContext<CustomPad | undefined>(undefined);
 
 // ---------- A plain momentary button ----------
 
-function PadKey({
+export function PadKey({
   node, label, actionLabel, color, fontSize, onDown, onUp, u,
 }: {
   node: PadNode; label: string; actionLabel?: string; color?: string; fontSize?: number;
@@ -148,6 +148,7 @@ function PadKey({
             fontFamily: mono,
             fontWeight: '700',
             fontSize: fontSize ?? 3.4 * u,
+            textAlign: 'center',
           }}>
           {label}
         </Text>
@@ -163,7 +164,7 @@ function PadKey({
 
 // ---------- Analog stick: fixed container, floating origin ----------
 
-function FloatingStick({
+export function FloatingStick({
   node, u, onMove, onRelease, onClick, label, zoneOutline,
 }: {
   node: PadNode; u: number;
@@ -635,7 +636,7 @@ function FaceCluster({
 
 /** One chrome-row button (LOCK / EXIT / the PAD⇄MOVE toggle). Layer 9: hit
     rect = drawn rect, and a touch must start AND end inside. */
-function ChromeButton({
+export function ChromeButton({
   node, u, text, color, onPress, accessibilityLabel, checked,
 }: {
   node: PadNode; u: number; text: string; color?: string;

@@ -410,6 +410,8 @@ export class GamepadClient {
    *  agent creates a pad on connect and Steam announces a controller every
    *  time the app foregrounds. Older agents ignore the param. */
   private noPad = false;
+  private noPadAcknowledged = false;
+  private cameraKeys = false;
   /** This device's label, sent so the holder's prompt can name the requester. */
   private deviceName = 'A device';
 
@@ -870,12 +872,28 @@ export class GamepadClient {
     }
   }
 
+  /** Discard unsent relative motion when an Air Mouse hold/surface ends. */
+  cancelMouseMove(): void {
+    if (this.mouseTimer != null) clearTimeout(this.mouseTimer);
+    this.mouseTimer = null;
+    this.mousePending = { dx: 0, dy: 0 };
+  }
+
   private flushMouseMove(): void {
     const { dx, dy } = this.mousePending;
     this.mousePending = { dx: 0, dy: 0 };
     this.mouseLastSent = Date.now();
     if (dx === 0 && dy === 0) return;
     this.sendRaw({ t: 'm', dx, dy });
+  }
+
+  /** Only call when /api/tv advertises pointer_stream; older agents reject unknown frames. */
+  sendTvPointer(op: 'move' | 'click' | 'stop', dx = 0, dy = 0): void {
+    if (op === 'move' && (!Number.isFinite(dx) || !Number.isFinite(dy))) return;
+    this.sendRaw({ t: 'tvp', op, ...(op === 'move' ? {
+      dx: Math.max(-120, Math.min(120, Math.round(dx))),
+      dy: Math.max(-120, Math.min(120, Math.round(dy))),
+    } : {}) });
   }
 
   /** Mouse button press/release (BTN_LEFT/RIGHT/MIDDLE). */
@@ -956,6 +974,12 @@ export class GamepadClient {
     }
     if (!s) return;
     this.sendRaw({ t: 'kt', text: s });
+  }
+
+  supportsKeyboardOnly(): boolean { return this.noPadAcknowledged; }
+  supportsCameraKeys(): boolean { return this.cameraKeys; }
+  sendCameraKey(key:'w'|'a'|'s'|'d', v:0|1): void {
+    if(this.cameraKeys)this.sendRaw({t:'kh',key,v});
   }
 
   /** A single special key press+release (backspace, enter, arrows, …). */
@@ -1153,12 +1177,13 @@ export class GamepadClient {
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
       this.lastInbound = Date.now();
+      wsTrace.lastInboundAt = this.lastInbound;
       let msg: {
         t?: string; dev?: string; msg?: string; text?: string;
         code?: string; name?: string; holder?: string; by?: string;
         open?: boolean; value?: string;
         /** hello: named keys/chords this agent accepts (agent >= 2.9.95). */
-        keys?: unknown;
+        keys?: unknown; no_pad?: boolean; camera_keys?: unknown;
       };
       try {
         msg = JSON.parse(String(ev.data));
@@ -1166,6 +1191,8 @@ export class GamepadClient {
         return;
       }
       if (msg.t === 'hello') {
+        this.noPadAcknowledged = msg.no_pad === true || msg.dev === 'keyboard only';
+        this.cameraKeys = Array.isArray(msg.camera_keys) && ['w','a','s','d'].every(k=>(msg.camera_keys as unknown[]).includes(k));
         this.attempt = 0;
         this.setControlRequest(null); // any pending prompt is moot now
         this.dev = typeof msg.dev === 'string' ? msg.dev : null;
@@ -1355,11 +1382,7 @@ export class GamepadClient {
       }
       this.stickPending[k] = null;
     }
-    if (this.mouseTimer != null) {
-      clearTimeout(this.mouseTimer);
-      this.mouseTimer = null;
-    }
-    this.mousePending = { dx: 0, dy: 0 };
+    this.cancelMouseMove();
     const ws = this.ws;
     if (ws) {
       this.ws = null;

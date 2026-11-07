@@ -4666,6 +4666,8 @@ class WinKeyboard:
                         inputs.append(_key_input(VK_TAB, False))
                     else:
                         inputs.extend(_unicode_key_inputs(ch))
+            elif kind == "camera":
+                inputs.append(_key_input(ord(ev[1].upper()), bool(ev[2])))
             elif kind == "key":
                 vk = SPECIAL_KEYS[ev[1]]
                 inputs.append(_key_input(vk, True))
@@ -4795,6 +4797,11 @@ def keyboard_events(msg):
     device, so any character is deliverable; only unknown special-key names
     are rejected here."""
     t = msg.get("t")
+    if t == "kh":
+        key, value = msg.get("key"), msg.get("v")
+        if not isinstance(key, str) or key not in ("w", "a", "s", "d") or type(value) is not int or value not in (0, 1):
+            raise ValueError("invalid camera key")
+        return []  # Emitted by _camera_key only AFTER the Windows privilege guard.
     if t == "kt":
         text = msg.get("text")
         if not isinstance(text, str):
@@ -5193,6 +5200,71 @@ def _fg_watch_loop():
             pass
 
 
+# Camera keys are separately leased and reference-counted because the keyboard
+# is shared between sessions. A lost phone cannot leave WASD held indefinitely.
+_CAMERA_KEY_LOCK = threading.RLock()
+_CAMERA_KEY_ENTRIES = {}
+_CAMERA_KEY_WORKER = None
+
+
+def _camera_keys_release(entry):
+    with _CAMERA_KEY_LOCK:
+        owned = entry.get("camera_keys", set())
+        for key in list(owned):
+            other = any(e is not entry and key in e.get("camera_keys", set())
+                        for e in _CAMERA_KEY_ENTRIES.values())
+            if not other and entry.get("keyboard") is not None:
+                try:
+                    entry["keyboard"].emit([("camera", key, 0)])
+                except Exception:
+                    pass
+            owned.discard(key)
+        _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+
+
+def _camera_keys_watch():
+    global _CAMERA_KEY_WORKER
+    while True:
+        time.sleep(.05)
+        with _CAMERA_KEY_LOCK:
+            for entry in list(_CAMERA_KEY_ENTRIES.values()):
+                if entry.get("camera_until", 0) <= time.monotonic():
+                    _camera_keys_release(entry)
+            if not _CAMERA_KEY_ENTRIES:
+                _CAMERA_KEY_WORKER = None
+                return
+
+
+def _camera_key(entry, req):
+    global _CAMERA_KEY_WORKER
+    key, value = req.get("key"), req.get("v")
+    if not isinstance(key, str) or key not in ("w", "a", "s", "d") or type(value) is not int or value not in (0, 1):
+        raise ValueError("invalid camera key")
+    with _CAMERA_KEY_LOCK:
+        owned = entry.setdefault("camera_keys", set())
+        others = any(e is not entry and key in e.get("camera_keys", set())
+                     for e in _CAMERA_KEY_ENTRIES.values())
+        if value and key not in owned:
+            owned.add(key)
+            _CAMERA_KEY_ENTRIES[id(entry)] = entry
+            entry["camera_until"] = time.monotonic() + .5
+            if _CAMERA_KEY_WORKER is None:
+                _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+                _CAMERA_KEY_WORKER.start()
+            if not others:
+                entry["keyboard"].emit([("camera", key, 1)])
+        elif not value and key in owned:
+            if not others:
+                entry["keyboard"].emit([("camera", key, 0)])
+            owned.discard(key)
+        entry["camera_until"] = time.monotonic() + .5
+        if not owned:
+            _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+        elif _CAMERA_KEY_WORKER is None:
+            _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+            _CAMERA_KEY_WORKER.start()
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -5200,6 +5272,7 @@ def _release_devices(entry):
     released (a drag could be mid-press at demote; keyboard frames always pair
     press+release, so keys can never be left held). No settle-window guard is
     needed as on Linux — SendInput is instant."""
+    _camera_keys_release(entry)
     dev = entry.get("device")
     if dev is not None:
         try:
@@ -5224,7 +5297,7 @@ def _make_holder(entry, mock):
     construct on Windows; a create failure is non-fatal — the lazy path in
     _gamepad_message retries on first use)."""
     try:
-        entry["device"] = MockGamepad() if mock else ViGEmGamepad()
+        entry["device"] = None if entry.get("nopad") else (MockGamepad() if mock else ViGEmGamepad())
     except Exception as e:
         print("[gamepad] device create failed: %s" % e, flush=True)
         _wsend_json(entry, {"t": "err", "msg": "gamepad unavailable: %s" % e})
@@ -5234,8 +5307,9 @@ def _make_holder(entry, mock):
     entry["requested"] = False
     entry["input_err_count"] = 0
     entry["input_blocked"] = False
-    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
-                        "text": "unicode"})
+    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name if entry.get("device") is not None else "keyboard only",
+                        "text": "unicode", "no_pad": bool(entry.get("nopad")),
+                        "camera_keys": ["w", "a", "s", "d"]})
     for slot, factory in (("mouse", MockMouse if mock else WinMouse),
                           ("keyboard", MockKeyboard if mock else WinKeyboard)):
         if entry.get(slot) is None:
@@ -5366,6 +5440,22 @@ _BOX_POP_LOCK = threading.Lock()
 _BOX_POP_AT = [0.0]                 # monotonic time of the last box-screen pop
 _BOX_POP_COOLDOWN = 5.0             # hard floor between pops
 
+
+
+def render_air_mouse_page():
+    """Static local target exercise. No credentials, remote scripts or control API."""
+    return r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Couchside · Air Mouse setup</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1120;color:#e8eef9;font:22px system-ui}header{position:absolute;top:3vh;left:5vw;right:5vw;text-align:center}h1{font-size:32px;margin:0 0 12px}p{color:#a5b3ca;margin:8px}button{background:#152034;color:#e8eef9;border:1px solid #33445f;border-radius:14px;padding:12px 22px;font:inherit;cursor:pointer}#target{position:absolute;width:88px;height:88px;border-radius:50%;border:3px solid #25cdb8;background:#153a40;transform:translate(-50%,-50%);pointer-events:none;display:grid;place-items:center;font-size:38px;box-shadow:0 0 0 18px #25cdb815}footer{position:absolute;bottom:3vh;width:100%;text-align:center}#result{color:#25cdb8}#close{position:absolute;right:20px;top:16px}</style>
+<header><h1>Air Mouse · four-target setup</h1><p id="instruction">On your phone, use Quick calibrate while holding still. Turn Air Mouse on.</p><p>Move the cursor onto each target, then tap Confirm target on your phone.</p><p id="result" aria-live="polite">Target 1 of 4</p></header><button id="close">Exit</button><div id="target" aria-hidden="true">+</div>
+<footer><p>Point the phone toward the TV, screen facing up (Remote grip). Use Speed to tune movement.</p><p>Hold still to pause. Recenter stops motion so you can comfortably regrip; it does not move the cursor.</p><button id="restart">Start again</button> <button id="full">Full screen</button></footer>
+<script>
+'use strict';
+const spots=[[.25,.36],[.75,.36],[.75,.67],[.25,.67]], target=document.querySelector('#target'), result=document.querySelector('#result');let step=0,errors=[];
+function place(){target.style.left=spots[Math.min(step,3)][0]*100+'vw';target.style.top=spots[Math.min(step,3)][1]*100+'vh'}
+function reset(){step=0;errors=[];target.hidden=false;target.style.display='grid';result.textContent='Target 1 of 4';place()}
+document.addEventListener('click',e=>{if(e.target.closest('button')||step>=4)return;const p=spots[step];errors.push(Math.hypot(e.clientX-innerWidth*p[0],e.clientY-innerHeight*p[1])/Math.min(innerWidth,innerHeight));step++;if(step===4){target.style.display='none';const mean=errors.reduce((a,b)=>a+b,0)/4;result.textContent=mean<.05?'Four targets complete · accuracy looks good.':'Four targets complete · try a slower Speed and repeat for more precision.';document.querySelector('#instruction').textContent='Now hold still and check for drift. If it drifts, turn Air Mouse off and Quick calibrate again.'}else{result.textContent='Target '+(step+1)+' of 4';place()}});
+document.querySelector('#restart').onclick=reset;document.querySelector('#full').onclick=()=>{if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(()=>{})};document.querySelector('#close').onclick=()=>{window.close();document.querySelector('#instruction').textContent='Test finished. Turn Air Mouse off on your phone, then close this browser or return to Steam.';target.style.display='none';step=4};document.addEventListener('keydown',e=>{if(e.key==='Escape'){target.style.display='none';step=4;result.textContent='Test stopped. Turn Air Mouse off on your phone.'}});reset();
+</script></html>'''
 
 def pair_show_on_box(port):
     """Open the loopback /pair page on THIS machine's screen so the PIN is
@@ -6045,6 +6135,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_gamepad_ws(parsed, started)
                 return
 
+            if path == "/air-mouse":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_air_mouse_page(), started)
+                return
+
             if path == "/pair":
                 # LOCALHOST-ONLY: two gates, both required (see the Linux
                 # agent's security notes).
@@ -6306,6 +6403,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            if path == "/api/air-mouse/show":
+                # Fixed local URL only; authenticated callers cannot supply a URL.
+                # Close because this action does not consume a request body.
+                self.close_connection = True
+                with _BOX_POP_LOCK:
+                    now = time.monotonic()
+                    if now - _BOX_POP_AT[0] < _BOX_POP_COOLDOWN:
+                        self._send(429, {"error": "Please wait before opening setup again"}, started)
+                        return
+                    _BOX_POP_AT[0] = now
+                try:
+                    os.startfile("http://localhost:%d/air-mouse" % self.port)
+                except Exception:
+                    self._send(503, {"error": "Could not open the on-box browser"}, started)
+                    return
+                self._send(200, {"ok": True, "requested": True}, started)
+                return
+
 
             if path in ('/api/upload', '/api/ticket'):
                 if not secure:
@@ -6774,6 +6890,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None,
                  "name": name, "held": False, "requested": False,
                  "input_err_count": 0, "input_blocked": False,
+                 "nopad": q.get("nopad", [""])[0] == "1",
                  "slock": threading.Lock()}
 
         # ---- decide this session's initial role -------------------------------
@@ -6851,6 +6968,7 @@ class Handler(BaseHTTPRequestHandler):
             self._gamepad_cleanup(entry)
 
     def _gamepad_cleanup(self, entry):
+        _camera_keys_release(entry)
         """Remove a dead session; if it held control, promote a waiter (prefer
         one that requested). Runs from the session's own thread on exit."""
         global GAMEPAD_HOLDER
@@ -6886,7 +7004,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # Message-type prefixes routed to the mouse / keyboard virtual devices.
     _MOUSE_TYPES = frozenset(("m", "mb", "mw"))
-    _KEYBOARD_TYPES = frozenset(("kt", "k"))
+    _KEYBOARD_TYPES = frozenset(("kt", "k", "kh"))
 
     # Control frames (holder handoff) — handled regardless of hold state.
     _CONTROL_TYPES = frozenset(("grant", "deny", "request", "force"))
@@ -7023,7 +7141,10 @@ class Handler(BaseHTTPRequestHandler):
                 return True
 
         try:
-            target.emit(events)
+            if t == "kh":
+                _camera_key(entry, msg)
+            else:
+                target.emit(events)
             entry["input_err_count"] = 0
             if entry.get("input_blocked"):  # was blocked, now working again
                 entry["input_blocked"] = False

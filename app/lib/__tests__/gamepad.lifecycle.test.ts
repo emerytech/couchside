@@ -63,7 +63,7 @@ class MockWebSocket {
 (globalThis as any).WebSocket = MockWebSocket;
 
 // Import AFTER the WebSocket global is installed.
-const { GamepadClient } = await import('../gamepad.ts');
+const { GamepadClient, getWsTrace } = await import('../gamepad.ts');
 
 const CONN = { host: 'box.local', port: 8787, token: 'tok', lastIp: '10.0.0.5' };
 
@@ -72,6 +72,17 @@ function freshClient() {
   NOW = 1_000_000;
   return new GamepadClient();
 }
+
+test('diagnostic freshness updates on pong between keepalive timer ticks', () => {
+  const c=freshClient();c.connect(CONN,{deviceName:'phone'});
+  const ws=MockWebSocket.instances[0];ws.openAndHello();
+  try {
+    NOW+=3000;assert.equal(getWsTrace().inboundAgeMs,3000);
+    ws.onmessage?.({data:JSON.stringify({t:'pong'})});
+    assert.equal(getWsTrace().inboundAgeMs,0);
+    NOW+=125;assert.equal(getWsTrace().inboundAgeMs,125);
+  } finally {c.close();}
+});
 
 test('connect() drives to connected via the hello handshake', () => {
   const c = freshClient();
@@ -357,4 +368,38 @@ test('layout release cancels delayed QAM presses without reconnecting', async ()
   assert.ok(frames.some(f => f.t === 'b' && f.k === 'a' && f.v === 1));
   assert.ok(frames.some(f => f.t === 'b' && f.k === 'a' && f.v === 0));
   client.close();
+});
+
+test('Air Mouse release discards throttled motion without disconnecting or replaying it', async () => {
+  const client = freshClient(); client.connect(CONN);
+  const ws = MockWebSocket.instances[0]; ws.openAndHello();
+  try {
+    client.sendMouseMove(1, 1);
+    const before = ws.sent.filter(s => JSON.parse(s).t === 'm').length;
+    client.sendMouseMove(50, 50); client.cancelMouseMove();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(ws.sent.filter(s => JSON.parse(s).t === 'm').length, before);
+    assert.equal(client.getStatus(), 'connected');
+    NOW += 100; client.sendMouseMove(2, 3);
+    assert.deepEqual(JSON.parse(ws.sent.at(-1)!), {t:'m',dx:2,dy:3});
+  } finally { client.close(); }
+});
+
+test('TV stream bounds moves, preserves command order and never sends invalid deltas',()=>{
+ const c=freshClient();c.connect(CONN);const ws=MockWebSocket.instances[0];ws.openAndHello();
+ c.sendTvPointer('move',500,-500);c.sendTvPointer('move',NaN,3);c.sendTvPointer('click');c.sendTvPointer('stop');
+ assert.deepEqual(ws.sent.map(s=>JSON.parse(s)).filter(m=>m.t==='tvp'),[
+ {t:'tvp',op:'move',dx:120,dy:-120},{t:'tvp',op:'click'},{t:'tvp',op:'stop'}]);
+ c.close();
+});
+
+test('BG3 negotiates keyboard-only and camera keys before sending additive frames',()=>{
+ const c=freshClient();c.connect(CONN,{noPad:true});const ws=MockWebSocket.instances[0];
+ assert.ok(ws.url.includes('nopad=1'));ws.openAndHello();
+ assert.equal(c.supportsKeyboardOnly(),false);assert.equal(c.supportsCameraKeys(),false);
+ c.sendCameraKey('w',1);assert.ok(!ws.sent.some(s=>JSON.parse(s).t==='kh'));
+ ws.onmessage?.({data:JSON.stringify({t:'hello',dev:'keyboard only',no_pad:true,camera_keys:['w','a','s','d']})});
+ assert.equal(c.supportsKeyboardOnly(),true);assert.equal(c.supportsCameraKeys(),true);
+ c.sendCameraKey('w',1);c.sendCameraKey('w',0);
+ assert.deepEqual(ws.sent.map(s=>JSON.parse(s)).filter(m=>m.t==='kh'),[{t:'kh',key:'w',v:1},{t:'kh',key:'w',v:0}]);c.close();
 });
