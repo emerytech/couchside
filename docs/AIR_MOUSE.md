@@ -71,3 +71,17 @@ No existing API fields/capabilities changed. The standalone agents embed identic
 HTML to preserve their single-file distribution. Tests cover both dispatchers,
 authentication, host/peer gates, launch rate limiting, and the target sequence.
 Physical phone/box aiming and browser focus remain acceptance gates.
+
+
+### Android sensor-rate correction
+
+Native Razr diagnostics exposed a 200ms gyro registration in expo-sensors 57.0.3
+when HIGH_SAMPLING_RATE_SENSORS is absent. That exceeds the integrator's 80ms
+stale-sample cutoff, so the switch could say ON while every sample was discarded.
+`app/scripts/patch-gyro-sampling.cjs` changes only the Android gyro fallback to
+SENSOR_DELAY_GAME (20ms), retaining the other sensor defaults and existing
+permissions. It is idempotent and fails on an unrecognized upstream source.
+It runs at postinstall alongside the reviewed TCP cleanup patch. Android native
+rebuild is required; a JS-only update cannot fix the sampling registration.
+The app/hook suite now has 879 passing tests; TypeScript passes. Physical cursor
+acceptance remains required after verifying the replacement's live sensor rate.
