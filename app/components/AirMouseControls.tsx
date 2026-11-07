@@ -220,7 +220,7 @@ export function AirMouseControls(props: Props) {
   };
   const button = { minHeight: 42, justifyContent: 'center' as const, minWidth:44, alignItems:'center' as const, paddingHorizontal: 7, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
   return <View pointerEvents="box-none" style={props.floating ? {position:'absolute',right:8,bottom:8,zIndex:20,alignItems:'flex-end',gap:4} : {gap:4,alignItems:'flex-end'}}>
-    {menuOpen && !!message && <Text numberOfLines={2} style={{color:t.textDim,fontSize:12,maxWidth:Math.max(180,width-60),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
+    {menuOpen && !!message && <Text accessibilityLiveRegion="polite" style={{color:t.textDim,fontSize:12,width:Math.min(240,width-32),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
     <View style={{alignItems:'center',gap:4}}>
     <Animated.View pointerEvents={menuOpen?'auto':'none'} accessibilityElementsHidden={!menuOpen} importantForAccessibility={menuOpen?'auto':'no-hide-descendants'} style={{overflow:'hidden',width:52,height:fan.interpolate({inputRange:[0,1],outputRange:[0,props.quickClick?236:282]}),opacity:fan,transform:[{translateY:fan.interpolate({inputRange:[0,1],outputRange:[18,0]})}]}}>
     <View style={{ alignItems: 'center',gap:4 }}>

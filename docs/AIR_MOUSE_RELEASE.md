@@ -19,3 +19,11 @@ Includes phone gyro pointing for boxes and LG TV remotes, four-target setup, BG3
 - Publish approved channels in dependency order, then website and update checkers only after their downloads/channels are available. Track App Review, store processing and public availability separately. Never send subscriber emails as a release side effect.
 
 Nothing has been published from this release branch yet.
+
+## November 7 release preparation
+
+Scoped source 6c1da90 passed hosted CI and all 907 app tests. The six-test dependency guard also passes. Compact 360×800 light and dark preferences were visually reviewed, including selected-text contrast and wrapped controls. A narrow status-message layout in the AIR fan was corrected during the review; native smoke of that correction remains required.
+
+Fresh candidate allocation: app 2.9.82, iOS 303, Play 132, Direct 67; Linux agent 2.9.138; Windows 0.4.17-win. These deliberately skip the separate held OpenPuck/Ports artifacts. Live Play production was 129 and App Store was 2.9.81; latest internal iPhone preview was 302. Allocated numbers are not proof of a completed build or publication.
+
+Windows candidate source is tracked separately on codex/air-mouse-0.4.17, based on public v0.4.15-win with only the scoped agent delta. Its workflow builds private acceptance artifacts without a release tag. Installer acceptance and final package checks remain pending.
