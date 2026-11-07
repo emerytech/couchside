@@ -107,3 +107,11 @@ mapping required excessive movement: Normal4x and Fast6x relative to the origina
 remains1x. Per-frame60px clamp and all stop/stillness guards remain. Known-angle
 regression, TypeScript and all882app/hook tests passed. Physical comfort must
 still be accepted on the replacement wrist-gain preview.
+
+
+On-box preview deployment check: guide-only changes applied to the prior installed
+Linux agent to avoid unrelated branch features. Service restart, ping/TLS health,
+byte-identical settings, local page200, hostile-Host403, unauthenticated launch401
+and the real Android phone's authenticated launch request passed. TV visibility,
+four-target completion and sensitivity comfort remain physical acceptance gates;
+a successful launch request alone is not proof the page appeared.
