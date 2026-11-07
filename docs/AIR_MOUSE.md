@@ -121,3 +121,24 @@ Historical A/B preparation: the archived owner-approved upward-menu preview is s
 Menu lifecycle: ON intent is remembered per target for the app session. Blur/unmount removes the sensor listener, clears pending motion and retires the cursor lease while retaining that intent; returning to a focused, available input surface starts fresh samples. Explicit OFF stays OFF across menu visits. OS backgrounding while the input controller is mounted still switches OFF. Paused menus never own sensors or transmit movement. Native menu round-trip acceptance is pending.
 
 Native preview checkpoint: menu Preferences/Back round trip stopped sensor samples in the menu, restored ON on return and resumed sensor sampling. During an automated held Mouse touchpad gesture, gyro output was gated for the gesture and allowed again after release, without turning OFF. Physical smoothness and remaining freezes still need owner confirmation. The diagnostic inbound-age counter was corrected to update on actual inbound messages, rather than only at the keepalive timer; older age readings can overstate silence.
+
+## Synthetic movement-only QA
+
+A private build can enable `EXPO_PUBLIC_AIR_SYNTHETIC=1` and open Pad with
+`syntheticGyro=1`. Ordinary builds cannot activate this source. It runs for 30
+seconds: stillness, five repeated figure eights, then stillness. The generated
+samples pass through the same grip mapping, integrator, lifecycle/handoff gates
+and transport as native gyro. The test source emits no buttons, clicks, keys or
+scroll commands, and stops automatically. Click/Confirm is disabled in this mode.
+
+First live Razr-to-Steam-Machine run reproduced delivery bursts without physical
+sensor input: 922 generated movement vectors matched the receiver's cumulative
+X/Y sequence exactly, with no aggregate motion loss. Receiver gaps reached about
+3.47 seconds; matched movement delivery had up to about 3.45 seconds of excess
+latency above the run's baseline clock offset. A separate roughly two-second
+source pause coincided with stale-connection gating. X11 cursor positions also
+recorded the stalls. Screen capture showed a Steam Launching frame, so visual
+cursor verification was not claimed. This isolates a delivery/connection problem
+in the exercised path; it does not yet identify Wi-Fi, TCP buffering or the
+native bridge as the root cause. Physical sensor timing and touchpad feel remain
+separate acceptance checks. Raw logs, screen captures and host details stay local.
