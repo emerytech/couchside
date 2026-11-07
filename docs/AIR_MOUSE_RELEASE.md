@@ -4,7 +4,7 @@ Owner authorized release publication on November 7, then selected Air Mouse, BG3
 
 ## Scope and provenance
 
-This branch starts at public v2.9.81 and applies the accepted Air Mouse feature delta from 464c1cb, plus release polish. It excludes main's unreleased Ports catalog commit 6bc40e2 and the OpenPuck/Ports candidate in PR664. This release branch must not be merged into main as a Ports removal; those future changes remain on their own branches. Publish from the frozen reviewed release commit after its gates pass.
+This branch starts at public v2.9.81 and applies the accepted Air Mouse feature delta from 464c1cb, plus release polish. It excludes the new OpenPuck/Ports candidate in PR664 and its phone UI. Baseline reconciliation found that public Decky v0.2.102 already bundled the older Ports catalog API, although the raw Linux v2.9.81 asset did not. That existing agent API and its catalog fixture are retained to avoid removing functionality from Decky users; none of the newer Ports verification/job changes are included. This release branch must not be merged into main as a Ports removal; those future changes remain on their own branches. Publish from the frozen reviewed release commit after its gates pass.
 
 Includes phone gyro pointing for boxes and LG TV remotes, four-target setup, BG3 keyboard/mouse-only MOVE, shared touchpad/gyro handoff, opt-in cursor fling with quick toggle and distance, and Back/handoff safe-area fixes. Linear response is standard; Pointing speed remains configurable. Fling stays OFF by default. Licenses, private administration and subscriber data are unchanged.
 
@@ -27,3 +27,5 @@ Scoped source 6c1da90 passed hosted CI and all 907 app tests. The six-test depen
 Fresh candidate allocation: app 2.9.82, iOS 303, Play 132, Direct 67; Linux agent 2.9.138; Windows 0.4.17-win. These deliberately skip the separate held OpenPuck/Ports artifacts. Live Play production was 129 and App Store was 2.9.81; latest internal iPhone preview was 302. Allocated numbers are not proof of a completed build or publication.
 
 Windows candidate source is tracked separately on codex/air-mouse-0.4.17, based on public v0.4.15-win with only the scoped agent delta. Its workflow builds private acceptance artifacts without a release tag. Installer acceptance and final package checks remain pending.
+
+Public baseline reconciliation: raw Linux v2.9.81 matches its tag, but Decky v0.2.102 includes the older catalog API. The new Linux/Decky agent therefore preserves that published API while adding the Air Mouse delta. This is compatibility preservation, not integration of PR664. Both packages must carry the same reconciled agent bytes.
