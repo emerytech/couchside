@@ -168,3 +168,5 @@ to normal input. USB reverse routes/tunnel and the bounded receiver recorder wer
 removed/stopped. Raw measurements and private infrastructure details stay local.
 
 Owner acceptance, November 7: the final installed Razr preview (`1688f39`) was reported to “feel great” after returning to normal input. This confirms the subjective feel of that preview on this device; it does not establish zero timing gaps or acceptance on iOS, other Android models or native LG pointing. Release remains on hold.
+
+iPhone preview preparation: an internal cloud build is being prepared from the Air Mouse branch for native Steam Machine and LG pointer testing. Saved-box baseline and secure Steam Machine reachability were checked before the update. iOS motion, menu resume, touchpad handoff and LG pointing remain pending native acceptance; Android results do not certify iOS. No store submission or release is authorized.
