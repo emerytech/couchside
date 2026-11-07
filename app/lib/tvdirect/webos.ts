@@ -33,6 +33,9 @@ import {
   isPrompt,
   isRegistered,
   pointerButtonFrame,
+  pointerMoveFrame,
+  pointerScrollFrame,
+  POINTER_CLICK_FRAME,
   registerMessage,
   requestMessage,
   type WebosMsg,
@@ -73,6 +76,7 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
  */
 class SsapConn {
   private sock: ByteSocket;
+  private closed = false;
   private crypto: WsCrypto;
   private dec = makeDecoder();
   private waiters = new Map<string, { resolve: (m: WebosMsg) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -87,7 +91,7 @@ class SsapConn {
     this.sock = sock;
     this.crypto = crypto;
     this.sock.onData((b) => this.onBytes(b));
-    this.sock.onClose(() => this.failAll(new Error('webos socket closed')));
+    this.sock.onClose(() => { this.closed = true; this.failAll(new Error('webos socket closed')); });
   }
 
   /** WS upgrade for `path`. Resolves on the 101. */
@@ -142,6 +146,7 @@ class SsapConn {
   }
 
   send(text: string): void {
+    if (this.closed) throw new Error('webos socket closed');
     this.sock.write(encodeText(text, this.crypto.randomBytes(4)));
   }
   nextId(): string {
@@ -172,6 +177,9 @@ export class WebosSession {
   private conn: SsapConn | null = null;
   private connecting: Promise<void> | null = null;
   private pointerPath: string | null = null;
+  private pointerConn: SsapConn | null = null;
+  private pointerOpening: Promise<SsapConn> | null = null;
+  private pointerEpoch = 0;
 
   constructor(host: string, deps: WebosDeps, creds?: { caPem?: string; clientKey: string }) {
     this.host = host;
@@ -298,7 +306,56 @@ export class WebosSession {
     }
   }
 
+  async movePointer(dx: number, dy: number, current: () => boolean): Promise<{ ok: boolean; error?: string }> {
+    try { return await this.pointerCommand(pointerMoveFrame(dx, dy), current); }
+    catch { return { ok: false, error: 'invalid pointer movement' }; }
+  }
+  async scrollPointer(notches: number, current: () => boolean): Promise<{ ok: boolean; error?: string }> {
+    try { return await this.pointerCommand(pointerScrollFrame(notches), current); }
+    catch { return { ok: false, error: 'invalid pointer scroll' }; }
+  }
+  clickPointer(current: () => boolean): Promise<{ ok: boolean; error?: string }> {
+    return this.pointerCommand(POINTER_CLICK_FRAME, current);
+  }
+  stopPointer(): void {
+    ++this.pointerEpoch;
+    this.pointerConn?.close(); this.pointerConn = null; this.pointerOpening = null;
+  }
+  private async pointerCommand(frame: string, current: () => boolean = () => true): Promise<{ ok: boolean; error?: string }> {
+    const epoch = this.pointerEpoch;
+    if (!current()) return { ok: true };
+    try {
+      if (!this.pointerConn) {
+        if (!this.pointerOpening) {
+          const task = (async () => {
+            let path = this.pointerPath;
+            if (!path) {
+              const r = await this.request(WEBOS_POINTER_URI);
+              if (typeof r.payload?.socketPath !== 'string') throw new Error('no pointer socket path');
+              path = r.payload.socketPath;
+            }
+            // Keep the paired host/port; never follow a TV-provided destination.
+            const wsPath = path.replace(/^wss?:\/\/[^/]+/, '') || '/';
+            if (!wsPath.startsWith('/') || /[\r\n]/.test(wsPath)) throw new Error('invalid pointer path');
+            const ptr = await this.open(this.caPem ?? undefined, wsPath);
+            if (epoch !== this.pointerEpoch) { ptr.close(); throw new Error('pointer cancelled'); }
+            this.pointerPath = path; this.pointerConn = ptr; return ptr;
+          })();
+          this.pointerOpening = task;
+          void task.finally(() => { if (this.pointerOpening === task) this.pointerOpening = null; }).catch(() => {});
+        }
+        await this.pointerOpening;
+      }
+      if (epoch === this.pointerEpoch && current()) this.pointerConn?.send(frame);
+      return { ok: true };
+    } catch (e) {
+      if (epoch === this.pointerEpoch) this.drop();
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   private drop(): void {
+    this.stopPointer();
     try { this.conn?.close(); } catch {}
     this.conn = null;
     this.pointerPath = null;

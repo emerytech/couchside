@@ -1,3 +1,4 @@
+import { AirMouseControls } from '@/components/AirMouseControls';
 import { portraitPadMetrics } from '@/lib/portraitPad';
 import { CustomPresetPad } from '@/components/LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
@@ -2428,6 +2429,10 @@ function PadScreen() {
       ) : mode === 'trackpad' ? (
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
+          <AirMouseControls key={hostKey(settings)} targetKey={hostKey(settings)}
+            available={status === 'connected' && !stale && inputBlocked == null}
+            onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
+            onClick={current => { if (current()) tpLeft(); }} />
           <View style={styles.tpWrap}>
             <Trackpad
               onMove={tpMove}

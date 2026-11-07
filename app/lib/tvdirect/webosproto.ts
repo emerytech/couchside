@@ -74,3 +74,14 @@ export const isPrompt = (m: WebosMsg): boolean => m.payload?.pairingType === 'PR
 export const isRegistered = (m: WebosMsg): boolean => m.type === 'registered';
 export const clientKeyOf = (m: WebosMsg): string | undefined =>
   typeof m.payload?.['client-key'] === 'string' ? (m.payload['client-key'] as string) : undefined;
+
+export function pointerMoveFrame(dx: number, dy: number): string {
+  if (![dx, dy].every(Number.isFinite) || Math.abs(dx) > 120 || Math.abs(dy) > 120) throw new Error('invalid pointer movement');
+  return `type:move\ndx:${Math.round(dx)}\ndy:${Math.round(dy)}\ndown:0\n\n`;
+}
+export const POINTER_CLICK_FRAME = 'type:click\n\n';
+
+export function pointerScrollFrame(notches: number): string {
+  if (!Number.isFinite(notches) || !Number.isInteger(notches) || Math.abs(notches) > 5) throw new Error('invalid pointer scroll');
+  return `type:scroll\ndx:0\ndy:${notches}\n\n`;
+}

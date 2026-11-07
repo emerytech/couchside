@@ -14,6 +14,9 @@ import {
 import type { RokuKey, RokuOp } from '@/lib/tvdirect/roku';
 import {
   sendKey,
+  sendPointer,
+  scrollPointer,
+  stopPointer,
   sendOp,
   sendText as sendTextTo,
   supportsApps,
@@ -24,6 +27,7 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 import { CornerBtn, Dpad, MidBtn, Rocker } from './RemoteView';
 import { TvAppsGrid } from './TvAppsGrid';
+import { AirMouseControls } from './AirMouseControls';
 
 /** Shown once per app session: a Roku that 403s control needs its "Control by
  *  mobile apps" network access made permissive. Same rule and copy as
@@ -137,6 +141,11 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
         <TvAppsGrid tv={tv} runtime={runtime} />
       ) : (
         <View style={styles.remoteBody}>
+      {tv.brand === 'webos' && <AirMouseControls key={tv.id + tv.host} targetKey={tv.id + tv.host} touchpad
+        onScroll={(n, current) => scrollPointer(tv, runtime, n, current)}
+        onMove={(dx, dy, current) => sendPointer(tv, runtime, { dx, dy }, current)}
+        onClick={current => sendPointer(tv, runtime, null, current)} onStop={() => stopPointer(tv)} />}
+
       {/* Power + keyboard row. Roku answers ECP in standby, so power ON is a
           real keypress here rather than the Wake-on-LAN dance the box path
           needs for webOS/Samsung. */}

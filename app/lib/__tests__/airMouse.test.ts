@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { AirMouseIntegrator } from '../airMouse.ts';
+import { pointerMoveFrame } from '../tvdirect/webosproto.ts';
+import { WebosSession, type WebosDeps } from '../tvdirect/webos.ts';
+const sample = (timestamp: number, x = 0, y = 0) => ({timestamp, x, y, z: 0});
+test('calibration removes stationary bias; release/reset and long gaps cannot jump', () => {
+ const m = new AirMouseIntegrator();
+ assert.equal(m.calibrate(Array.from({length: 30}, (_, i) => sample(i*.02,.04,.03))), true);
+ m.step(sample(1,.04,.03)); assert.deepEqual(m.step(sample(1.02,.04,.03)), {dx:0,dy:0});
+ assert.equal(m.step(sample(5,10,10)), null);
+ m.reset(); assert.equal(m.step(sample(6,1,1)), null);
+ assert.equal(m.calibrate(Array.from({length:20},(_,i)=>sample(i,2,0))), false);
+});
+test('fractional motion accumulates, samples stay bounded, invalid input does not move', () => {
+ const m = new AirMouseIntegrator(); let total=0;
+ for(let i=0;i<100;i++) {const d=m.step(sample(i*.02,0,.025)); if(d)total+=d.dx;}
+ assert.ok(total < -20);
+ const d=m.step(sample(2,1e9,1e9))!;assert.ok(Math.abs(d.dx)<=60 && Math.abs(d.dy)<=60);
+ assert.equal(m.step(sample(NaN,1,1)),null);
+ for(const pair of [[NaN,0],[0,Infinity],[121,0]]) assert.throws(()=>pointerMoveFrame(...pair as [number,number]));
+});
+function fixture() {
+ const session = new WebosSession('fixture.local', {} as WebosDeps);
+ const sent: string[]=[];let closed=0,opens=0;
+ let release: (()=>void)|undefined;
+ const gate=new Promise<void>(r=>{release=r;});
+ const ptr={send:(s:string)=>sent.push(s),close:()=>{closed++;}};
+ const internals=session as unknown as {request:()=>Promise<unknown>;open:()=>Promise<unknown>};
+ internals.request=async()=>({payload:{socketPath:'wss://fixture.local:3001/pointer'}});
+ internals.open=async()=>{opens++;await gate;return ptr;};
+ return {session,sent,release:()=>release!(),closed:()=>closed,opens:()=>opens};
+}
+test('release while pointer handshake is pending closes it and sends no late motion', async () => {
+ const f=fixture();let active=true;const pending=f.session.movePointer(20,10,()=>active);
+ await Promise.resolve();active=false;f.session.stopPointer();f.release();await pending;
+ assert.deepEqual(f.sent,[]);assert.equal(f.closed(),1);
+});
+test('one pointer connection handles repeated moves; cancelled click is never delivered', async () => {
+ const f=fixture();f.release();
+ for(let i=0;i<20;i++)assert.equal((await f.session.movePointer(1,2,()=>true)).ok,true);
+ assert.equal(f.opens(),1);assert.equal(f.sent.length,20);
+ await f.session.clickPointer(()=>false);assert.equal(f.sent.length,20);
+ f.session.close();assert.equal(f.closed(),1);
+});
