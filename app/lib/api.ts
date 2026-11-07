@@ -1756,6 +1756,7 @@ export type GuideHold = {
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
   pointer_backends?: TvBackend[];
+  pointer_stream?: boolean;
   available: boolean;
   /** The active backend: "panel" (RS-232), "cec" (HDMI-CEC), or "soft" (box audio). */
   backend: TvBackend;

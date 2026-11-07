@@ -18459,6 +18459,7 @@ class _WebOSWS:
         u = urlparse(url)
         host, port = u.hostname, (u.port or WEBOS_PORT)
         sock = socket.create_connection((host, port), timeout=timeout)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         if u.scheme == "wss":
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
@@ -20591,6 +20592,7 @@ def tv_info():
                  or androidtv_available() or vidaa_available()),
         "key_backends": tv_key_backends_available(),
         "pointer_backends": ["webos"] if webos_available() else [],
+        "pointer_stream": webos_available(),
         # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
         # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
         # Roku don't (no single input-menu key), and the RS-232 panel uses its
@@ -32535,6 +32537,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_control(entry, t)
         # Input frames only from the holder; a waiter's input is ignored.
         if not entry.get("held"):
+            return True
+        if t == "tvp":
+            # Authenticated holder only. Never replay uncertain TV movement.
+            if webos_available():
+                try:
+                    result = real_webos_pointer(msg)
+                    if not result["ok"]:
+                        _wsend_json(entry, {"t": "tvp_error", "msg": "TV pointer unavailable"})
+                except (ValueError, TypeError):
+                    _wsend_json(entry, {"t": "tvp_error", "msg": "Invalid TV pointer frame"})
             return True
         # ABSOLUTE pointer (remote-desktop P2) rides the opt-in portal module, a
         # SEPARATE channel from the uinput mouse. Additive + tolerant: an absent/

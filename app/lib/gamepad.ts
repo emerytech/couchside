@@ -885,6 +885,15 @@ export class GamepadClient {
     this.sendRaw({ t: 'm', dx, dy });
   }
 
+  /** Only call when /api/tv advertises pointer_stream; older agents reject unknown frames. */
+  sendTvPointer(op: 'move' | 'click' | 'stop', dx = 0, dy = 0): void {
+    if (op === 'move' && (!Number.isFinite(dx) || !Number.isFinite(dy))) return;
+    this.sendRaw({ t: 'tvp', op, ...(op === 'move' ? {
+      dx: Math.max(-120, Math.min(120, Math.round(dx))),
+      dy: Math.max(-120, Math.min(120, Math.round(dy))),
+    } : {}) });
+  }
+
   /** Mouse button press/release (BTN_LEFT/RIGHT/MIDDLE). */
   sendMouseButton(k: MouseButton, v: 0 | 1): void {
     this.sendRaw({ t: 'mb', k, v });
