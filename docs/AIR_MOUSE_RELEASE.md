@@ -29,3 +29,5 @@ Fresh candidate allocation: app 2.9.82, iOS 303, Play 132, Direct 67; Linux agen
 Windows candidate source is tracked separately on codex/air-mouse-0.4.17, based on public v0.4.15-win with only the scoped agent delta. Its workflow builds private acceptance artifacts without a release tag. Installer acceptance and final package checks remain pending.
 
 Public baseline reconciliation: raw Linux v2.9.81 matches its tag, but Decky v0.2.102 includes the older catalog API. The new Linux/Decky agent therefore preserves that published API while adding the Air Mouse delta. This is compatibility preservation, not integration of PR664. Both packages must carry the same reconciled agent bytes.
+
+Windows installer 0.4.17 acceptance passed on the owner-approved PC: saved config, pairing and TLS hashes unchanged; normal-privilege startup task retained; installed executable matches the workflow artifact. Native key-delivery acceptance is pending because the Windows desktop session is disconnected. The test safely refused to send input without a foreground target.

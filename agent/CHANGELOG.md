@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.138
+
+- Use Air Mouse from the phone for smooth cursor pointing, with guided four-target setup on the box and optional temporary cursor enlargement on supported Linux sessions.
+- Control a paired LG TV pointer through the box using a persistent motion connection and an easy-to-reach selection action.
+- Use the Baldur’s Gate 3 MOVE layout without switching the game into controller mode. Camera keys release on disconnect or control handoff, with a short safety timeout for lost input.
+- Windows agent 0.4.17 adds the matching keyboard/mouse-only mode and guided setup while retaining normal-privilege input protections and the existing installer/signing policy.
+- Existing agent features, including the catalog API already bundled in Decky, remain available. This update does not include the separately held OpenPuck/Ports candidate.
+
 ## 2.9.136
 
 - Browse Decky's plugin store with current loader-version negotiation and clearer guidance when Decky itself needs an update.
