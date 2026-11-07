@@ -45,6 +45,23 @@ class CameraLeaseTests(unittest.TestCase):
                 ns['_camera_keys_release'](new)
                 self.assertFalse(ns['_CAMERA_KEY_ENTRIES'])
 
+    def test_lease_worker_retries_a_failed_release(self):
+        for agent in ('couchsided.py', 'win/couchsided-win.py'):
+            with self.subTest(agent=agent):
+                ns=self.namespace(agent);keyboard=Mock();releases=[]
+                def emit(events):
+                    if events[0][-1] == 0:
+                        releases.append(events)
+                        if len(releases)==1:raise OSError('temporarily blocked')
+                keyboard.emit.side_effect=emit;entry={'keyboard':keyboard}
+                ns['_camera_key'](entry,{'key':'w','v':1})
+                entry['camera_until']=0
+                deadline=time.monotonic()+1
+                while ns['_CAMERA_KEY_ENTRIES'] and time.monotonic()<deadline:time.sleep(.01)
+                self.assertEqual(len(releases),2)
+                self.assertFalse(ns['_CAMERA_KEY_ENTRIES'])
+                self.assertFalse(entry['camera_keys'])
+
     def test_validation_refcounts_and_expiry(self):
         ns=self.namespace();keyboard=Mock();a={'keyboard':keyboard};b={'keyboard':keyboard};send=ns['_camera_key']
         for req in ({'key':'x','v':1},{'key':'w','v':True},{'key':{},'v':1}):
