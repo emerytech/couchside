@@ -2670,6 +2670,10 @@ export type PortActionResult = {
 };
 
 export const api = {
+  async airMouseCursor(settings: ConnSettings, enabled: boolean, lease: string): Promise<void> {
+    const r = await request<{ok: boolean}>(settings, '/api/air-mouse/cursor', { method: 'POST', body: { enabled, lease } });
+    if (!r.ok) throw new Error('Large cursor unavailable');
+  },
   airMouseShow(settings: ConnSettings): Promise<{ ok: boolean; requested: boolean }> {
     return request(settings, '/api/air-mouse/show', { method: 'POST' });
   },

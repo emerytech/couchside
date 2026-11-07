@@ -1,6 +1,7 @@
 """Exercise real dispatch methods in isolation on both single-file agents."""
 import ast
 import json
+import re
 import threading
 import time
 import unittest
@@ -40,5 +41,18 @@ class GuideTests(unittest.TestCase):
                 self.assertEqual(launch.call_count, 1)
                 self.assertIn('/air-mouse', launch.call_args.args[0])
         self.assertEqual(pages[0], pages[1])
+
+class CursorLeaseTests(unittest.TestCase):
+    def test_validation_and_stale_stop_cannot_retire_new_session(self):
+        tree=ast.parse((ROOT/'agent/couchsided.py').read_text())
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='air_cursor_lease')
+        proc=Mock(); ns=dict(re=re,threading=threading,_AIR_CURSOR_LOCK=threading.Lock(),_AIR_CURSOR_PROCESS=proc,_AIR_CURSOR_OWNER='newlease123',subprocess=__import__('subprocess'))
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'lease','exec'),ns)
+        for enabled,lease in ((1,'newlease123'),(True,'bad\nname'),(True,'short')):
+            with self.assertRaises(ValueError):ns['air_cursor_lease'](enabled,lease)
+        self.assertTrue(ns['air_cursor_lease'](False,'oldlease123')['ok'])
+        proc.stdin.close.assert_not_called()
+        self.assertTrue(ns['air_cursor_lease'](False,'newlease123')['ok'])
+        proc.stdin.close.assert_called_once();proc.wait.assert_called_once()
 
 if __name__ == '__main__': unittest.main()

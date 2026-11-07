@@ -51,13 +51,13 @@ test('stationary phone clears smoothing tail, stays paused through jitter, then 
  const moved=m.step(sample(.42,0,.5));assert.ok(moved && moved.dx<0);
 });
 
-test('remote Z yaw and upright Y yaw share pitch and use the same calibration frame', () => {
+test('remote Z yaw and pitch use the same calibration frame', () => {
  const raw = {x:.4,y:.1,z:-.5,timestamp:0};
  const remote = new AirMouseIntegrator();
  remote.step(airMouseGripSample(raw,'remote'));
  const delta = remote.step(airMouseGripSample({...raw,timestamp:.02},'remote'))!;
  assert.ok(delta.dx > 0); assert.ok(delta.dy < 0);
- assert.equal(airMouseGripSample(raw,'upright').y,.1);
+
  const bias = Array.from({length:30},(_,i)=>airMouseGripSample({x:.02,y:0,z:.03,timestamp:i*.02},'remote'));
  assert.equal(remote.calibrate(bias),true);
  remote.step({...bias[0],timestamp:1});
@@ -88,4 +88,15 @@ test('precision filter suppresses hand tremor yet responds promptly to a deliber
  m.reset();assert.equal(m.step(sample(3,0,-.6),4),null);
  for(let i=151;i<170;i++) m.step(sample(i*.02),4);
  assert.deepEqual(m.step(sample(3.4),4),{dx:0,dy:0});
+});
+
+test('figure-eight trajectory is rotationally consistent through diagonals and reversals', () => {
+ const a=new AirMouseIntegrator(),b=new AirMouseIntegrator(); const angle=.61,c=Math.cos(angle),s=Math.sin(angle);
+ let ax=0,ay=0,bx=0,by=0;
+ for(let i=0;i<500;i++) {
+  const t=i*.02,x=.19*Math.sin(t*3),y=.32*Math.cos(t*1.5);
+  const p=a.step(sample(t,x,y),4),q=b.step(sample(t,c*x-s*y,s*x+c*y),4);
+  if(p&&q){ax+=p.dx;ay+=p.dy;bx+=q.dx;by+=q.dy;
+   assert.ok(Math.hypot(bx-(c*ax+s*ay),by-(-s*ax+c*ay))<3,'rotation must not distort the integrated curve');}
+ }
 });

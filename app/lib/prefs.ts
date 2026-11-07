@@ -334,6 +334,9 @@ export type Prefs = {
    *  bed — turning this off keeps every mode portrait-locked as before. The
    *  gamepad and move modes are unaffected: they keep their own landscape spreads. */
   landscapeLaptop: boolean;
+  airMouseEnabled: boolean;
+  airMouseLargeCursor: boolean;
+  airMouseSpeed: number;
 };
 
 export const DEFAULTS: Prefs = {
@@ -392,6 +395,9 @@ export const DEFAULTS: Prefs = {
   tvNavEnabled: false,
   watchEnabled: true,
   landscapeLaptop: true,
+  airMouseEnabled: true,
+  airMouseLargeCursor: true,
+  airMouseSpeed: 1,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -532,6 +538,9 @@ function normalize(raw: unknown): Prefs {
     tvNavEnabled: bool(o.tvNavEnabled, DEFAULTS.tvNavEnabled),
     watchEnabled: bool(o.watchEnabled, DEFAULTS.watchEnabled),
     landscapeLaptop: bool(o.landscapeLaptop, DEFAULTS.landscapeLaptop),
+    airMouseEnabled: bool(o.airMouseEnabled, DEFAULTS.airMouseEnabled),
+    airMouseLargeCursor: bool(o.airMouseLargeCursor, DEFAULTS.airMouseLargeCursor),
+    airMouseSpeed: num(o.airMouseSpeed, [.25, 1, 1.5], DEFAULTS.airMouseSpeed),
   };
 }
 

@@ -27742,6 +27742,104 @@ _BOX_POP_COOLDOWN = 5.0            # seconds; hard floor between pops
 
 
 
+
+# Temporary Xwayland cursor enlargement. The worker snapshots the original image,
+# restores it on pipe EOF/8s lease expiry, and survives long enough to restore if
+# this agent exits. No persistent settings or privileged process is involved.
+_AIR_CURSOR_WORKER = r'''import ctypes as c, json, select, sys, time
+class Image(c.Structure):
+ _fields_=[('x',c.c_short),('y',c.c_short),('width',c.c_ushort),('height',c.c_ushort),('xhot',c.c_ushort),('yhot',c.c_ushort),('serial',c.c_ulong),('pixels',c.POINTER(c.c_ulong)),('atom',c.c_ulong),('name',c.c_char_p)]
+class Cursor(c.Structure):
+ _fields_=[('version',c.c_uint),('size',c.c_uint),('width',c.c_uint),('height',c.c_uint),('xhot',c.c_uint),('yhot',c.c_uint),('delay',c.c_uint),('pixels',c.POINTER(c.c_uint))]
+saved=[]
+try:
+ x=c.CDLL('libX11.so.6');f=c.CDLL('libXfixes.so.3');u=c.CDLL('libXcursor.so.1')
+ x.XOpenDisplay.argtypes=[c.c_char_p];x.XOpenDisplay.restype=c.c_void_p
+ x.XFree.argtypes=[c.c_void_p];x.XSync.argtypes=[c.c_void_p,c.c_int];x.XFreeCursor.argtypes=[c.c_void_p,c.c_ulong];x.XCloseDisplay.argtypes=[c.c_void_p]
+ f.XFixesGetCursorImage.argtypes=[c.c_void_p];f.XFixesGetCursorImage.restype=c.POINTER(Image)
+ f.XFixesChangeCursorByName.argtypes=[c.c_void_p,c.c_ulong,c.c_char_p]
+ u.XcursorImageCreate.argtypes=[c.c_int,c.c_int];u.XcursorImageCreate.restype=c.POINTER(Cursor)
+ u.XcursorImageDestroy.argtypes=[c.POINTER(Cursor)]
+ u.XcursorImageLoadCursor.argtypes=[c.c_void_p,c.POINTER(Cursor)];u.XcursorImageLoadCursor.restype=c.c_ulong
+ def make(d,pixels,w,h,hx,hy,scale):
+  nw=min(96,w*scale);nh=min(96,h*scale);p=u.XcursorImageCreate(nw,nh)
+  if not p: raise RuntimeError('cursor allocation')
+  q=p.contents;q.xhot=hx*nw//w;q.yhot=hy*nh//h
+  for y in range(nh):
+   for z in range(nw):q.pixels[y*nw+z]=pixels[(y*h//nh)*w+z*w//nw]
+  handle=u.XcursorImageLoadCursor(d,p);u.XcursorImageDestroy(p)
+  if not handle:raise RuntimeError('cursor loading')
+  return handle
+ for display in (b':0',b':1'):
+  d=x.XOpenDisplay(display)
+  if not d:continue
+  p=f.XFixesGetCursorImage(d)
+  if not p:x.XCloseDisplay(d);continue
+  q=p.contents;name=q.name;w=q.width;h=q.height;hx=q.xhot;hy=q.yhot
+  if not name or not (0<w<=128 and 0<h<=128):x.XFree(p);x.XCloseDisplay(d);continue
+  pixels=[q.pixels[i] for i in range(w*h)];x.XFree(p)
+  original=make(d,pixels,w,h,hx,hy,1);large=make(d,pixels,w,h,hx,hy,3)
+  saved.append((d,original,large,name));f.XFixesChangeCursorByName(d,large,name);x.XSync(d,0)
+ print(json.dumps({'ok':bool(saved)}),flush=True)
+ deadline=time.monotonic()+8;maximum=time.monotonic()+600
+ while saved and time.monotonic()<min(deadline,maximum):
+  if select.select([sys.stdin],[],[],max(0,min(deadline,maximum)-time.monotonic()))[0]:
+   if not sys.stdin.readline():break
+   deadline=time.monotonic()+8
+except Exception:
+ print(json.dumps({'ok':False}),flush=True)
+finally:
+ for d,original,large,name in reversed(saved):
+  f.XFixesChangeCursorByName(d,original,name);x.XSync(d,0);x.XFreeCursor(d,large);x.XFreeCursor(d,original);x.XCloseDisplay(d)
+'''
+_AIR_CURSOR_LOCK = threading.Lock()
+_AIR_CURSOR_PROCESS = None
+_AIR_CURSOR_OWNER = None
+
+def air_cursor_lease(enabled, lease):
+    global _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER
+    import select
+    if type(enabled) is not bool or not isinstance(lease, str) or not re.fullmatch(r"[a-zA-Z0-9]{8,64}", lease):
+        raise ValueError("invalid cursor lease")
+    with _AIR_CURSOR_LOCK:
+        proc = _AIR_CURSOR_PROCESS
+        if not enabled:
+            if proc and _AIR_CURSOR_OWNER == lease:
+                try:
+                    proc.stdin.close()
+                    proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    return {"ok": False}
+                _AIR_CURSOR_PROCESS = None
+                _AIR_CURSOR_OWNER = None
+            return {"ok": True}
+        if proc and proc.poll() is None and _AIR_CURSOR_OWNER == lease:
+            try:
+                proc.stdin.write("renew\n"); proc.stdin.flush()
+                return {"ok": True}
+            except OSError:
+                pass
+        if proc:
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False}
+        proc = subprocess.Popen([sys.executable, "-c", _AIR_CURSOR_WORKER],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER = proc, lease
+        try:
+            ready = select.select([proc.stdout], [], [], 3)[0]
+            result = json.loads(proc.stdout.readline()) if ready else {"ok": False}
+        except (OSError, ValueError):
+            result = {"ok": False}
+        if result.get("ok") is not True:
+            try: proc.stdin.close()
+            except OSError: pass
+            return {"ok": False}
+        return {"ok": True}
+
 def render_air_mouse_page():
     """Static local target exercise. No credentials, remote scripts or control API."""
     return r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Couchside · Air Mouse setup</title>
@@ -29568,6 +29666,21 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            if path == "/api/air-mouse/cursor":
+                self.close_connection = True
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if self.headers.get("Transfer-Encoding") or not 0 < length <= 256:
+                        raise ValueError("invalid body length")
+                    req = json.loads(self.rfile.read(length))
+                    if not isinstance(req, dict): raise ValueError("invalid body")
+                    result = air_cursor_lease(req.get("enabled"), req.get("lease"))
+                except (ValueError, TypeError):
+                    self._send(400, {"error": "invalid cursor request"}, started)
+                    return
+                self._send(200, result, started)
                 return
 
             if path == "/api/air-mouse/show":
