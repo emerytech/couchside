@@ -1,5 +1,11 @@
 /** Pure gyro integrator. Measurements are rad/s; timestamps are seconds. */
 export type MotionSample = { x: number; y: number; z: number; timestamp: number };
+export type AirMouseGrip = 'remote' | 'upright';
+/** Remote: screen up, top aimed at TV (Z yaw). Upright: screen facing user (Y yaw).
+ * Apply the same frame to bias calibration and integration. */
+export function airMouseGripSample(sample: MotionSample, grip: AirMouseGrip): MotionSample {
+  return { ...sample, y: grip === 'remote' ? sample.z : sample.y };
+}
 export class AirMouseIntegrator {
   private carry = { x: 0, y: 0 };
   private quietSince: number | null = null;

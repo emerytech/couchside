@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AirMouseIntegrator } from '../airMouse.ts';
+import { AirMouseIntegrator, airMouseGripSample } from '../airMouse.ts';
 import { pointerMoveFrame } from '../tvdirect/webosproto.ts';
 import { WebosSession, type WebosDeps } from '../tvdirect/webos.ts';
 const sample = (timestamp: number, x = 0, y = 0) => ({timestamp, x, y, z: 0});
@@ -49,4 +49,18 @@ test('stationary phone clears smoothing tail, stays paused through jitter, then 
  for(let i=2;i<20;i++) {const d=m.step(sample(i*.02));if(i>=9)assert.deepEqual(d,{dx:0,dy:0});}
  assert.deepEqual(m.step(sample(.4,.015,.015)),{dx:0,dy:0});
  const moved=m.step(sample(.42,0,.5));assert.ok(moved && moved.dx<0);
+});
+
+test('remote Z yaw and upright Y yaw share pitch and use the same calibration frame', () => {
+ const raw = {x:.4,y:.1,z:-.5,timestamp:0};
+ const remote = new AirMouseIntegrator();
+ remote.step(airMouseGripSample(raw,'remote'));
+ const delta = remote.step(airMouseGripSample({...raw,timestamp:.02},'remote'))!;
+ assert.ok(delta.dx > 0); assert.ok(delta.dy < 0);
+ assert.equal(airMouseGripSample(raw,'upright').y,.1);
+ const bias = Array.from({length:30},(_,i)=>airMouseGripSample({x:.02,y:0,z:.03,timestamp:i*.02},'remote'));
+ assert.equal(remote.calibrate(bias),true);
+ remote.step({...bias[0],timestamp:1});
+ assert.deepEqual(remote.step({...bias[0],timestamp:1.02}),{dx:0,dy:0});
+ assert.equal(raw.y,.1);
 });

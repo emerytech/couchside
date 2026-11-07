@@ -48,7 +48,7 @@ The updated Linux or Windows agent opens a fixed local browser page. Opening is
 best-effort: the phone reports a request, not proof that the page is visible.
 Older agents leave Quick calibrate available and show an upgrade explanation.
 
-Hold the phone upright, use **Quick calibrate** while still, and turn Air Mouse
+Point the top of the phone toward the TV with the screen facing up (Remote grip), use **Quick calibrate** while still, and turn Air Mouse
 on. Aim the visible cursor at each of four targets and tap **Click / Confirm
 target** on the phone. The page measures normalized cursor distance from each
 target and suggests slower sensitivity when appropriate. This is an accuracy
@@ -92,3 +92,10 @@ Expo's precompiled AAR bypasses the Kotlin patch. The replacement native QA bina
 was installed in place and live Razr diagnostics confirmed a 20,000us gyro
 registration (previously 200,000us). This confirms sampling configuration, not
 physical cursor acceptance; that remains a separate check.
+
+
+Remote grip is now the default: phone screen faces up and the top points toward
+the TV. Horizontal motion uses gyro Z, pitch uses X. The optional Upright grip
+retains Y yaw. Changing grip stops motion and clears the old frame's calibration;
+Quick calibrate in the new position before pointing. This selects physical grip,
+not landscape screen layout. Physical feel/direction must be accepted on device.

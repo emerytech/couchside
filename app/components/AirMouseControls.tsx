@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AppState, Dimensions, PanResponder, Pressable, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { AirMouseIntegrator, type MotionSample } from '@/lib/airMouse';
+import { AirMouseIntegrator, airMouseGripSample, type AirMouseGrip, type MotionSample } from '@/lib/airMouse';
 import { useTheme } from '@/lib/theme';
 
 type Props = {
@@ -17,9 +17,10 @@ type Props = {
 /** Opt-in, portrait hold-to-point. No subscription or permission prompt until a user action. */
 export function AirMouseControls(props: Props) {
   const t = useTheme(); const latest = useRef(props); latest.current = props;
-  const [open, setOpen] = useState(false), [message, setMessage] = useState('Hold your phone upright. Touchpad stays available.');
+  const [open, setOpen] = useState(false), [message, setMessage] = useState('Point the top of your phone toward the TV, with its screen facing up.');
   const [holding, setHolding] = useState(false), [gain, setGain] = useState(1);
   const [toggleOn, setToggleOn] = useState(false);
+  const [grip, setGrip] = useState<AirMouseGrip>('remote');
   const latched = useRef(false);
   const epoch = useRef(0), mounted = useRef(true), focused = useRef(false), busy = useRef(false);
   const subscription = useRef<{ remove(): void } | null>(null);
@@ -30,7 +31,7 @@ export function AirMouseControls(props: Props) {
     ++epoch.current; subscription.current?.remove(); subscription.current = null;
     if (timer.current) clearTimeout(timer.current); timer.current = null;
     engine.current.reset(); latest.current.onStop?.();
-    if (mounted.current) { setHolding(false); setToggleOn(false); setMessage('Hold your phone upright. Air Mouse is off.'); }
+    if (mounted.current) { setHolding(false); setToggleOn(false); setMessage('Air Mouse is off. Choose Remote or Upright grip below.'); }
   }, []);
   useFocusEffect(useCallback(() => { focused.current = true; return () => { focused.current = false; stop(); }; }, [stop]));
   useLayoutEffect(() => {
@@ -44,7 +45,7 @@ export function AirMouseControls(props: Props) {
     stop(); latched.current = latch; const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
     if (!current()) return;
-    if (Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Hold the phone upright for Air Mouse; use the touchpad sideways.'); return; }
+    if (Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Keep the screen in portrait layout; point the phone toward the TV like a remote. Use the touchpad in landscape.'); return; }
     try {
       const { Gyroscope } = await import('expo-sensors');
       if (!current()) return;
@@ -57,7 +58,8 @@ export function AirMouseControls(props: Props) {
       const samples: MotionSample[] = [];
       if (!calibrate) { setHolding(true); setToggleOn(latch); }
       setMessage(calibrate ? 'Keep the phone still for one second…' : latch ? 'Air Mouse on. Hold still to pause; move to resume.' : 'Pointing. Release to stop.');
-      subscription.current = Gyroscope.addListener(sample => {
+      subscription.current = Gyroscope.addListener(rawSample => {
+        const sample = airMouseGripSample(rawSample, grip);
         if (!current()) return;
         if (calibrate) { samples.push(sample); return; }
         const delta = engine.current.step(sample, gain);
@@ -116,6 +118,7 @@ export function AirMouseControls(props: Props) {
     </View>
     {open && <View style={{ gap: 8 }}>
       <Text style={{ color: t.textDim }}>{message}</Text>
+      <Text style={{ color: t.textDim }}>{grip === 'remote' ? 'Remote grip: screen facing up, top of phone aimed toward the TV.' : 'Upright grip: screen facing you, top of phone pointing up.'}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="Hold to point" disabled={props.available === false}
         onPressIn={() => { void begin(); }} onPressOut={() => { if (!latched.current) stop(); }} onTouchCancel={() => { if (!latched.current) stop(); }}
         style={[button, { backgroundColor: holding ? t.blue : t.card }]}>
@@ -133,6 +136,7 @@ export function AirMouseControls(props: Props) {
         <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { if (!latched.current) stop(); const id = epoch.current; const current = () => mounted.current && focused.current && epoch.current === id && AppState.currentState === 'active' && latest.current.available !== false; void Promise.resolve().then(() => current() && latest.current.onClick(current)).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); }); }}><Text style={{ color: t.text }}>{props.onGuide ? 'Click / Confirm target' : 'Click'}</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { void begin(true); }}><Text style={{ color: t.text }}>Quick calibrate</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" onPress={() => { stop(); setMessage('Motion reset. Regrip comfortably, then turn Air Mouse on. The cursor stays in place.'); }}><Text style={{ color: t.text }}>Recenter</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse grip" onPress={() => { stop(); engine.current = new AirMouseIntegrator(); setGrip(grip === 'remote' ? 'upright' : 'remote'); setMessage('Grip changed. Quick calibrate while holding the phone in your preferred position.'); }}><Text style={{ color: t.text }}>Grip {grip === 'remote' ? 'Remote' : 'Upright'}</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse sensitivity" onPress={() => { stop(); setGain(gain === 1 ? 1.5 : gain === 1.5 ? .6 : 1); }}><Text style={{ color: t.text }}>Speed {gain === 1 ? 'Normal' : gain === 1.5 ? 'Fast' : 'Slow'}</Text></Pressable>
       </View>
     </View>}
