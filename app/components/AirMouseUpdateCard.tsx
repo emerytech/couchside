@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useContext, useState } from 'react';
+import { PadGuidanceContext } from '@/components/PadGuidanceContext';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { airMouseIntroState } from '@/lib/airMouseIntro';
 import { setPref, usePref, usePrefsReady } from '@/lib/prefs';
@@ -15,8 +16,9 @@ export function AirMouseUpdateCard() {
   const tvs = useTvs();
   const prefsReady = usePrefsReady();
   const done = usePref('airMouseIntroDone');
+  const guidance = useContext(PadGuidanceContext);
   const [busy, setBusy] = useState(false);
-  if (airMouseIntroState({ready: ready && tvs.ready && prefsReady, done,
+  if (airMouseIntroState({ready: ready && tvs.ready && prefsReady, busy: guidance.busy, done,
     boxCount: boxes.length, tvCount: tvs.tvs.length}) !== 'offer') return null;
 
   async function answer(open: boolean) {

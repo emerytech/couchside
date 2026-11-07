@@ -13,3 +13,9 @@ test('opening or dismissing remains final across restarts and later updates',()=
   assert.equal(airMouseIntroState({ready:true,done:true,boxCount:2,tvCount:1}),'done');
   assert.equal(airMouseIntroState({ready:true,done:true,boxCount:0,tvCount:0}),'done');
 });
+
+test('the update tip waits for an active walkthrough without retiring the offer',()=>{
+  const existing={ready:true,done:false,boxCount:1,tvCount:0};
+  assert.equal(airMouseIntroState({...existing,busy:true}),'wait');
+  assert.equal(airMouseIntroState({...existing,busy:false}),'offer');
+});
