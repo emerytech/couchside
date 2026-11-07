@@ -14,6 +14,8 @@ import { useTheme } from '@/lib/theme';
 type Props = {
   targetKey: string;
   floating?: boolean;
+  allowLandscape?: boolean;
+  defaultOn?: boolean;
   onActiveChange?: (active:boolean)=>void;
   touchpadActive?: boolean;
   available?: boolean;
@@ -80,7 +82,7 @@ export function AirMouseControls(props: Props) {
     // Retire old deltas, but keep the user's ON intent through those changes.
     const size = Dimensions.addEventListener('change', ({window}) => {
       if(!focused.current)return; // Menu layout changes must not clear remembered intent.
-      if(window.width > window.height) { stop(); return; }
+      if(window.width > window.height && !latest.current.allowLandscape) { stop(); return; }
       handoff.current.invalidate(); engine.current.reset(); latest.current.onStop?.();
     });
     return () => { mounted.current = false; stop(false); app.remove(); size.remove(); };
@@ -99,7 +101,7 @@ export function AirMouseControls(props: Props) {
     stop(false); latched.current = latch; if(latch)airMouseIntent.set(props.targetKey,true); const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
     if (!current()) return;
-    if (Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Keep the screen in portrait layout; point the phone toward the TV like a remote. Use the touchpad in landscape.'); return; }
+    if (!latest.current.allowLandscape && Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Keep the screen in portrait layout; point the phone toward the TV like a remote. Use the touchpad in landscape.'); return; }
     try {
       const { Gyroscope } = await import('expo-sensors');
       if (!current()) return;
@@ -149,7 +151,7 @@ export function AirMouseControls(props: Props) {
   useEffect(() => {
     if (!prefsReady || !focused.current || props.available === false || autoStarted.current) return;
     autoStarted.current = true;
-    const intended=synthetic || airMouseIntent.resolve(props.targetKey,enabled);
+    const intended=synthetic || airMouseIntent.resolve(props.targetKey,props.defaultOn ?? enabled);
     setToggleOn(intended);
     if (intended) void begin(false, true);
   }, [focusVersion, prefsReady, props.available, enabled, synthetic]);

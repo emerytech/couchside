@@ -1,3 +1,4 @@
+import { airMousePlacement } from '@/lib/airMousePlacement';
 import { useInputLatency } from '@/hooks/useInputLatency';
 import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
 import { AirMouseControls } from '@/components/AirMouseControls';
@@ -2122,6 +2123,18 @@ function PadScreen() {
       </>
     );
   }
+  // Controller layouts opt in separately: normal gameplay must not start a
+  // desktop cursor just because Mouse mode defaults to Air ON.
+  const airAnchor = immersiveLive && landGeom.ok ? airMousePlacement(landGeom.play,landGeom.nodes.map(n=>n.hit)) : null;
+  const controllerAir = (mode === 'gamepad' || mode === 'move') && !keyboardMode && !remoteOnly ? (
+    <AirMouseControls floating allowLandscape defaultOn={false}
+      key={hostKey(settings)+':controller'} targetKey={hostKey(settings)+':controller'}
+      available={status === 'connected' && !stale && inputBlocked == null}
+      onMove={(dx,dy,current)=>{if(current())client.sendMouseMove(dx,dy);}}
+      onStop={()=>client.cancelMouseMove()}
+      onClick={current=>{if(current())tpLeft();}}
+      onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)} />
+  ) : null;
   if (immersiveLive) {
     const recovery = status !== 'connected' || stale || inputBlocked != null;
     const ownsElsewhere = status === 'waiting' || status === 'released';
@@ -2174,6 +2187,7 @@ function PadScreen() {
             onVariant={() => setMode('move')}
           />
         )}
+        {landGeom.ok && !recovery && airAnchor && <View pointerEvents="box-none" style={{position:'absolute',left:airAnchor.x,top:airAnchor.y,width:airAnchor.w,height:airAnchor.h,zIndex:20}}>{controllerAir}</View>}
         {landGeom.ok && recovery && (
           <View pointerEvents="box-none" style={{ position: 'absolute', top: recoveryTop,
             left: landGeom.play.x, width: landGeom.play.w,
@@ -2242,6 +2256,7 @@ function PadScreen() {
         styles.screen,
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
+      {controllerAir}
       {/* Header: status pill + input-mode toggle (all modes). Hidden in
           large-pad mode; the floating chip below brings it back. */}
       {!largePad && (
