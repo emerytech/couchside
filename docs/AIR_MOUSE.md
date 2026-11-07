@@ -111,3 +111,5 @@ Browser verified the expanded upward fan and Prefs page. USB disconnected before
 native Prefs round-trip verification. These are preview checks, not release approval.
 
 Latest source checkpoint: enlarged TV navigation and hold/drag joystick, Swipe support, touchpad/gyro handoff, runtime portrait lock, native LG routing and shake locator are integrated. Updated combined Android installation and physical acceptance are pending. Earlier owner confirmation covered the upward menu and motion feel, not these latest additions.
+
+Continuous-motion regression: a high angular speed alone must never suppress aiming. Shake suppression now starts only after three qualifying rapid reversals confirm the locator gesture. Tests cover 20 seconds of fast figure-eight input without suppression; native sustained movement and touchpad handoff still require physical acceptance.
