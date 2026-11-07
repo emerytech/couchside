@@ -122,3 +122,13 @@ appeared on the TV and completed all four targets using the Android preview.
 This passes screen visibility and target/Confirm flow. Sensitivity comfort and
 stillness/OFF behavior remain separate unconfirmed checks; this result does not
 certify automatic calibration, absolute aiming, iOS, or a production release.
+
+
+Fine-aim preview tuning: physical feedback still reported shaky aiming after
+four-target completion. The integrator now uses a continuous deadband rather
+than abruptly switching small motion on/off, stronger low-speed smoothing that
+opens up for intentional sweeps, and a smooth precision-gain curve near targets.
+It retains fractional motion, the wrist-sized sweep coverage, stillness pause,
+60px frame limit and stale-gap reset. Synthetic tremor and deliberate-sweep tests,
+TypeScript, and all 883 app/hook tests pass. Physical smoothness/accuracy remains
+an owner acceptance gate; synthetic results do not certify the actual feel.
