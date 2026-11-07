@@ -2670,6 +2670,9 @@ export type PortActionResult = {
 };
 
 export const api = {
+  airMouseShow(settings: ConnSettings): Promise<{ ok: boolean; requested: boolean }> {
+    return request(settings, '/api/air-mouse/show', { method: 'POST' });
+  },
   /** Stream a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54). */
   uploadFile,
   /** Unauthenticated reachability probe. */

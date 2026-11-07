@@ -10,6 +10,7 @@ type Props = {
   onMove: (dx: number, dy: number, current: () => boolean) => void | Promise<void>;
   onClick: (current: () => boolean) => void | Promise<void>;
   onStop?: () => void;
+  onGuide?: () => Promise<unknown>;
   touchpad?: boolean;
   onScroll?: (notches: number, current: () => boolean) => void | Promise<void>;
 };
@@ -123,9 +124,15 @@ export function AirMouseControls(props: Props) {
       {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}>
         <Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text>
       </View>}
+      {props.onGuide && <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => {
+        stop(); const id = epoch.current;
+        void props.onGuide?.().then(() => { if (mounted.current && epoch.current === id) setMessage('Setup requested on the box. Quick calibrate, turn Air Mouse on, then Confirm target four times. If no screen appears, check the box browser.'); })
+          .catch(() => { if (mounted.current && epoch.current === id) setMessage('Guided setup needs an updated agent and an open desktop or Steam session. Quick calibrate is still available.'); });
+      }}><Text style={{ color: t.blue }}>Four-target setup on box</Text></Pressable>}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { if (!latched.current) stop(); const id = epoch.current; const current = () => mounted.current && focused.current && epoch.current === id && AppState.currentState === 'active' && latest.current.available !== false; void Promise.resolve().then(() => current() && latest.current.onClick(current)).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); }); }}><Text style={{ color: t.text }}>Click</Text></Pressable>
-        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { void begin(true); }}><Text style={{ color: t.text }}>Calibrate</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { if (!latched.current) stop(); const id = epoch.current; const current = () => mounted.current && focused.current && epoch.current === id && AppState.currentState === 'active' && latest.current.available !== false; void Promise.resolve().then(() => current() && latest.current.onClick(current)).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); }); }}><Text style={{ color: t.text }}>{props.onGuide ? 'Click / Confirm target' : 'Click'}</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { void begin(true); }}><Text style={{ color: t.text }}>Quick calibrate</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" onPress={() => { stop(); setMessage('Motion reset. Regrip comfortably, then turn Air Mouse on. The cursor stays in place.'); }}><Text style={{ color: t.text }}>Recenter</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse sensitivity" onPress={() => { stop(); setGain(gain === 1 ? 1.5 : gain === 1.5 ? .6 : 1); }}><Text style={{ color: t.text }}>Speed {gain === 1 ? 'Normal' : gain === 1.5 ? 'Fast' : 'Slow'}</Text></Pressable>
       </View>
     </View>}

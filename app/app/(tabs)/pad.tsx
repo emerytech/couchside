@@ -2431,6 +2431,7 @@ function PadScreen() {
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
           <AirMouseControls key={hostKey(settings)} targetKey={hostKey(settings)}
             available={status === 'connected' && !stale && inputBlocked == null}
+            onGuide={() => api.airMouseShow(settings)}
             onStop={() => client.cancelMouseMove()}
             onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
             onClick={current => { if (current()) tpLeft(); }} />

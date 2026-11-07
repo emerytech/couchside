@@ -27,7 +27,7 @@ movement frames were sent; no click. Private credentials/network records stayloc
 
 Pure tests cover calibration, reset/gaps, malformed/bounded samples, fractional
 accumulation, release during delayed pointer handshake, persistent socket reuse
-and cancelled click suppression. TypeScript,876app/hook tests,20crypto tests and
+and cancelled click suppression. TypeScript,878app/hook tests,20crypto tests and
 web export passed at the initial checkpoint. Local UI expansion/sensitivity were
 exercised. Browser mocks cannot certify native sensor or touch behavior.
 
@@ -39,3 +39,35 @@ ownership handoff and disconnect during handshake; click and touchpad scroll.
 Verify no listener/movement survives release or blur. New native binaries are
 required for expo-sensors. Final artifacts require focused acceptance and new
 channel build numbers before any authorized release.
+
+
+## Guided four-target setup (unreleased)
+
+On a connected box, expand Air Mouse and choose **Four-target setup on box**.
+The updated Linux or Windows agent opens a fixed local browser page. Opening is
+best-effort: the phone reports a request, not proof that the page is visible.
+Older agents leave Quick calibrate available and show an upgrade explanation.
+
+Hold the phone upright, use **Quick calibrate** while still, and turn Air Mouse
+on. Aim the visible cursor at each of four targets and tap **Click / Confirm
+target** on the phone. The page measures normalized cursor distance from each
+target and suggests slower sensitivity when appropriate. This is an accuracy
+exercise with manual Speed adjustment, **not** an automatic four-point sensor
+fit or absolute pointing calibration. Relative gyro input cannot infer where
+on the TV the phone is physically aimed. No sensor measurements leave the phone.
+
+**Recenter** immediately stops motion and clears pending movement/filter state,
+allowing a comfortable regrip before turning Air Mouse on again. It does not warp
+the OS cursor. Quick calibration's sensor-bias correction is retained.
+
+The page supports repeat, user-initiated fullscreen, Exit and Escape. If a browser
+refuses to close itself, use its close action or return to Steam. Exit does not
+remotely disable phone motion: turn Air Mouse off on the phone. No credential,
+remote script, telemetry or new control socket is present in the page.
+
+Agent surface: authenticated, rate-limited `POST /api/air-mouse/show` opens only a
+fixed loopback URL; `GET /air-mouse` requires both loopback peer and local Host.
+No existing API fields/capabilities changed. The standalone agents embed identical
+HTML to preserve their single-file distribution. Tests cover both dispatchers,
+authentication, host/peer gates, launch rate limiting, and the target sequence.
+Physical phone/box aiming and browser focus remain acceptance gates.
