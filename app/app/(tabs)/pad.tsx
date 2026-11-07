@@ -2256,7 +2256,6 @@ function PadScreen() {
         styles.screen,
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
-      {controllerAir}
       {/* Header: status pill + input-mode toggle (all modes). Hidden in
           large-pad mode; the floating chip below brings it back. */}
       {!largePad && (
@@ -2686,7 +2685,10 @@ function PadScreen() {
             </PadTouchRow>
           </PadTouchRow>
           </PadTouchSurface>
-          {keyboardBar}
+          {controllerAir ? <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+            <View style={{flex:1,minWidth:0}}>{keyboardBar}</View>
+            <View pointerEvents="box-none" style={{width:60,height:52}}>{controllerAir}</View>
+          </View> : keyboardBar}
         </>
       )}
 
