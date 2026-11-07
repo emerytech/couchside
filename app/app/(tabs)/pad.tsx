@@ -959,6 +959,7 @@ function PadScreen() {
   // — turn into a trackpad + mini-QWERTY when the phone is held sideways, instead
   // of force-locking to portrait. See the laptop derivation and early return below.
   const landscapeLaptopPref = usePref('landscapeLaptop');
+  const airMouseEnabled = usePref('airMouseEnabled');
   const { settings, ready, update } = useSettings();
   const { activeBox } = useBoxes();
   const preset = normalizePadPreset(activeBox?.controlPreset);
@@ -1034,7 +1035,7 @@ function PadScreen() {
   // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
   // Declared before useLockOrientation because the policy below reads it.
   const laptopEligible =
-    landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+    !(mode === 'trackpad' && airMouseEnabled) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
   const laptop = laptopEligible && landscape && !exited;
 
   useLockOrientation(

@@ -27758,6 +27758,7 @@ try:
  x.XFree.argtypes=[c.c_void_p];x.XSync.argtypes=[c.c_void_p,c.c_int];x.XFreeCursor.argtypes=[c.c_void_p,c.c_ulong];x.XCloseDisplay.argtypes=[c.c_void_p]
  f.XFixesGetCursorImage.argtypes=[c.c_void_p];f.XFixesGetCursorImage.restype=c.POINTER(Image)
  f.XFixesChangeCursorByName.argtypes=[c.c_void_p,c.c_ulong,c.c_char_p]
+ f.XFixesSetCursorName.argtypes=[c.c_void_p,c.c_ulong,c.c_char_p]
  u.XcursorImageCreate.argtypes=[c.c_int,c.c_int];u.XcursorImageCreate.restype=c.POINTER(Cursor)
  u.XcursorImageDestroy.argtypes=[c.POINTER(Cursor)]
  u.XcursorImageLoadCursor.argtypes=[c.c_void_p,c.POINTER(Cursor)];u.XcursorImageLoadCursor.restype=c.c_ulong
@@ -27779,6 +27780,7 @@ try:
   if not name or not (0<w<=128 and 0<h<=128):x.XFree(p);x.XCloseDisplay(d);continue
   pixels=[q.pixels[i] for i in range(w*h)];x.XFree(p)
   original=make(d,pixels,w,h,hx,hy,1);large=make(d,pixels,w,h,hx,hy,3)
+  f.XFixesSetCursorName(d,large,name)
   saved.append((d,original,large,name));f.XFixesChangeCursorByName(d,large,name);x.XSync(d,0)
  print(json.dumps({'ok':bool(saved)}),flush=True)
  deadline=time.monotonic()+8;maximum=time.monotonic()+600
@@ -27790,6 +27792,7 @@ except Exception:
  print(json.dumps({'ok':False}),flush=True)
 finally:
  for d,original,large,name in reversed(saved):
+  f.XFixesSetCursorName(d,original,name)
   f.XFixesChangeCursorByName(d,original,name);x.XSync(d,0);x.XFreeCursor(d,large);x.XFreeCursor(d,original);x.XCloseDisplay(d)
 '''
 _AIR_CURSOR_LOCK = threading.Lock()
