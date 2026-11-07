@@ -41,7 +41,8 @@ export function AirMouseControls(props: Props) {
   const autoStarted = useRef(false); const [focusVersion, setFocusVersion] = useState(0);
   const [holding, setHolding] = useState(false);
   const [toggleOn, setToggleOn] = useState(false);
-  useLayoutEffect(()=>{props.onActiveChange?.(toggleOn);return()=>props.onActiveChange?.(false);},[toggleOn,props.onActiveChange]);
+  useLayoutEffect(()=>{props.onActiveChange?.(toggleOn);},[toggleOn,props.onActiveChange]);
+  useLayoutEffect(()=>()=>latest.current.onActiveChange?.(false),[]);
   const grip = 'remote' as const;
   const latched = useRef(false);
   const epoch = useRef(0), mounted = useRef(true), focused = useRef(false), busy = useRef(false);
@@ -61,10 +62,20 @@ export function AirMouseControls(props: Props) {
   useLayoutEffect(() => {
     mounted.current = true;
     const app = AppState.addEventListener('change', state => { if (state !== 'active') {handoff.current.setTouch(false,Date.now());stop();} });
-    const size = Dimensions.addEventListener('change', stop);
+    // Insets, navigation bars and keyboard resize the window without rotating it.
+    // Retire old deltas, but keep the user's ON intent through those changes.
+    const size = Dimensions.addEventListener('change', ({window}) => {
+      if(window.width > window.height) { stop(); return; }
+      handoff.current.invalidate(); engine.current.reset(); latest.current.onStop?.();
+    });
     return () => { mounted.current = false; stop(); app.remove(); size.remove(); };
   }, [stop]);
-  useLayoutEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
+  useLayoutEffect(() => { stop(); }, [props.targetKey, stop]);
+  useLayoutEffect(() => {
+    // A stale status poll must block motion, not silently flip the switch OFF.
+    // The live current() guard below prevents sends until availability returns.
+    handoff.current.invalidate(); engine.current.reset(); latest.current.onStop?.();
+  }, [props.available]);
   const touchHandoff = useCallback((active: boolean) => {
     if(handoff.current.setTouch(active,Date.now())) {engine.current.reset();if(active)latest.current.onStop?.();}
   },[]);
