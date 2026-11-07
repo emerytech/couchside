@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type MotionSample } from '@/lib/airMouse';
+import { airMouseIntent } from '@/lib/airMouseIntent';
 import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestures';
 import { usePref, usePrefsReady } from '@/lib/prefs';
 import { useReducedMotion } from '@/lib/skin/motion';
@@ -41,7 +42,7 @@ export function AirMouseControls(props: Props) {
   const autoStarted = useRef(false); const [focusVersion, setFocusVersion] = useState(0);
   const [holding, setHolding] = useState(false);
   const [toggleOn, setToggleOn] = useState(false);
-  useLayoutEffect(()=>{props.onActiveChange?.(toggleOn);},[toggleOn,props.onActiveChange]);
+  useLayoutEffect(()=>{props.onActiveChange?.(holding && toggleOn);},[holding,toggleOn,props.onActiveChange]);
   useLayoutEffect(()=>()=>latest.current.onActiveChange?.(false),[]);
   const grip = 'remote' as const;
   const latched = useRef(false);
@@ -57,28 +58,30 @@ export function AirMouseControls(props: Props) {
     return()=>clearInterval(timer);
   },[]);
 
-  const stop = useCallback(() => {
+  const stop = useCallback((clearIntent = true) => {
+    if(clearIntent)airMouseIntent.set(latest.current.targetKey,false);
     latched.current = false; handoff.current.invalidate(); shake.current.reset();
     if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=null;
     if(mounted.current)setCursorBoost(false);
     ++epoch.current; subscription.current?.remove(); subscription.current = null;
     if (timer.current) clearTimeout(timer.current); timer.current = null;
     engine.current.reset(); latest.current.onStop?.();
-    if (mounted.current) { setHolding(false); setToggleOn(false); setMessage(''); }
+    if (mounted.current) { setHolding(false); if(clearIntent)setToggleOn(false); setMessage(''); }
   }, []);
-  useFocusEffect(useCallback(() => { focused.current = true; autoStarted.current = false; setFocusVersion(v => v + 1); return () => { focused.current = false; handoff.current.setTouch(false,Date.now()); stop(); }; }, [stop]));
+  useFocusEffect(useCallback(() => { focused.current = true; autoStarted.current = false; setFocusVersion(v => v + 1); return () => { focused.current = false; handoff.current.setTouch(false,Date.now()); stop(false); }; }, [stop]));
   useLayoutEffect(() => {
     mounted.current = true;
     const app = AppState.addEventListener('change', state => { if (state !== 'active') {handoff.current.setTouch(false,Date.now());stop();} });
     // Insets, navigation bars and keyboard resize the window without rotating it.
     // Retire old deltas, but keep the user's ON intent through those changes.
     const size = Dimensions.addEventListener('change', ({window}) => {
+      if(!focused.current)return; // Menu layout changes must not clear remembered intent.
       if(window.width > window.height) { stop(); return; }
       handoff.current.invalidate(); engine.current.reset(); latest.current.onStop?.();
     });
-    return () => { mounted.current = false; stop(); app.remove(); size.remove(); };
+    return () => { mounted.current = false; stop(false); app.remove(); size.remove(); };
   }, [stop]);
-  useLayoutEffect(() => { stop(); }, [props.targetKey, stop]);
+  useLayoutEffect(() => { stop(false); }, [props.targetKey, stop]);
   useLayoutEffect(() => {
     // A stale status poll must block motion, not silently flip the switch OFF.
     // The live current() guard below prevents sends until availability returns.
@@ -89,7 +92,7 @@ export function AirMouseControls(props: Props) {
   },[]);
   useLayoutEffect(() => { touchHandoff(props.touchpadActive===true); }, [props.touchpadActive,touchHandoff]);
   const begin = async (calibrate = false, latch = false) => {
-    stop(); latched.current = latch; const id = epoch.current;
+    stop(false); latched.current = latch; if(latch)airMouseIntent.set(props.targetKey,true); const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
     if (!current()) return;
     if (Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Keep the screen in portrait layout; point the phone toward the TV like a remote. Use the touchpad in landscape.'); return; }
@@ -140,10 +143,12 @@ export function AirMouseControls(props: Props) {
   useEffect(() => {
     if (!prefsReady || !focused.current || props.available === false || autoStarted.current) return;
     autoStarted.current = true;
-    if (enabled) void begin(false, true);
+    const intended=airMouseIntent.resolve(props.targetKey,enabled);
+    setToggleOn(intended);
+    if (intended) void begin(false, true);
   }, [focusVersion, prefsReady, props.available, enabled]);
   useEffect(() => {
-    if (!toggleOn || !largeCursor || !props.onCursor) return;
+    if (!holding || !toggleOn || !largeCursor || !props.onCursor) return;
     const lease = Date.now().toString(36) + Math.random().toString(36).slice(2);
     let retired = false, timer: ReturnType<typeof setTimeout> | undefined;
     const size=cursorBoost?256:cursorSize;
@@ -156,7 +161,7 @@ export function AirMouseControls(props: Props) {
     }).catch(()=>{if(!retired){setMessage('Large pointer unavailable on this box. Air Mouse still works.');timer=setTimeout(renew,4000);}});};
     renew();
     return ()=>{retired=true;if(timer)clearTimeout(timer);void request(false).catch(()=>{});};
-  }, [toggleOn,largeCursor,props.targetKey,cursorSize,cursorBoost]);
+  }, [holding,toggleOn,largeCursor,props.targetKey,cursorSize,cursorBoost]);
   const touch = useRef({ x: 0, y: 0, started: 0, scrolled: false, epoch: 0 });
   const [pad] = useState(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
@@ -193,13 +198,13 @@ export function AirMouseControls(props: Props) {
     <View style={{ alignItems: 'center',gap:4 }}>
 
       <Pressable accessibilityRole="switch" accessibilityLabel="Air Mouse" accessibilityState={{ checked: toggleOn }} disabled={props.available === false}
-        onPress={() => { if (latched.current) stop(); else void begin(false, true); }} style={button}>
+        onPress={() => { if (toggleOn) stop(); else void begin(false, true); }} style={button}>
         <Text style={{ color: toggleOn ? t.blue : t.textDim, fontWeight: '700', fontSize: 13 }}>{toggleOn ? 'ON' : 'OFF'}</Text>
       </Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={props.available === false} onPress={() => { const id=epoch.current; const current=()=>mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false; void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);}).catch(()=>{if(current())setMessage('Click failed. Check connection.');}); }}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(false); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
     <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:14,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}>{menuOpen ? <MaterialCommunityIcons name="close" size={24} color={toggleOn?t.blue:t.textDim} /> : <View accessibilityElementsHidden style={{alignItems:'center'}}>
