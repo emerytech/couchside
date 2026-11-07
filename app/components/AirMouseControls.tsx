@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type MotionSample } from '@/lib/airMouse';
+import { getWsTrace } from '@/lib/gamepad';
 import { airMouseIntent } from '@/lib/airMouseIntent';
 import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestures';
 import { usePref, usePrefsReady } from '@/lib/prefs';
@@ -54,7 +55,7 @@ export function AirMouseControls(props: Props) {
   const timing=useRef({samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:0});
   useEffect(()=>{
     if(process.env.EXPO_PUBLIC_AIR_DIAGNOSTICS!=='1')return;
-    const timer=setInterval(()=>{const q=timing.current;console.info('AirMouseQA',JSON.stringify({on:latched.current,available:latest.current.available,...q,last:undefined}));timing.current={samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:q.last};},2000);
+    const timer=setInterval(()=>{const q=timing.current,w=getWsTrace();console.info('AirMouseQA',JSON.stringify({on:latched.current,available:latest.current.available,...q,last:undefined,ws:{sends:w.inputSends,dropped:w.inputDropped,opens:w.opens,recoveries:w.recoveries,inboundAge:w.inboundAgeMs}}));timing.current={samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:q.last};},2000);
     return()=>clearInterval(timer);
   },[]);
 
