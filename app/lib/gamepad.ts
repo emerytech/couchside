@@ -870,6 +870,13 @@ export class GamepadClient {
     }
   }
 
+  /** Discard unsent relative motion when an Air Mouse hold/surface ends. */
+  cancelMouseMove(): void {
+    if (this.mouseTimer != null) clearTimeout(this.mouseTimer);
+    this.mouseTimer = null;
+    this.mousePending = { dx: 0, dy: 0 };
+  }
+
   private flushMouseMove(): void {
     const { dx, dy } = this.mousePending;
     this.mousePending = { dx: 0, dy: 0 };
@@ -1355,11 +1362,7 @@ export class GamepadClient {
       }
       this.stickPending[k] = null;
     }
-    if (this.mouseTimer != null) {
-      clearTimeout(this.mouseTimer);
-      this.mouseTimer = null;
-    }
-    this.mousePending = { dx: 0, dy: 0 };
+    this.cancelMouseMove();
     const ws = this.ws;
     if (ws) {
       this.ws = null;

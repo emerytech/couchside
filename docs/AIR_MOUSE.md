@@ -7,9 +7,10 @@ and directly paired LG remotes over the webOS pointer socket. No Bluetooth or
 agent change is required. LG has a touchpad fallback with tap/click and scroll;
 the box retains its existing trackpad. Existing LG button delivery is unchanged.
 
-Portrait hold-to-point, explicit click, three sensitivity levels and one-second
+Quick On/Off toggle or portrait hold-to-point, explicit click, three sensitivity levels and one-second
 stationary calibration. Lazy Expo sensors at50Hz; no high-rate permission. Samples
 have deadzone/smoothing, bounded time steps/deltas and fractional accumulation.
+Toggle mode pauses after stillness with hysteresis and resumes on deliberate movement. Click preserves toggle mode. Unsent box throttle frames are discarded on stop.
 Rotation stops motion; the initial mapping is portrait-only. Calibration and
 speed last for the mounted panel, not persistent settings.
 

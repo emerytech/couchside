@@ -43,3 +43,10 @@ test('one pointer connection handles repeated moves; cancelled click is never de
  await f.session.clickPointer(()=>false);assert.equal(f.sent.length,20);
  f.session.close();assert.equal(f.closed(),1);
 });
+
+test('stationary phone clears smoothing tail, stays paused through jitter, then resumes', () => {
+ const m = new AirMouseIntegrator();m.step(sample(0,0,2));m.step(sample(.02,0,2));
+ for(let i=2;i<20;i++) {const d=m.step(sample(i*.02));if(i>=9)assert.deepEqual(d,{dx:0,dy:0});}
+ assert.deepEqual(m.step(sample(.4,.015,.015)),{dx:0,dy:0});
+ const moved=m.step(sample(.42,0,.5));assert.ok(moved && moved.dx<0);
+});

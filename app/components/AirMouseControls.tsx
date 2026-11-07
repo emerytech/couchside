@@ -18,15 +18,18 @@ export function AirMouseControls(props: Props) {
   const t = useTheme(); const latest = useRef(props); latest.current = props;
   const [open, setOpen] = useState(false), [message, setMessage] = useState('Hold your phone upright. Touchpad stays available.');
   const [holding, setHolding] = useState(false), [gain, setGain] = useState(1);
+  const [toggleOn, setToggleOn] = useState(false);
+  const latched = useRef(false);
   const epoch = useRef(0), mounted = useRef(true), focused = useRef(false), busy = useRef(false);
   const subscription = useRef<{ remove(): void } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engine = useRef(new AirMouseIntegrator());
   const stop = useCallback(() => {
+    latched.current = false;
     ++epoch.current; subscription.current?.remove(); subscription.current = null;
     if (timer.current) clearTimeout(timer.current); timer.current = null;
     engine.current.reset(); latest.current.onStop?.();
-    if (mounted.current) setHolding(false);
+    if (mounted.current) { setHolding(false); setToggleOn(false); setMessage('Hold your phone upright. Air Mouse is off.'); }
   }, []);
   useFocusEffect(useCallback(() => { focused.current = true; return () => { focused.current = false; stop(); }; }, [stop]));
   useLayoutEffect(() => {
@@ -36,8 +39,8 @@ export function AirMouseControls(props: Props) {
     return () => { mounted.current = false; stop(); app.remove(); size.remove(); };
   }, [stop]);
   useLayoutEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
-  const begin = async (calibrate = false) => {
-    stop(); const id = epoch.current;
+  const begin = async (calibrate = false, latch = false) => {
+    stop(); latched.current = latch; const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
     if (!current()) return;
     if (Dimensions.get('window').width > Dimensions.get('window').height) { setMessage('Hold the phone upright for Air Mouse; use the touchpad sideways.'); return; }
@@ -51,8 +54,8 @@ export function AirMouseControls(props: Props) {
       if (!permission.granted) throw new Error('Motion permission is off. Use the touchpad.');
       Gyroscope.setUpdateInterval(20);
       const samples: MotionSample[] = [];
-      if (!calibrate) setHolding(true);
-      setMessage(calibrate ? 'Keep the phone still for one second…' : 'Pointing. Release to stop.');
+      if (!calibrate) { setHolding(true); setToggleOn(latch); }
+      setMessage(calibrate ? 'Keep the phone still for one second…' : latch ? 'Air Mouse on. Hold still to pause; move to resume.' : 'Pointing. Release to stop.');
       subscription.current = Gyroscope.addListener(sample => {
         if (!current()) return;
         if (calibrate) { samples.push(sample); return; }
@@ -100,21 +103,28 @@ export function AirMouseControls(props: Props) {
   }));
   const button = { padding: 12, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
   return <View style={{ gap: 8 }}>
+    <View style={{ flexDirection: 'row', gap: 8 }}>
     <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse" onPress={() => { stop(); setOpen(!open); }} style={button}>
       <Text style={{ color: t.blue, fontWeight: '700' }}>Air Mouse {open ? '▴' : '▾'}</Text>
     </Pressable>
+    <Pressable accessibilityRole="switch" accessibilityLabel="Toggle Air Mouse" accessibilityState={{ checked: toggleOn, disabled: props.available === false }}
+      disabled={props.available === false} style={[button, { flex: 1, backgroundColor: toggleOn ? t.blue : t.card }]}
+      onPress={() => { if (latched.current) stop(); else { setOpen(true); void begin(false, true); } }}>
+      <Text style={{ color: toggleOn ? t.bg : t.text, fontWeight: '700', textAlign: 'center' }}>Air Mouse {toggleOn ? 'ON' : 'OFF'}</Text>
+    </Pressable>
+    </View>
     {open && <View style={{ gap: 8 }}>
       <Text style={{ color: t.textDim }}>{message}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="Hold to point" disabled={props.available === false}
-        onPressIn={() => { void begin(); }} onPressOut={stop} onTouchCancel={stop}
+        onPressIn={() => { void begin(); }} onPressOut={() => { if (!latched.current) stop(); }} onTouchCancel={() => { if (!latched.current) stop(); }}
         style={[button, { backgroundColor: holding ? t.blue : t.card }]}>
-        <Text style={{ color: holding ? t.bg : t.text, textAlign: 'center', fontWeight: '700' }}>{holding ? 'Pointing — release to stop' : 'Hold to point'}</Text>
+        <Text style={{ color: holding ? t.bg : t.text, textAlign: 'center', fontWeight: '700' }}>{holding && !toggleOn ? 'Pointing — release to stop' : 'Hold to point'}</Text>
       </Pressable>
       {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}>
         <Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text>
       </View>}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { stop(); const id = epoch.current; const current = () => mounted.current && focused.current && epoch.current === id && AppState.currentState === 'active' && latest.current.available !== false; void Promise.resolve().then(() => current() && latest.current.onClick(current)).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); }); }}><Text style={{ color: t.text }}>Click</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { if (!latched.current) stop(); const id = epoch.current; const current = () => mounted.current && focused.current && epoch.current === id && AppState.currentState === 'active' && latest.current.available !== false; void Promise.resolve().then(() => current() && latest.current.onClick(current)).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); }); }}><Text style={{ color: t.text }}>Click</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { void begin(true); }}><Text style={{ color: t.text }}>Calibrate</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse sensitivity" onPress={() => { stop(); setGain(gain === 1 ? 1.5 : gain === 1.5 ? .6 : 1); }}><Text style={{ color: t.text }}>Speed {gain === 1 ? 'Normal' : gain === 1.5 ? 'Fast' : 'Slow'}</Text></Pressable>
       </View>

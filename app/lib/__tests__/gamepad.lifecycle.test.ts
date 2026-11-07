@@ -358,3 +358,18 @@ test('layout release cancels delayed QAM presses without reconnecting', async ()
   assert.ok(frames.some(f => f.t === 'b' && f.k === 'a' && f.v === 0));
   client.close();
 });
+
+test('Air Mouse release discards throttled motion without disconnecting or replaying it', async () => {
+  const client = freshClient(); client.connect(CONN);
+  const ws = MockWebSocket.instances[0]; ws.openAndHello();
+  try {
+    client.sendMouseMove(1, 1);
+    const before = ws.sent.filter(s => JSON.parse(s).t === 'm').length;
+    client.sendMouseMove(50, 50); client.cancelMouseMove();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(ws.sent.filter(s => JSON.parse(s).t === 'm').length, before);
+    assert.equal(client.getStatus(), 'connected');
+    NOW += 100; client.sendMouseMove(2, 3);
+    assert.deepEqual(JSON.parse(ws.sent.at(-1)!), {t:'m',dx:2,dy:3});
+  } finally { client.close(); }
+});
