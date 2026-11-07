@@ -360,6 +360,7 @@ function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
 const TP_HAPTIC_PX = 56;
 
 type TrackpadProps = {
+  onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
   onRightClick: () => void;
@@ -378,6 +379,7 @@ type TrackpadProps = {
  *  - double-tap + drag    -> hold left button + drag = marquee select
  */
 function Trackpad({
+  onActiveChange,
   onMove,
   onLeftClick,
   onRightClick,
@@ -385,7 +387,9 @@ function Trackpad({
   onDragStart,
   onDragEnd,
 }: TrackpadProps) {
+  useEffect(() => () => onActiveChange?.(false), [onActiveChange]);
   const responder = useTrackpad({
+    onActiveChange,
     onMove,
     onLeftClick,
     onRightClick,
@@ -933,6 +937,8 @@ const MODES: { key: PadMode; label: string }[] = [
 
 function PadScreen() {
   const [airMouseTouch, setAirMouseTouch] = useState(false);
+  const airMouseTouchRef=useRef(false);
+  const onAirTouch=useCallback((active:boolean)=>{airMouseTouchRef.current=active;setAirMouseTouch(active);},[]);
   const [airMouseActive,setAirMouseActive]=useState(false);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -1338,7 +1344,7 @@ function PadScreen() {
       evaluateWakeLock();
     };
     const disconnect = () => {
-      setAirMouseTouch(false);
+      onAirTouch(false);
       focusedRef.current = false;
       // Chrome comes back the moment the Pad loses focus — see immersiveLive.
       setPadFocused(false);
@@ -2376,7 +2382,7 @@ function PadScreen() {
               and a tap clicks; otherwise a step is an arrow key and a tap is
               select. */}
           <View style={styles.tpWrap}>
-            <View style={{flex:1}} onTouchStart={() => setAirMouseTouch(true)} onTouchEnd={e => setAirMouseTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => setAirMouseTouch(false)}>
+            <View style={{flex:1}} onTouchStart={() => onAirTouch(true)} onTouchEnd={e => onAirTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => onAirTouch(false)}>
             <SwipeSurface
               onStep={tvNav ? tvStep : dpadStep}
               onStepEnd={tvNav ? NOOP : dpadRelease}
@@ -2387,7 +2393,7 @@ function PadScreen() {
               available={status === 'connected' && !stale && inputBlocked == null}
               onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
               onStop={()=>client.cancelMouseMove()}
-              onMove={(dx,dy,current)=>{if(current())client.sendMouseMove(dx,dy);}}
+              onMove={(dx,dy,current)=>{if(current() && !airMouseTouchRef.current)client.sendMouseMove(dx,dy);}}
               onClick={current=>{if(current())tpLeft();}} />
             {tvToggleChip}
             {padToggleChip}
@@ -2442,8 +2448,9 @@ function PadScreen() {
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
           <View style={styles.tpWrap}>
-            <View style={{flex:1}} onTouchStart={() => setAirMouseTouch(true)} onTouchEnd={e => setAirMouseTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => setAirMouseTouch(false)}>
+            <View style={{flex:1}}>
             <Trackpad
+              onActiveChange={onAirTouch}
               onMove={tpMove}
               onLeftClick={tpLeft}
               onRightClick={tpRight}
@@ -2456,7 +2463,7 @@ function PadScreen() {
             available={status === 'connected' && !stale && inputBlocked == null}
             onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
             onStop={() => client.cancelMouseMove()}
-            onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
+            onMove={(dx, dy, current) => { if (current() && !airMouseTouchRef.current) client.sendMouseMove(dx, dy); }}
             onClick={current => { if (current()) tpLeft(); }} />
             {padToggleChip}
           </View>
