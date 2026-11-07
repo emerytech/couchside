@@ -100,3 +100,15 @@ test('figure-eight trajectory is rotationally consistent through diagonals and r
    assert.ok(Math.hypot(bx-(c*ax+s*ay),by-(-s*ax+c*ay))<3,'rotation must not distort the integrated curve');}
  }
 });
+
+test('opt-in linear aiming closes repeatable figure eights without changing the default response',async()=>{
+ const {syntheticGyroSample}=await import('../airMouseSynthetic.ts');
+ const normal=new AirMouseIntegrator(),linear=new AirMouseIntegrator();let nx=0,ny=0,lx=0,ly=0;
+ for(let i=0;i<900;i++){
+  const s=airMouseGripSample(syntheticGyroSample(i/30),'remote');
+  const a=normal.step(s,4),b=linear.step(s,4,true);
+  if(a){nx+=a.dx;ny+=a.dy;}if(b){lx+=b.dx;ly+=b.dy;}
+ }
+ assert.ok(Math.abs(ny)>300,'control retains the accepted accelerated response');
+ assert.ok(Math.abs(lx)<15&&Math.abs(ly)<15,`linear loop residual ${lx},${ly}`);
+});

@@ -46,7 +46,7 @@ export function AirMouseControls(props: Props) {
   const boostTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const handoff=useRef(new AirMouseTouchHandoff()), shake=useRef(new AirMouseShakeDetector());
   const cursorQueue=useRef<Promise<void>>(Promise.resolve());
-  const gain = usePref('airMouseSpeed'), prefsReady = usePrefsReady();
+  const gain = usePref('airMouseSpeed'), linear = usePref('airMouseLinear'), prefsReady = usePrefsReady();
   const autoStarted = useRef(false); const [focusVersion, setFocusVersion] = useState(0);
   const [holding, setHolding] = useState(false);
   const [toggleOn, setToggleOn] = useState(false);
@@ -118,7 +118,7 @@ export function AirMouseControls(props: Props) {
       // other 20ms sample. A 10ms event gate preserves the hardware's 50Hz stream.
       Gyroscope.setUpdateInterval(Platform.OS === 'android' ? 10 : 20);
       const samples: MotionSample[] = [];
-      qaTrace.current=synthetic?createAirMouseQaTrace(1800,gain*AIR_MOUSE_REMOTE_GAIN):null;
+      qaTrace.current=synthetic?createAirMouseQaTrace(1800,gain*AIR_MOUSE_REMOTE_GAIN,linear):null;
       if (!calibrate) { setHolding(true); setToggleOn(latch); }
       setMessage(calibrate ? 'Keep the phone still for one second…' : '');
       const receive=(rawSample:MotionSample) => {
@@ -135,7 +135,7 @@ export function AirMouseControls(props: Props) {
         }
         const generation=handoff.current.generation;
         const motionCurrent=()=>current()&&handoff.current.generation===generation&&handoff.current.allows(Date.now());
-        const delta = engine.current.step(sample, gain * AIR_MOUSE_REMOTE_GAIN);
+        const delta = engine.current.step(sample, gain * AIR_MOUSE_REMOTE_GAIN, linear);
         if(busy.current)q.busy++;
         if (!delta || busy.current || Math.abs(delta.dx) + Math.abs(delta.dy) < .05) return;
         q.sent++;

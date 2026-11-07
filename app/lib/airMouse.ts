@@ -22,7 +22,7 @@ export class AirMouseIntegrator {
       y: samples.reduce((a, s) => a + s.y, 0) / samples.length };
     this.reset(); return true;
   }
-  step(s: MotionSample, sensitivity = 1): { dx: number; dy: number } | null {
+  step(s: MotionSample, sensitivity = 1, linear = false): { dx: number; dy: number } | null {
     if (![s.x, s.y, s.timestamp, sensitivity].every(Number.isFinite)) { this.reset(); return null; }
     const last = this.previous; this.previous = s.timestamp;
     if (last == null) return null;
@@ -42,15 +42,16 @@ export class AirMouseIntegrator {
       return { dx: 0, dy: 0 };
     }
     this.stationary = false;
-    const x = radialDeadband(rawX), y = radialDeadband(rawY);
+    const axisDeadband = (v:number) => Math.sign(v)*Math.max(0,Math.abs(v)-.012);
+    const x = linear ? axisDeadband(rawX) : radialDeadband(rawX), y = linear ? axisDeadband(rawY) : radialDeadband(rawY);
     // Steady fine aiming; open the filter for deliberate wrist sweeps.
     const intent = Math.max(0, Math.min(1, (magnitude - .03) / .27));
-    const alpha = 1 - Math.exp(-dt / (.09 - .07 * intent));
+    const alpha = 1 - Math.exp(-dt / (linear ? .06 : .09 - .07 * intent));
     this.filtered.x += alpha * (x - this.filtered.x); this.filtered.y += alpha * (y - this.filtered.y);
     // Lower gain near a target without sacrificing cross-screen coverage.
     const speed = Math.hypot(this.filtered.x, this.filtered.y);
     const fine = Math.max(0, Math.min(1, (speed - .025) / .225));
-    const precision = .35 + .65 * fine * fine * (3 - 2 * fine);
+    const precision = linear ? .65 : .35 + .65 * fine * fine * (3 - 2 * fine);
     const gain = 1100 * Math.max(.4, Math.min(8, sensitivity)) * precision;
     const moveX = -this.filtered.y * dt * gain, moveY = -this.filtered.x * dt * gain;
     const bound = Math.min(1, 60 / Math.max(60, Math.hypot(moveX, moveY)));
