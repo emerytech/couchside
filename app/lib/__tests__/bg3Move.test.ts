@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createBg3MoveInputs} from '../bg3Move.ts';
 import {bg3MoveExtras} from '../bg3MoveLayout.ts';
-import {moveLayout,verticalMoveLayout} from '../padLayout.ts';
+import {moveLayout,verticalMoveLayout,stickValue} from '../padLayout.ts';
 test('mouse owners release independently; disposed callbacks cannot restart input',()=>{
  const events:unknown[]=[];
  const d=createBg3MoveInputs({move:(...v)=>events.push(['move',...v]),button:(...v)=>events.push(['mouse',...v]),key:k=>events.push(['key',k]),wheel(){},manual(){}});
@@ -13,7 +13,7 @@ test('mouse owners release independently; disposed callbacks cannot restart inpu
 test('camera diagonal holds and lease renewal use keyboard only; neutral and disposal release',()=>{
  const events:unknown[]=[];
  const d=createBg3MoveInputs({move:(...v)=>events.push(['move',...v]),button(){},key(){},wheel(){},manual(){},camera:(...v)=>events.push(['camera',...v])});
- d.activate();d.movement('camera');d.stick(1,1);d.tick(1000);d.stick(1,0);d.dispose();d.tick(2000);
+ d.activate();d.movement('camera');d.stick(1,-1);d.tick(1000);d.stick(1,0);d.dispose();d.tick(2000);
  assert.deepEqual(events,[['camera','w',1],['camera','d',1],['camera','w',1],['camera','d',1],['camera','w',0],['camera','d',0]]);
 });
 test('touchpad temporarily owns cursor movement; camera mode does not disable Air Mouse',()=>{
@@ -39,4 +39,10 @@ test('touchpad ignores outside fingers and releases a double-tap drag on cancell
  assert.ok(events.some(v=>JSON.stringify(v)==='["move",10,5]'));assert.ok(!events.some(v=>JSON.stringify(v).includes('scroll')));
  p.start(2,0,0,2000);p.end(2,2050);p.start(3,0,0,2200);p.move(3,10,0);p.cancel();
  assert.deepEqual(events.slice(-2),[['drag',false],['active',false]]);
+});
+
+test('native upward stick deflection sends W / upward cursor motion, never inverted',()=>{
+ const events:unknown[]=[];const d=createBg3MoveInputs({move:(...v)=>events.push(['move',...v]),button(){},key(){},wheel(){},manual(){},camera:(...v)=>events.push(['camera',...v])});
+ const v=stickValue(0,-100,4);d.activate();d.movement('camera');d.stick(v.x,v.y);assert.deepEqual(events,[['camera','w',1]]);
+ d.movement('cursor');d.stick(v.x,v.y);d.tick();assert.deepEqual(events.at(-1),['move',0,-12]);d.dispose();
 });

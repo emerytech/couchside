@@ -1,3 +1,4 @@
+import {createAirMouseQaTrace} from '@/lib/airMouseQaTrace';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
@@ -57,6 +58,7 @@ export function AirMouseControls(props: Props) {
   const subscription = useRef<{ remove(): void } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engine = useRef(new AirMouseIntegrator());
+  const qaTrace=useRef<ReturnType<typeof createAirMouseQaTrace>|null>(null);
   // Local QA counters only: no host, credentials, coordinates or sample values.
   const timing=useRef({samples:0,blocked:0,touch:0,busy:0,sent:0,gaps:0,maxGap:0,last:0});
   useEffect(()=>{
@@ -116,9 +118,11 @@ export function AirMouseControls(props: Props) {
       // other 20ms sample. A 10ms event gate preserves the hardware's 50Hz stream.
       Gyroscope.setUpdateInterval(Platform.OS === 'android' ? 10 : 20);
       const samples: MotionSample[] = [];
+      qaTrace.current=synthetic?createAirMouseQaTrace(1800,gain*AIR_MOUSE_REMOTE_GAIN):null;
       if (!calibrate) { setHolding(true); setToggleOn(latch); }
       setMessage(calibrate ? 'Keep the phone still for one second…' : '');
       const receive=(rawSample:MotionSample) => {
+        if(synthetic)qaTrace.current?.sample(Date.now(),rawSample);
         const sample = airMouseGripSample(rawSample, grip);
         const q=timing.current, now=Date.now();q.samples++;if(q.last){const gap=now-q.last;q.maxGap=Math.max(q.maxGap,gap);if(gap>80)q.gaps++;}q.last=now;
         if (!current()) {q.blocked++;return;}
@@ -137,11 +141,18 @@ export function AirMouseControls(props: Props) {
         q.sent++;
         if(synthetic)console.info('AirSynthetic',JSON.stringify({at:Date.now(),t:rawSample.timestamp,dx:delta.dx,dy:delta.dy}));
         busy.current = true;
-        Promise.resolve().then(() => { if (motionCurrent()) return latest.current.onMove(delta.dx, delta.dy, motionCurrent); })
+        Promise.resolve().then(() => { if (motionCurrent()) {if(synthetic)qaTrace.current?.send(Date.now(),delta.dx,delta.dy);return latest.current.onMove(delta.dx, delta.dy, motionCurrent);} })
           .catch(() => { if (current()) { stop(); setMessage('Connection interrupted. Hold again to retry, or use the touchpad.'); } })
           .finally(() => { if(epoch.current===id)busy.current = false; });
       };
-      subscription.current=synthetic?startSyntheticGyro(receive,()=>{if(current()){stop();setMessage('Synthetic movement-only run complete.');console.info('AirSynthetic complete');}}):Gyroscope.addListener(receive);
+      subscription.current=synthetic?startSyntheticGyro(receive,()=>{if(current()){
+        const trace=qaTrace.current?.snapshot();stop();
+        if(trace){setMessage(`QA ${trace.summary.sends} moves · gap ${trace.summary.maxSampleGapMs}ms · Δ ${trace.summary.dx},${trace.summary.dy}`);
+          // One write AFTER timing ends; no file I/O in the movement loop.
+          void import('expo-file-system').then(({File,Paths})=>new File(Paths.cache,'air-mouse-synthetic-qa.json').write(JSON.stringify(trace))).catch(()=>{});
+        }else setMessage('Synthetic movement-only run complete.');
+        console.info('AirSynthetic complete');
+      }}):Gyroscope.addListener(receive);
       if (calibrate) timer.current = setTimeout(() => {
         if (!current()) return;
         const ok = engine.current.calibrate(samples); stop();
