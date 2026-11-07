@@ -174,3 +174,9 @@ iPhone preview preparation: an internal cloud build is being prepared from the A
 iPhone installation checkpoint: internal cloud preview 2.9.82 (292) passed signature/provisioning checks and installed in place. The six saved box entries survived, the existing secure Steam Machine connection worked, and the Air Mouse fan/Prefs/Back flow retained ON and reconnected. Physical gyro/handoff and native LG cursor acceptance are still pending. The experimental Linux cursor enlargement reported unavailable on this run; normal pointing remains the test target. Nothing was submitted to a store or released.
 
 Owner iPhone feedback, November 7: internal preview 2.9.82 (292) was reported to feel very smooth against the Steam Machine. This accepts subjective pointing feel on this iPhone; individual handoff gestures and native LG pointing are not independently certified by that feedback. LG testing remains next. Release remains on hold.
+
+## Requested expansion and future preset
+
+Owner direction, November 7: make Air Mouse an optional input in PAD and MOVE as well as the existing Mouse, Swipe and native LG paths. Reuse the compact fan, preserve touch control and held-input ownership, and pause safely outside eligible input surfaces. PAD/MOVE retain their controller orientation behavior; the Mouse portrait policy must not be copied blindly. This expansion is requested, not yet implemented or tested.
+
+Future Baldur’s Gate preset: a dedicated themed pad optimized for keyboard-and-mouse navigation, with Air Mouse cursor control. Plan configurable keyboard actions and mouse buttons rather than only Xbox-button remapping. Confirm the intended Baldur’s Gate title before choosing bindings. Agent support must be capability-checked with safe release of all held keys/buttons on disconnect, preset changes and backgrounding. This is a saved product idea, not part of the current accepted preview.
