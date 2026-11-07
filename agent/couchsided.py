@@ -27356,9 +27356,15 @@ def _camera_keys_release(entry):
                 try:
                     entry["keyboard"].emit([(EV_KEY, CHAR_KEYMAP[key][0], 0)])
                 except Exception:
-                    pass
+                    # A blocked key-up is still owed. Keep its ownership so the
+                    # lease worker retries after the desktop becomes reachable.
+                    continue
             owned.discard(key)
-        _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+        if owned:
+            _CAMERA_KEY_ENTRIES[id(entry)] = entry
+            entry["camera_until"] = time.monotonic() + .05
+        else:
+            _CAMERA_KEY_ENTRIES.pop(id(entry), None)
 
 
 def _camera_keys_watch():
