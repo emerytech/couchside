@@ -392,3 +392,14 @@ test('TV stream bounds moves, preserves command order and never sends invalid de
  {t:'tvp',op:'move',dx:120,dy:-120},{t:'tvp',op:'click'},{t:'tvp',op:'stop'}]);
  c.close();
 });
+
+test('BG3 negotiates keyboard-only and camera keys before sending additive frames',()=>{
+ const c=freshClient();c.connect(CONN,{noPad:true});const ws=MockWebSocket.instances[0];
+ assert.ok(ws.url.includes('nopad=1'));ws.openAndHello();
+ assert.equal(c.supportsKeyboardOnly(),false);assert.equal(c.supportsCameraKeys(),false);
+ c.sendCameraKey('w',1);assert.ok(!ws.sent.some(s=>JSON.parse(s).t==='kh'));
+ ws.onmessage?.({data:JSON.stringify({t:'hello',dev:'keyboard only',no_pad:true,camera_keys:['w','a','s','d']})});
+ assert.equal(c.supportsKeyboardOnly(),true);assert.equal(c.supportsCameraKeys(),true);
+ c.sendCameraKey('w',1);c.sendCameraKey('w',0);
+ assert.deepEqual(ws.sent.map(s=>JSON.parse(s)).filter(m=>m.t==='kh'),[{t:'kh',key:'w',v:1},{t:'kh',key:'w',v:0}]);c.close();
+});
