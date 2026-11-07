@@ -180,7 +180,7 @@ export function AirMouseControls(props: Props) {
         if (!current()) return;
         if (scrolling) return latest.current.onScroll?.(Math.max(-5, Math.min(5, Math.round(-dy / 8))), current);
         return latest.current.onMove(Math.max(-120, Math.min(120, dx)), Math.max(-120, Math.min(120, dy)), current);
-      }).catch(() => { if (current()) { stop(); setMessage('Pointer disconnected. Try again.'); } }).finally(() => { if(epoch.current===id)busy.current = false; });
+      }).catch(() => { if (current()) { stop(); setMessage('Pointer disconnected. Try again.'); } }).finally(() => { if(epoch.current===state.epoch)busy.current = false; });
     },
     onPanResponderRelease: (_event, gesture) => {
       const tap = !touch.current.scrolled && Math.hypot(gesture.dx, gesture.dy) < 6 && Date.now() - touch.current.started < 300;
