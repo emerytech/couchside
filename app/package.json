@@ -60,7 +60,7 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-tcp-socket-android.cjs",
+    "postinstall": "node scripts/patch-tcp-socket-android.cjs && node scripts/patch-gyro-sampling.cjs",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
