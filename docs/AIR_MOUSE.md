@@ -2,133 +2,98 @@
 
 Held checkpoint, November 6, 2026. No release/version bump.
 
-Shared opt-in controls serve Pad > Mouse over the existing box gamepad WebSocket
-and directly paired LG remotes over the webOS pointer socket. No Bluetooth or
-agent change is required. LG has a touchpad fallback with tap/click and scroll;
-the box retains its existing trackpad. Existing LG button delivery is unchanged.
+## Current behavior
 
-Quick On/Off toggle or portrait hold-to-point, explicit click, three sensitivity levels and one-second
-stationary calibration. Lazy Expo sensors at50Hz; no high-rate permission. Samples
-have deadzone/smoothing, bounded time steps/deltas and fractional accumulation.
-Toggle mode pauses after stillness with hysteresis and resumes on deliberate movement. Click preserves toggle mode. Unsent box throttle frames are discarded on stop.
-Rotation stops motion; the initial mapping is portrait-only. Calibration and
-speed last for the mounted panel, not persistent settings.
+Air Mouse starts on when entering a connected Pad > Mouse screen after preferences
+load. The preference can disable this default. The Mouse layout stays portrait
+while Air Mouse is enabled, preventing a switch to laptop mode while pointing.
+Background, blur, disconnect, rotation/reflow, target change and unmount stop
+motion and retire pending callbacks. Returning from OS background does not silently
+restart it. Touching the trackpad pauses Air Mouse so the two inputs do not fight.
 
-Background, blur, release, target change, disconnect, collapse, rotation and
-unmount retire the motion epoch and remove listeners. Pending LG handshakes
-cannot deliver retired motion. A busy send drops samples rather than building
-a backlog. Uncertain movement/click is never automatically replayed.
+A single bottom-right touchpad button opens an upward animated fan: On/Off,
+Quick calibrate, Recenter, Click/Confirm and Prefs. Closing the fan does not stop
+pointing or click the box. Reduced-motion preference disables the animation.
+Detailed controls live in Setup > Prefs > Pad Layout > Air Mouse, also reachable
+from the fan. Speed, start-on behavior and larger-cursor choice are persisted.
 
-## Evidence
+There is one physical grip: screen facing up, phone top pointed toward the TV.
+Gyro Z controls horizontal movement and X controls vertical movement. An upright
+selector is deliberately absent. Tabletop/optical-mouse emulation is not included.
+Quick calibration estimates stationary sensor bias for one second. Recenter stops
+motion and clears filters/queued movement so the user can regrip; it does not warp
+the OS cursor. Bias calibration lasts for the mounted controller.
 
-Real LG C9: pairing, input enumeration, owner-observed HDMI switch/restore, volume
-step/restore, silent reconnect and owner-observed pointer movement passed. Three
-movement frames were sent; no click. Private credentials/network records staylocal.
+Normal/Fast remote gain is 4x/6x the initial 1100px/radian mapping; Slow restores
+its 1x baseline. Radial deadband, radial speed response, shared adaptive filtering
+and vector-length limiting preserve direction through diagonals and figure eights.
+Fine corrections get stronger smoothing and a lower gain; deliberate sweeps get
+faster response. Stillness hysteresis clears filter/carry drift. Per-frame motion
+is bounded and gaps over 80ms reset the integrator. No movement/click is replayed.
 
-Pure tests cover calibration, reset/gaps, malformed/bounded samples, fractional
-accumulation, release during delayed pointer handshake, persistent socket reuse
-and cancelled click suppression. TypeScript,878app/hook tests,20crypto tests and
-web export passed at the initial checkpoint. Local UI expansion/sensitivity were
-exercised. Browser mocks cannot certify native sensor or touch behavior.
+Basic box movement uses the existing gamepad WebSocket, with unsent mouse frames
+cancelled on stop. Direct LG movement uses one cancellable webOS pointer socket;
+its existing button delivery remains unchanged. No Bluetooth is required. Direct
+LG retains a touchpad fallback. Browser mock connections cannot certify sensors.
 
-## Remaining gates
+## Android native sampling
 
-Native Android/iOS on LG and box: axis direction, drift/precision, calibration,
-hold/release, denied/missing sensor, rotation/background/return, target change,
-ownership handoff and disconnect during handshake; click and touchpad scroll.
-Verify no listener/movement survives release or blur. New native binaries are
-required for expo-sensors. Final artifacts require focused acceptance and new
-channel build numbers before any authorized release.
+expo-sensors 57.0.3 requests SENSOR_DELAY_NORMAL without the high-rate permission:
+real Razr diagnostics showed 200ms updates, exceeding the stale-gap guard and
+causing an ON switch with no movement. The guarded postinstall patch changes only
+the gyro fallback to SENSOR_DELAY_GAME (20ms/50Hz). Android autolinking builds
+expo-sensors from source so a precompiled AAR cannot bypass the patch. No new
+permission is added. Live native diagnostics confirmed the corrected 20,000us
+registration, and the box then received real relative-motion events.
 
+Android's JS event gate is 10ms to avoid the SDK's strict `>` throttle dropping
+nominal 20ms hardware samples. Hardware remains 50Hz; iOS stays at 20ms. New native
+binaries are required for the sensor module/patch; a JS-only update is insufficient.
 
-## Guided four-target setup (unreleased)
+## Guided setup
 
-On a connected box, expand Air Mouse and choose **Four-target setup on box**.
-The updated Linux or Windows agent opens a fixed local browser page. Opening is
-best-effort: the phone reports a request, not proof that the page is visible.
-Older agents leave Quick calibrate available and show an upgrade explanation.
+The Prefs screen requests the box's four-target page, then returns to Pad. Quick
+calibrate, turn Air on if needed, aim the cursor and use the fan's Click to confirm
+each target. This is an accuracy exercise with manual speed adjustment, not an
+automatic gyro gain fit or absolute pointing calibration. The page includes
+repeat, user-initiated fullscreen, Exit and Escape. Close the browser or return to
+Steam if it refuses script-driven close; turn Air off separately on the phone.
 
-Point the top of the phone toward the TV with the screen facing up (Remote grip), use **Quick calibrate** while still, and turn Air Mouse
-on. Aim the visible cursor at each of four targets and tap **Click / Confirm
-target** on the phone. The page measures normalized cursor distance from each
-target and suggests slower sensitivity when appropriate. This is an accuracy
-exercise with manual Speed adjustment, **not** an automatic four-point sensor
-fit or absolute pointing calibration. Relative gyro input cannot infer where
-on the TV the phone is physically aimed. No sensor measurements leave the phone.
+Authenticated, rate-limited POST /api/air-mouse/show opens a fixed loopback URL.
+GET /air-mouse requires a loopback peer and local Host. The standalone Linux and
+Windows agents embed identical static HTML with no credentials or network scripts.
+Opening is best-effort: a successful request is not proof the screen is visible.
+The owner did visually confirm the Steam Machine screen and complete four targets
+using the Razr. Later curve/UI changes require a fresh physical feel check.
 
-**Recenter** immediately stops motion and clears pending movement/filter state,
-allowing a comfortable regrip before turning Air Mouse on again. It does not warp
-the OS cursor. Quick calibration's sensor-bias correction is retained.
+## Larger cursor — experimental
 
-The page supports repeat, user-initiated fullscreen, Exit and Escape. If a browser
-refuses to close itself, use its close action or return to Steam. Exit does not
-remotely disable phone motion: turn Air Mouse off on the phone. No credential,
-remote script, telemetry or new control socket is present in the page.
+The phone maintains an authenticated POST /api/air-mouse/cursor lease while active
+and the preference is enabled. The Linux agent starts a stdlib-only X11 worker
+that snapshots the current named arrow, loads an enlarged image, and restores the
+snapshot on stop, agent pipe EOF or an 8-second lease expiry. Stale stop requests
+cannot retire a newer lease. It does not write desktop/theme settings. No cursor
+support is claimed for Windows, direct LG, Wayland-only or app-drawn cursors.
 
-Agent surface: authenticated, rate-limited `POST /api/air-mouse/show` opens only a
-fixed loopback URL; `GET /air-mouse` requires both loopback peer and local Host.
-No existing API fields/capabilities changed. The standalone agents embed identical
-HTML to preserve their single-file distribution. Tests cover both dispatchers,
-authentication, host/peer gates, launch rate limiting, and the target sequence.
-Physical phone/box aiming and browser focus remain acceptance gates.
+Gamescope cursor resources/names complicated the live test. Ordinary Steam UI
+restart passed; Gamescope refused manual service restart, so no service protection
+was bypassed. Current cached/unnamed cursors may remain unsupported until a fresh
+Game Mode session. A lease only reports success if the resulting image dimensions
+are enlarged. Failed enlargement leaves normal pointing available. Visible sizing,
+restoration across active cursor changes and fresh-session acceptance remain gates;
+do not describe this option as production ready.
 
+## Verification and remaining gates
 
-### Android sensor-rate correction
+TypeScript, web export, 884 app/hook tests, guide dispatcher/lease ownership tests,
+and target sequence tests pass locally. Figure-eight tests check rotated curve
+consistency; tremor/sweep tests check steady fine response and preserved coverage.
 
-Native Razr diagnostics exposed a 200ms gyro registration in expo-sensors 57.0.3
-when HIGH_SAMPLING_RATE_SENSORS is absent. That exceeds the integrator's 80ms
-stale-sample cutoff, so the switch could say ON while every sample was discarded.
-`app/scripts/patch-gyro-sampling.cjs` changes only the Android gyro fallback to
-SENSOR_DELAY_GAME (20ms), retaining the other sensor defaults and existing
-permissions. It is idempotent and fails on an unrecognized upstream source.
-It runs at postinstall alongside the reviewed TCP cleanup patch. Android native
-rebuild is required; a JS-only update cannot fix the sampling registration.
-The app/hook suite now has 880 passing tests; TypeScript passes. Physical cursor
-acceptance remains required after verifying the replacement's live sensor rate.
-
-
-Android autolinking is configured to build `expo-sensors` from source; otherwise
-Expo's precompiled AAR bypasses the Kotlin patch. The replacement native QA binary
-was installed in place and live Razr diagnostics confirmed a 20,000us gyro
-registration (previously 200,000us). This confirms sampling configuration, not
-physical cursor acceptance; that remains a separate check.
-
-
-Remote grip is now the default: phone screen faces up and the top points toward
-the TV. Horizontal motion uses gyro Z, pitch uses X. The optional Upright grip
-retains Y yaw. Changing grip stops motion and clears the old frame's calibration;
-Quick calibrate in the new position before pointing. This selects physical grip,
-not landscape screen layout. Physical feel/direction must be accepted on device.
-
-
-Remote grip sensitivity was increased after physical feedback that the initial
-mapping required excessive movement: Normal4x and Fast6x relative to the original
-1100px/radian gain; Slow restores the original1x for precision. Upright Normal
-remains1x. Per-frame60px clamp and all stop/stillness guards remain. Known-angle
-regression, TypeScript and all882app/hook tests passed. Physical comfort must
-still be accepted on the replacement wrist-gain preview.
-
-
-On-box preview deployment check: guide-only changes applied to the prior installed
-Linux agent to avoid unrelated branch features. Service restart, ping/TLS health,
-byte-identical settings, local page200, hostile-Host403, unauthenticated launch401
-and the real Android phone's authenticated launch request passed. TV visibility,
-four-target completion and sensitivity comfort remain physical acceptance gates;
-a successful launch request alone is not proof the page appeared.
-
-
-Physical acceptance update: the owner visually confirmed that the on-box guide
-appeared on the TV and completed all four targets using the Android preview.
-This passes screen visibility and target/Confirm flow. Sensitivity comfort and
-stillness/OFF behavior remain separate unconfirmed checks; this result does not
-certify automatic calibration, absolute aiming, iOS, or a production release.
-
-
-Fine-aim preview tuning: physical feedback still reported shaky aiming after
-four-target completion. The integrator now uses a continuous deadband rather
-than abruptly switching small motion on/off, stronger low-speed smoothing that
-opens up for intentional sweeps, and a smooth precision-gain curve near targets.
-It retains fractional motion, the wrist-sized sweep coverage, stillness pause,
-60px frame limit and stale-gap reset. Synthetic tremor and deliberate-sweep tests,
-TypeScript, and all 883 app/hook tests pass. Physical smoothness/accuracy remains
-an owner acceptance gate; synthetic results do not certify the actual feel.
+The native Razr direction mapping and four-target flow were owner-confirmed.
+The combined upward-menu/radial-tuning preview still needs physical acceptance:
+figure eights, precision, stillness/OFF, default-on and manual-off behavior,
+portrait lock, touchpad pausing, fan open/close, Prefs round trip and settings
+persistence. Cursor sizing/restoration is experimental as above. iOS and native
+LG motion acceptance remain untested. Exact-head CI and final artifacts must be
+reviewed before any separately authorized release. Pairing keys, private logs,
+network records and Claude handoffs stay local.
