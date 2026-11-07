@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
-import { AppState, Dimensions, PanResponder, Pressable, Text, View } from 'react-native';
+import { AppState, Dimensions, PanResponder, Platform, Pressable, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type AirMouseGrip, type MotionSample } from '@/lib/airMouse';
 import { useTheme } from '@/lib/theme';
@@ -54,7 +54,10 @@ export function AirMouseControls(props: Props) {
       const permission = await Gyroscope.requestPermissionsAsync();
       if (!current()) return;
       if (!permission.granted) throw new Error('Motion permission is off. Use the touchpad.');
-      Gyroscope.setUpdateInterval(20);
+      // Android's native gyro runs at 20ms (SENSOR_DELAY_GAME). Expo's event
+      // throttle uses a strict > comparison, so asking for 20ms can skip every
+      // other 20ms sample. A 10ms event gate preserves the hardware's 50Hz stream.
+      Gyroscope.setUpdateInterval(Platform.OS === 'android' ? 10 : 20);
       const samples: MotionSample[] = [];
       if (!calibrate) { setHolding(true); setToggleOn(latch); }
       setMessage(calibrate ? 'Keep the phone still for one second…' : latch ? 'Air Mouse on. Hold still to pause; move to resume.' : 'Pointing. Release to stop.');
