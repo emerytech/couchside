@@ -142,3 +142,27 @@ cursor verification was not claimed. This isolates a delivery/connection problem
 in the exercised path; it does not yet identify Wi-Fi, TCP buffering or the
 native bridge as the root cause. Physical sensor timing and touchpad feel remain
 separate acceptance checks. Raw logs, screen captures and host details stay local.
+
+## Android Wi-Fi stall isolation and mitigation
+
+A private QA route can send the same synthetic run over USB loopback forwards
+while retaining the saved TLS pin and token. This route changes only the
+in-memory endpoint, refuses unpaired connections and never edits saved boxes.
+The Mac-to-box network segment remains common to both tests.
+
+Same-binary comparison removed multi-second receiver gaps when the Razr Wi-Fi
+segment was bypassed: USB max gap about 150 ms, versus Wi-Fi about 2.10 seconds.
+The Android controller now requests the OS low-latency Wi-Fi lock while focused,
+connected and foregrounded. It does not configure Wi-Fi, scan or access network
+credentials. Older native builds safely skip the optional module. Native lifecycle
+checks confirmed acquisition on Pad, release in stacked Prefs, reacquisition on
+Back and release after Home.
+
+Three candidate Wi-Fi runs measured maximum receiver gaps of about 125, 149 and
+150 ms, with generated/received X/Y totals matching. The final installed source
+checkpoint is `1688f39`; its final run generated 999 vectors. No multi-second
+stall recurred in these runs. Smaller 100–150 ms pauses remain, including one
+107 ms phone-side generation gap in the final run; do not claim zero freezes or
+completed physical acceptance. Synthetic mode was stopped and the phone returned
+to normal input. USB reverse routes/tunnel and the bounded receiver recorder were
+removed/stopped. Raw measurements and private infrastructure details stay local.
