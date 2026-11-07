@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Stack, router } from 'expo-router';
-import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { Keyboard, Pressable, ScrollView, Switch, Text, View } from 'react-native';
 import { useTheme } from '@/lib/theme';
 import { setPref, usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { api } from '@/lib/api';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 export default function AirMouseSettings() {
+  useEffect(() => { Keyboard.dismiss(); }, []);
   const t = useTheme(), {settings} = useSettings();
   const enabled=usePref('airMouseEnabled'),large=usePref('airMouseLargeCursor'),speed=usePref('airMouseSpeed'),cursorSize=usePref('airMouseCursorSize'),shake=usePref('airMouseShake'),fling=usePref('cursorFling'),flingDistance=usePref('cursorFlingDistance');
   const [message,setMessage]=useState(''),[busy,setBusy]=useState(false);
