@@ -1,3 +1,4 @@
+import {stopCursorFlings} from '@/lib/cursorFling';
 // FIRST: chain the global JS error handler into the local error log before any
 // other module or screen can throw (lib/crashLog). Nothing is ever sent.
 import '@/lib/crashLog';
@@ -63,7 +64,7 @@ export default function RootLayout() {
   }, [t, scheme]);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1 }} onTouchStart={stopCursorFlings}>
     <SettingsProvider>
       <EntitlementProvider>
         <ThemeProvider value={navTheme}>

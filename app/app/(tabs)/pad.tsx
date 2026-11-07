@@ -364,6 +364,7 @@ function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
 const TP_HAPTIC_PX = 56;
 
 type TrackpadProps = {
+  flingAllowed?: boolean;
   onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
@@ -383,6 +384,7 @@ type TrackpadProps = {
  *  - double-tap + drag    -> hold left button + drag = marquee select
  */
 function Trackpad({
+  flingAllowed,
   onActiveChange,
   onMove,
   onLeftClick,
@@ -393,6 +395,7 @@ function Trackpad({
 }: TrackpadProps) {
   useEffect(() => () => onActiveChange?.(false), [onActiveChange]);
   const responder = useTrackpad({
+    flingAllowed,
     onActiveChange,
     onMove,
     onLeftClick,
@@ -2095,6 +2098,7 @@ function PadScreen() {
         <LandscapeLaptop
           client={client}
           tp={{
+            flingAllowed: status==='connected'&&!stale&&inputBlocked==null&&!controlReq&&!diagOpen&&!combosOpen,
             onMove: tpMove,
             onLeftClick: tpLeft,
             onRightClick: tpRight,
@@ -2478,6 +2482,7 @@ function PadScreen() {
           <View style={styles.tpWrap}>
             <View style={{flex:1}}>
             <Trackpad
+              flingAllowed={status==='connected'&&!stale&&inputBlocked==null&&!controlReq&&!diagOpen&&!combosOpen}
               onActiveChange={onAirTouch}
               onMove={tpMove}
               onLeftClick={tpLeft}

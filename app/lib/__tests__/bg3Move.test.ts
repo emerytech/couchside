@@ -46,3 +46,19 @@ test('native upward stick deflection sends W / upward cursor motion, never inver
  const v=stickValue(0,-100,4);d.activate();d.movement('camera');d.stick(v.x,v.y);assert.deepEqual(events,[['camera','w',1]]);
  d.movement('cursor');d.stick(v.x,v.y);d.tick();assert.deepEqual(events.at(-1),['move',0,-12]);d.dispose();
 });
+
+test('BG3 fling eligibility excludes taps, scrolls, drags and cancellation',async()=>{
+ const {createBg3Touchpad}=await import('../bg3Touchpad.ts');const releases:boolean[]=[];
+ const p=createBg3Touchpad({active(){},move(){},click(){},drag(){},scroll(){},fling:v=>releases.push(v)});
+ p.start(1,0,0,1000);p.move(1,80,0);p.end(1,1050);assert.equal(releases.at(-1),true);
+ p.start(1,0,0,2000);p.end(1,2050);assert.equal(releases.at(-1),false);
+ p.start(1,0,0,2200);p.move(1,80,0);p.end(1,2250);assert.equal(releases.at(-1),false);
+ p.start(1,0,0,3000);p.start(2,0,0,3001);p.move(1,0,80);p.end(1,3050);p.end(2,3051);assert.equal(releases.at(-1),false);
+ p.cancel();assert.equal(releases.at(-1),false);
+});
+
+test('BG3 cannot fling while another finger holds a separate control',async()=>{
+ const {createBg3Touchpad}=await import('../bg3Touchpad.ts');let eligible=true;
+ const p=createBg3Touchpad({active(){},move(){},click(){},drag(){},scroll(){},fling:v=>{eligible=v;}});
+ p.start(1,0,0,1000);p.move(1,80,0);p.end(1,1050,false);assert.equal(eligible,false);
+});

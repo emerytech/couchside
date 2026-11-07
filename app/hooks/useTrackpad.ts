@@ -20,6 +20,7 @@
 import { useRef } from 'react';
 import { PanResponder, PanResponderInstance } from 'react-native';
 
+import {useCursorFling} from './useCursorFling';
 import { usePref } from '@/lib/prefs';
 
 import {
@@ -84,6 +85,7 @@ export const tpTrace = {
 
 export type TrackpadCallbacks = {
   /** Responder ownership, including cancellation; not a bubbling touch event. */
+  flingAllowed?: boolean;
   onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
@@ -104,6 +106,9 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
     sens: usePref('trackpadSensitivity'),
     natural: usePref('naturalScroll'),
   };
+
+  const fling = useCursorFling((x,y)=>cb.current.onMove(x,y),v=>cb.current.onActiveChange?.(v),cbs.flingAllowed===true);
+  const flingRef=useRef(fling);flingRef.current=fling;
 
   const st = useRef({
     lastX: 0,
@@ -133,7 +138,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
-        cb.current.onActiveChange?.(true);
+        flingRef.current.begin();
         tpTrace.grants += 1;
         tpTrace.lastGrantAt = Date.now();
         const touches = evt.nativeEvent.touches.length || 1;
@@ -217,12 +222,13 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
         }
         tpTrace.onMoveCalls += 1;
         cb.current.onMove(rawDx * gain, rawDy * gain);
+        flingRef.current.sample(rawDx * gain,rawDy * gain);
       },
-      onPanResponderRelease: () => {
-        cb.current.onActiveChange?.(false);
+      onPanResponderRelease: (evt) => {
         tpTrace.releases += 1;
         const s = st.current;
         const now = Date.now();
+        flingRef.current.release(evt.nativeEvent.touches.length===0&&s.maxTouches===1&&s.moved&&!s.dragging&&!s.armed&&!s.scrolled);
         if (s.dragging) {
           // End the held-button marquee. Not a tap; don't chain another.
           s.dragging = false;
@@ -250,7 +256,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       // A drag can be torn away (app backgrounded, navigation) mid-marquee —
       // release the held button so it never sticks down on the box.
       onPanResponderTerminate: () => {
-        cb.current.onActiveChange?.(false);
+        flingRef.current.cancel();
         tpTrace.terminates += 1;
         const s = st.current;
         if (s.dragging) {

@@ -1018,6 +1018,7 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
   const bg3MovePreset = usePref('bg3MovePreset');
+  const cursorFling = usePref('cursorFling');
   const autoDropPad = usePref('autoDropPad');
   const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
@@ -2263,6 +2264,9 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
                   hapticSelection();
                 }}
               />
+              <TogglePref label="Touchpad cursor fling"
+                sub="A fast one-finger swipe glides after release. Touch again to stop. Off by default."
+                value={cursorFling} onValueChange={v=>{void setPref('cursorFling',v);hapticSelection();}} />
               <TogglePref
                 label="Natural scrolling"
                 sub="Two-finger scroll follows your fingers (macOS style)."
