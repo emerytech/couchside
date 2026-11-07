@@ -1160,6 +1160,7 @@ export class GamepadClient {
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
       this.lastInbound = Date.now();
+      wsTrace.lastInboundAt = this.lastInbound;
       let msg: {
         t?: string; dev?: string; msg?: string; text?: string;
         code?: string; name?: string; holder?: string; by?: string;
