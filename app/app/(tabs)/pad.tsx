@@ -898,7 +898,6 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 // ---------- Screen ----------
 
 export default function PadTab() {
-  const [airMousePause, setAirMousePause] = useState(0);
   // The orientation policy lives in PadScreen, not here: it depends on the
   // current pad MODE, and only the gamepad has a landscape layout. See the
   // note there.
@@ -933,6 +932,7 @@ const MODES: { key: PadMode; label: string }[] = [
 ];
 
 function PadScreen() {
+  const [airMousePause, setAirMousePause] = useState(0);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
