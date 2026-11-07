@@ -9,7 +9,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { useImmersive } from '@/lib/immersive';
-import { usePref } from '@/lib/prefs';
+import { setPref, usePref, usePrefsReady } from '@/lib/prefs';
+import { airMouseIntroState } from '@/lib/airMouseIntro';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
 import { TipToast } from '@/components/TipToast';
@@ -92,7 +93,16 @@ export default function TabLayout() {
   ];
   const onboardingDone = usePref('onboardingDone');
   const whatsNewOffered = usePref('whatsNewOffered');
-  const { tvs } = useTvs();
+  const { tvs, ready: tvsReady } = useTvs();
+  const prefsReady = usePrefsReady();
+  const airMouseIntroDone = usePref('airMouseIntroDone');
+  useEffect(() => {
+    // Retire update-only onboarding before a fresh install pairs its first device.
+    if (airMouseIntroState({ready:ready && tvsReady && prefsReady, done:airMouseIntroDone,
+      boxCount:boxes.length, tvCount:tvs.length}) === 'fresh') {
+      void setPref('airMouseIntroDone', true).catch(() => {});
+    }
+  }, [ready, tvsReady, prefsReady, airMouseIntroDone, boxes.length, tvs.length]);
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled && !activation);
   const thanksVisible = useTourThanks();

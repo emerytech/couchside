@@ -14,6 +14,7 @@ import { MotionActivityContext, useReducedMotion } from '@/lib/skin/motion';
 import { Animated, AppState, PanResponder, TextInput, StyleSheet, Text, View } from 'react-native';
 
 import { BoxSwitcher } from '@/components/BoxSwitcher';
+import { AirMouseUpdateCard } from '@/components/AirMouseUpdateCard';
 import { TrialNudge } from '@/components/TrialNudge';
 import { IS_BETA_BUILD } from '@/lib/entitlement';
 import { useImmersive } from '@/lib/immersive';
@@ -86,6 +87,8 @@ export function TabScreen({ children }: { children: React.ReactNode }) {
       {/* Near the end of the trial only, and never on Setup (which already
           carries the permanent unlock row). Self-hides otherwise. */}
       {!immersive && <TrialNudge />}
+      {/* Update onboarding stays out of every live controller/remote surface. */}
+      {!immersive && (current === 'index' || current === 'setup') && <AirMouseUpdateCard />}
       <Animated.View style={[styles.body, { opacity }]} {...pan.panHandlers}>{children}</Animated.View>
       {IS_BETA_BUILD && !immersive && (
         <View pointerEvents="none" style={styles.betaBadge}>

@@ -190,6 +190,8 @@ export type Prefs = {
    * control would then re-offer the popup instead of replaying the flow.
    */
   whatsNewOffered: boolean;
+  /** One-time update tip; also retired for fresh installs before pairing. */
+  airMouseIntroDone: boolean;
   /** Hide the NOTE segment from the Pad's mode bar. Off by default (visible):
    *  note mode is a phone-side scratchpad for jotting a clue mid-game. On for
    *  people who don't want the extra segment. `hide` polarity to match the
@@ -368,6 +370,7 @@ export const DEFAULTS: Prefs = {
   onboardingDone: false,
   newsletterInviteDismissed: false,
   whatsNewOffered: false,
+  airMouseIntroDone: false,
   hideNoteMode: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
@@ -495,6 +498,7 @@ function normalize(raw: unknown): Prefs {
     onboardingDone,
     newsletterInviteDismissed: bool(o.newsletterInviteDismissed, DEFAULTS.newsletterInviteDismissed),
     whatsNewOffered,
+    airMouseIntroDone: bool(o.airMouseIntroDone, DEFAULTS.airMouseIntroDone),
     hideNoteMode,
     appUpdateReminder,
     animationsEnabled: bool(o.animationsEnabled, DEFAULTS.animationsEnabled),
