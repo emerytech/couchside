@@ -1,8 +1,9 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type MotionSample } from '@/lib/airMouse';
+import { startSyntheticGyro } from '@/lib/airMouseSynthetic';
 import { getWsTrace } from '@/lib/gamepad';
 import { airMouseIntent } from '@/lib/airMouseIntent';
 import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestures';
@@ -27,6 +28,8 @@ type Props = {
 /** Opt-in, portrait hold-to-point. No subscription or permission prompt until a user action. */
 export function AirMouseControls(props: Props) {
   const reducedMotion = useReducedMotion();
+  const params=useLocalSearchParams<{syntheticGyro?:string}>();
+  const synthetic=process.env.EXPO_PUBLIC_AIR_SYNTHETIC==='1' && params.syntheticGyro==='1';
   const {width} = useWindowDimensions();
   const [menuOpen,setMenuOpen] = useState(false);
   const fan = useRef(new Animated.Value(0)).current;
@@ -100,9 +103,9 @@ export function AirMouseControls(props: Props) {
     try {
       const { Gyroscope } = await import('expo-sensors');
       if (!current()) return;
-      if (!await Gyroscope.isAvailableAsync()) throw new Error('Motion sensor unavailable. Use the touchpad.');
+      if (!synthetic && !await Gyroscope.isAvailableAsync()) throw new Error('Motion sensor unavailable. Use the touchpad.');
       if (!current()) return;
-      const permission = await Gyroscope.requestPermissionsAsync();
+      const permission = synthetic?{granted:true}:await Gyroscope.requestPermissionsAsync();
       if (!current()) return;
       if (!permission.granted) throw new Error('Motion permission is off. Use the touchpad.');
       // Android's native gyro runs at 20ms (SENSOR_DELAY_GAME). Expo's event
@@ -112,7 +115,7 @@ export function AirMouseControls(props: Props) {
       const samples: MotionSample[] = [];
       if (!calibrate) { setHolding(true); setToggleOn(latch); }
       setMessage(calibrate ? 'Keep the phone still for one second…' : '');
-      subscription.current = Gyroscope.addListener(rawSample => {
+      const receive=(rawSample:MotionSample) => {
         const sample = airMouseGripSample(rawSample, grip);
         const q=timing.current, now=Date.now();q.samples++;if(q.last){const gap=now-q.last;q.maxGap=Math.max(q.maxGap,gap);if(gap>80)q.gaps++;}q.last=now;
         if (!current()) {q.blocked++;return;}
@@ -129,11 +132,13 @@ export function AirMouseControls(props: Props) {
         if(busy.current)q.busy++;
         if (!delta || busy.current || Math.abs(delta.dx) + Math.abs(delta.dy) < .05) return;
         q.sent++;
+        if(synthetic)console.info('AirSynthetic',JSON.stringify({at:Date.now(),t:rawSample.timestamp,dx:delta.dx,dy:delta.dy}));
         busy.current = true;
         Promise.resolve().then(() => { if (motionCurrent()) return latest.current.onMove(delta.dx, delta.dy, motionCurrent); })
           .catch(() => { if (current()) { stop(); setMessage('Connection interrupted. Hold again to retry, or use the touchpad.'); } })
           .finally(() => { if(epoch.current===id)busy.current = false; });
-      });
+      };
+      subscription.current=synthetic?startSyntheticGyro(receive,()=>{if(current()){stop();setMessage('Synthetic movement-only run complete.');console.info('AirSynthetic complete');}}):Gyroscope.addListener(receive);
       if (calibrate) timer.current = setTimeout(() => {
         if (!current()) return;
         const ok = engine.current.calibrate(samples); stop();
@@ -144,10 +149,10 @@ export function AirMouseControls(props: Props) {
   useEffect(() => {
     if (!prefsReady || !focused.current || props.available === false || autoStarted.current) return;
     autoStarted.current = true;
-    const intended=airMouseIntent.resolve(props.targetKey,enabled);
+    const intended=synthetic || airMouseIntent.resolve(props.targetKey,enabled);
     setToggleOn(intended);
     if (intended) void begin(false, true);
-  }, [focusVersion, prefsReady, props.available, enabled]);
+  }, [focusVersion, prefsReady, props.available, enabled, synthetic]);
   useEffect(() => {
     if (!holding || !toggleOn || !largeCursor || !props.onCursor) return;
     const lease = Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -204,7 +209,7 @@ export function AirMouseControls(props: Props) {
       </Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={props.available === false} onPress={() => { const id=epoch.current; const current=()=>mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false; void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);}).catch(()=>{if(current())setMessage('Click failed. Check connection.');}); }}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={synthetic || props.available === false} onPress={() => { const id=epoch.current; const current=()=>mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false; void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);}).catch(()=>{if(current())setMessage('Click failed. Check connection.');}); }}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(false); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
