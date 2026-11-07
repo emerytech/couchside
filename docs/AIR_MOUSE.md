@@ -9,13 +9,13 @@ load. The preference can disable this default. The Mouse layout stays portrait
 while Air Mouse is enabled, preventing a switch to laptop mode while pointing.
 Background, blur, disconnect, rotation/reflow, target change and unmount stop
 motion and retire pending callbacks. Returning from OS background does not silently
-restart it. Touching the trackpad pauses Air Mouse so the two inputs do not fight.
+restart it. Touching the trackpad temporarily yields gyro movement without switching Air Mouse OFF. After release and a short settling interval, gyro aiming resumes; the final touchpad delta is preserved. The same controls are available in Swipe mode.
 
 A single bottom-right touchpad button opens an upward animated fan: On/Off,
 Quick calibrate, Recenter, Click/Confirm and Prefs. Closing the fan does not stop
 pointing or click the box. Reduced-motion preference disables the animation.
 Detailed controls live in Setup > Prefs > Pad Layout > Air Mouse, also reachable
-from the fan. Speed, start-on behavior and larger-cursor choice are persisted.
+from the fan. Speed, start-on behavior, larger-cursor size and shake-to-enlarge choice are persisted.
 
 There is one physical grip: screen facing up, phone top pointed toward the TV.
 Gyro Z controls horizontal movement and X controls vertical movement. An upright
@@ -35,6 +35,12 @@ Basic box movement uses the existing gamepad WebSocket, with unsent mouse frames
 cancelled on stop. Direct LG movement uses one cancellable webOS pointer socket;
 its existing button delivery remains unchanged. No Bluetooth is required. Direct
 LG retains a touchpad fallback. Browser mock connections cannot certify sensors.
+
+## TV navigation
+
+The TV remote uses a larger adaptive navigation circle, with compact Menu, Settings, Back and Home buttons in its corners. A quick center tap sends OK. Holding or dragging the center enables joystick control: native pointer movement for a paired LG TV, or bounded directional repeats for button-only TV backends. Release, blur and background retire movement and repeat timers.
+
+Remote > TV with the LG backend routes Air Mouse to the TV pointer socket rather than the box cursor. The authenticated pointer route bounds deltas, validates the returned socket host, and never retries uncertain input delivery. Mouse and Swipe continue to control the box. Active Air Mouse keeps these screens in portrait.
 
 ## Android native sampling
 
@@ -72,7 +78,7 @@ The phone maintains an authenticated POST /api/air-mouse/cursor lease while acti
 and the preference is enabled. The Linux agent starts a stdlib-only X11 worker
 that snapshots the current named arrow, loads an enlarged image, and restores the
 snapshot on stop, agent pipe EOF or an 8-second lease expiry. Stale stop requests
-cannot retire a newer lease. It does not write desktop/theme settings. No cursor
+cannot retire a newer lease. Size choices are 128, 192 and 256 pixels. Optional shake-to-enlarge requests a short 256-pixel locator lease; ordinary aiming resumes without replaying the shake motion. It does not write desktop/theme settings. No cursor
 support is claimed for Windows, direct LG, Wayland-only or app-drawn cursors.
 
 Gamescope cursor resources/names complicated the live test. Ordinary Steam UI
@@ -85,7 +91,7 @@ do not describe this option as production ready.
 
 ## Verification and remaining gates
 
-TypeScript, web export, 884 app/hook tests, guide dispatcher/lease ownership tests,
+TypeScript, web export, 889 app/hook tests, guide dispatcher/lease ownership tests,
 and target sequence tests pass locally. Figure-eight tests check rotated curve
 consistency; tremor/sweep tests check steady fine response and preserved coverage.
 
@@ -104,3 +110,5 @@ saved secure connection survived. Native UI showed Air Mouse ON on entry and
 still ON after opening the vertical fan, and the OS reported portrait orientation.
 Browser verified the expanded upward fan and Prefs page. USB disconnected before
 native Prefs round-trip verification. These are preview checks, not release approval.
+
+Latest source checkpoint: enlarged TV navigation and hold/drag joystick, Swipe support, touchpad/gyro handoff, runtime portrait lock, native LG routing and shake locator are integrated. Updated combined Android installation and physical acceptance are pending. Earlier owner confirmation covered the upward menu and motion feel, not these latest additions.
