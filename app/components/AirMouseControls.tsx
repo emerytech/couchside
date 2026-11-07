@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AppState, Dimensions, PanResponder, Pressable, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, type MotionSample } from '@/lib/airMouse';
@@ -29,13 +29,13 @@ export function AirMouseControls(props: Props) {
     if (mounted.current) setHolding(false);
   }, []);
   useFocusEffect(useCallback(() => { focused.current = true; return () => { focused.current = false; stop(); }; }, [stop]));
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true;
     const app = AppState.addEventListener('change', state => { if (state !== 'active') stop(); });
     const size = Dimensions.addEventListener('change', stop);
     return () => { mounted.current = false; stop(); app.remove(); size.remove(); };
   }, [stop]);
-  useEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
+  useLayoutEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
   const begin = async (calibrate = false) => {
     stop(); const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
