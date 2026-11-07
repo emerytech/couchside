@@ -115,3 +115,10 @@ byte-identical settings, local page200, hostile-Host403, unauthenticated launch4
 and the real Android phone's authenticated launch request passed. TV visibility,
 four-target completion and sensitivity comfort remain physical acceptance gates;
 a successful launch request alone is not proof the page appeared.
+
+
+Physical acceptance update: the owner visually confirmed that the on-box guide
+appeared on the TV and completed all four targets using the Android preview.
+This passes screen visibility and target/Confirm flow. Sensitivity comfort and
+stillness/OFF behavior remain separate unconfirmed checks; this result does not
+certify automatic calibration, absolute aiming, iOS, or a production release.
