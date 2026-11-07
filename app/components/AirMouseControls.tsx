@@ -64,7 +64,7 @@ export function AirMouseControls(props: Props) {
     latched.current = false; handoff.current.invalidate(); shake.current.reset();
     if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=null;
     if(mounted.current)setCursorBoost(false);
-    ++epoch.current; subscription.current?.remove(); subscription.current = null;
+    ++epoch.current; busy.current=false; subscription.current?.remove(); subscription.current = null;
     if (timer.current) clearTimeout(timer.current); timer.current = null;
     engine.current.reset(); latest.current.onStop?.();
     if (mounted.current) { setHolding(false); if(clearIntent)setToggleOn(false); setMessage(''); }
@@ -132,7 +132,7 @@ export function AirMouseControls(props: Props) {
         busy.current = true;
         Promise.resolve().then(() => { if (motionCurrent()) return latest.current.onMove(delta.dx, delta.dy, motionCurrent); })
           .catch(() => { if (current()) { stop(); setMessage('Connection interrupted. Hold again to retry, or use the touchpad.'); } })
-          .finally(() => { busy.current = false; });
+          .finally(() => { if(epoch.current===id)busy.current = false; });
       });
       if (calibrate) timer.current = setTimeout(() => {
         if (!current()) return;
@@ -180,7 +180,7 @@ export function AirMouseControls(props: Props) {
         if (!current()) return;
         if (scrolling) return latest.current.onScroll?.(Math.max(-5, Math.min(5, Math.round(-dy / 8))), current);
         return latest.current.onMove(Math.max(-120, Math.min(120, dx)), Math.max(-120, Math.min(120, dy)), current);
-      }).catch(() => { if (current()) { stop(); setMessage('Pointer disconnected. Try again.'); } }).finally(() => { busy.current = false; });
+      }).catch(() => { if (current()) { stop(); setMessage('Pointer disconnected. Try again.'); } }).finally(() => { if(epoch.current===id)busy.current = false; });
     },
     onPanResponderRelease: (_event, gesture) => {
       const tap = !touch.current.scrolled && Math.hypot(gesture.dx, gesture.dy) < 6 && Date.now() - touch.current.started < 300;
