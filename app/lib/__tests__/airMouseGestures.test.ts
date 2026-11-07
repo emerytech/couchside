@@ -17,6 +17,11 @@ test('shake needs rapid reversals, suppresses shake motion and rate-limits repea
  assert.equal(d.step(s(3.2,0)).suppress,false);
 });
 test('single fast sweep and slow direction changes do not count as a shake',()=>{
- const d=new AirMouseShakeDetector();for(let i=0;i<30;i++)assert.equal(d.step({timestamp:i*.05,x:0,y:0,z:3}).triggered,false);
- for(let i=0;i<10;i++)assert.equal(d.step({timestamp:3+i,x:0,y:0,z:i%2?3:-3}).triggered,false);
+ const d=new AirMouseShakeDetector();for(let i=0;i<30;i++)assert.deepEqual(d.step({timestamp:i*.05,x:0,y:0,z:3}),{triggered:false,suppress:false});
+ for(let i=0;i<10;i++)assert.deepEqual(d.step({timestamp:3+i,x:0,y:0,z:i%2?3:-3}),{triggered:false,suppress:false});
+});
+
+test('continuous fast figure eights remain live unless rapid shake reversals are confirmed',()=>{
+ const d=new AirMouseShakeDetector();
+ for(let i=0;i<1000;i++){const t=i*.02;assert.deepEqual(d.step({timestamp:t,x:3*Math.sin(t*2),z:3*Math.sin(t),y:0}),{triggered:false,suppress:false});}
 });
