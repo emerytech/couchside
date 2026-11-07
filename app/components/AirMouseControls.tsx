@@ -157,7 +157,12 @@ export function AirMouseControls(props: Props) {
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
-    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}><MaterialCommunityIcons name={menuOpen ? 'close' : 'cursor-default-outline'} size={24} color={toggleOn?t.blue:t.textDim} /></Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:14,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}>{menuOpen ? <MaterialCommunityIcons name="close" size={24} color={toggleOn?t.blue:t.textDim} /> : <View accessibilityElementsHidden style={{alignItems:'center'}}>
+      <View style={{width:30,height:25}}><MaterialCommunityIcons name="cursor-default" size={25} color={toggleOn?t.blue:t.text} style={{position:'absolute',left:0,top:1}} />
+        <View style={{position:'absolute',right:1,top:1,width:10,height:10,borderTopWidth:1.5,borderRightWidth:1.5,borderTopRightRadius:9,borderColor:toggleOn?t.blue:t.textDim}} />
+        <View style={{position:'absolute',right:5,top:5,width:5,height:5,borderTopWidth:1.5,borderRightWidth:1.5,borderTopRightRadius:5,borderColor:toggleOn?t.blue:t.textDim}} />
+      </View><Text style={{color:toggleOn?t.blue:t.textDim,fontSize:9,fontWeight:'700',lineHeight:10}}>AIR</Text>
+    </View>}</Pressable>
     </View>
     {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}><Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text></View>}
   </View>;
