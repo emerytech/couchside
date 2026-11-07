@@ -83,5 +83,12 @@ SENSOR_DELAY_GAME (20ms), retaining the other sensor defaults and existing
 permissions. It is idempotent and fails on an unrecognized upstream source.
 It runs at postinstall alongside the reviewed TCP cleanup patch. Android native
 rebuild is required; a JS-only update cannot fix the sampling registration.
-The app/hook suite now has 879 passing tests; TypeScript passes. Physical cursor
+The app/hook suite now has 880 passing tests; TypeScript passes. Physical cursor
 acceptance remains required after verifying the replacement's live sensor rate.
+
+
+Android autolinking is configured to build `expo-sensors` from source; otherwise
+Expo's precompiled AAR bypasses the Kotlin patch. The replacement native QA binary
+was installed in place and live Razr diagnostics confirmed a 20,000us gyro
+registration (previously 200,000us). This confirms sampling configuration, not
+physical cursor acceptance; that remains a separate check.
