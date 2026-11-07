@@ -63,7 +63,7 @@ class MockWebSocket {
 (globalThis as any).WebSocket = MockWebSocket;
 
 // Import AFTER the WebSocket global is installed.
-const { GamepadClient } = await import('../gamepad.ts');
+const { GamepadClient, getWsTrace } = await import('../gamepad.ts');
 
 const CONN = { host: 'box.local', port: 8787, token: 'tok', lastIp: '10.0.0.5' };
 
@@ -72,6 +72,17 @@ function freshClient() {
   NOW = 1_000_000;
   return new GamepadClient();
 }
+
+test('diagnostic freshness updates on pong between keepalive timer ticks', () => {
+  const c=freshClient();c.connect(CONN,{deviceName:'phone'});
+  const ws=MockWebSocket.instances[0];ws.openAndHello();
+  try {
+    NOW+=3000;assert.equal(getWsTrace().inboundAgeMs,3000);
+    ws.onmessage?.({data:JSON.stringify({t:'pong'})});
+    assert.equal(getWsTrace().inboundAgeMs,0);
+    NOW+=125;assert.equal(getWsTrace().inboundAgeMs,125);
+  } finally {c.close();}
+});
 
 test('connect() drives to connected via the hello handshake', () => {
   const c = freshClient();
