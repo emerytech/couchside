@@ -12,7 +12,7 @@ export default function AirMouseSettings() {
   const [message,setMessage]=useState(''),[busy,setBusy]=useState(false);
   useLockOrientation('portrait');
   const row={padding:16,borderRadius:14,borderWidth:1,borderColor:t.cardBorder,backgroundColor:t.card};
-  return <><Stack.Screen options={{title:'Air Mouse preferences'}}/><ScrollView style={{flex:1,backgroundColor:t.bg}} contentContainerStyle={{padding:18,gap:16,paddingBottom:50}}>
+  return <><Stack.Screen options={{title:'Air Mouse preferences',headerBackTitle:'Back'}}/><ScrollView style={{flex:1,backgroundColor:t.bg}} contentContainerStyle={{padding:18,gap:16,paddingBottom:50}}>
     <Text style={{color:t.text,fontSize:24,fontWeight:'700'}}>Air Mouse</Text>
     <Text style={{color:t.textDim}}>Point the top of your phone toward the TV with its screen facing up. Use Air Mouse for broad movement, then touch the pad for fine control. Gyro waits while you touch and resumes after release.</Text>
     <View style={[row,{flexDirection:'row',alignItems:'center',justifyContent:'space-between'}]}><View style={{flex:1}}><Text style={{color:t.text}}>Start on in Mouse mode</Text><Text style={{color:t.textDim,fontSize:12}}>Pauses in menus and stops in the background. Mouse mode stays upright.</Text></View><Switch accessibilityLabel="Start Air Mouse on" value={enabled} onValueChange={v=>{void setPref('airMouseEnabled',v);}}/></View>
