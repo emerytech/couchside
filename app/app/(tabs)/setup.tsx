@@ -2277,6 +2277,7 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
                 pad behaves lives in PAD BEHAVIOR, the next card. */}
             <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}
               anchorRef={padLayoutAnchor} onLayout={revealPadSettings}>
+              <NavPref label="Air Mouse" sub="Pointing speed, larger cursor and guided setup." value="Preferences" onPress={() => router.push('/air-mouse-settings')} />
               <NavPref label="Control presets" sub="Optional landscape PAD layouts for this box."
                 value={padPresetLabel(activeBox?.controlPreset)} onPress={() => setPadSheet('presets')} />
               <NavPref

@@ -18537,6 +18537,7 @@ class _WebOSSession:
     WEBOS_LOCK."""
 
     def __init__(self, host):
+        self.host = host
         self.ws = _WebOSWS("wss://%s:%d/" % (host, WEBOS_PORT))
         self._id = 0
         self.pointer = None
@@ -18580,6 +18581,18 @@ class _WebOSSession:
                     raise IOError(msg.get("error", "ssap error"))
                 return msg.get("payload", {})
         raise IOError("ssap request timed out: %s" % uri)
+
+    def pointer_frame(self, frame):
+        if self.pointer is None:
+            payload = self.request("ssap://com.webos.service.networkinput/getPointerInputSocket")
+            path = payload.get("socketPath", "")
+            parsed = urlparse(path)
+            if (parsed.scheme not in ("ws", "wss") or parsed.hostname != self.host
+                    or parsed.port not in (3000, 3001) or parsed.username or parsed.password
+                    or "\r" in path or "\n" in path):
+                raise IOError("invalid TV pointer socket")
+            self.pointer = _WebOSWS(path)
+        self.pointer.send_text(frame)
 
     def button(self, name):
         if self.pointer is None:
@@ -18683,6 +18696,34 @@ def real_webos(op):
     uri, payload = uri_payload
     return _webos_do(lambda s: (s.request(uri, payload), op)[1])
 
+
+def real_webos_pointer(req):
+    """Bounded native pointer commands; never retry uncertain movement/click."""
+    global WEBOS
+    if not isinstance(req, dict) or req.get("op") not in ("move", "click", "stop"):
+        raise ValueError("invalid TV pointer operation")
+    op = req["op"]
+    if op == "move":
+        dx, dy = req.get("dx"), req.get("dy")
+        if any(type(v) is not int or abs(v) > 120 for v in (dx, dy)):
+            raise ValueError("invalid TV pointer delta")
+        frame = "type:move\ndx:%d\ndy:%d\ndown:0\n\n" % (dx, dy)
+    else:
+        frame = "type:click\n\n"
+    start = time.monotonic()
+    if _WEBOS_MOCK: return _webos_result(start, True, "mock TV pointer " + op)
+    with WEBOS_LOCK:
+        try:
+            if op == "stop":
+                if WEBOS and WEBOS.pointer:
+                    WEBOS.pointer.close(); WEBOS.pointer = None
+            else:
+                _webos_conn().pointer_frame(frame)
+            return _webos_result(start, True, "ok")
+        except (IOError, OSError, ValueError, KeyError):
+            if WEBOS: WEBOS.close()
+            WEBOS = None
+            return _webos_result(start, False, "TV pointer disconnected. Try again.")
 
 def real_webos_key(k):
     """Send one factory-remote key (PANEL_KEYS vocabulary) as a pointer button."""
@@ -20549,6 +20590,7 @@ def tv_info():
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
         "key_backends": tv_key_backends_available(),
+        "pointer_backends": ["webos"] if webos_available() else [],
         # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
         # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
         # Roku don't (no single input-menu key), and the RS-232 panel uses its
@@ -27741,6 +27783,132 @@ _BOX_POP_AT = [0.0]                 # monotonic time of the last box-screen pop
 _BOX_POP_COOLDOWN = 5.0            # seconds; hard floor between pops
 
 
+
+
+# Temporary Xwayland cursor enlargement. The worker snapshots the original image,
+# restores it on pipe EOF/8s lease expiry, and survives long enough to restore if
+# this agent exits. No persistent settings or privileged process is involved.
+_AIR_CURSOR_WORKER = r'''import ctypes as c, json, select, sys, time
+class Image(c.Structure):
+ _fields_=[('x',c.c_short),('y',c.c_short),('width',c.c_ushort),('height',c.c_ushort),('xhot',c.c_ushort),('yhot',c.c_ushort),('serial',c.c_ulong),('pixels',c.POINTER(c.c_ulong)),('atom',c.c_ulong),('name',c.c_char_p)]
+class Cursor(c.Structure):
+ _fields_=[('version',c.c_uint),('size',c.c_uint),('width',c.c_uint),('height',c.c_uint),('xhot',c.c_uint),('yhot',c.c_uint),('delay',c.c_uint),('pixels',c.POINTER(c.c_uint))]
+desired=int(sys.argv[1]) if len(sys.argv)>1 else 192
+saved=[]; enlarged=False
+try:
+ x=c.CDLL('libX11.so.6');f=c.CDLL('libXfixes.so.3');u=c.CDLL('libXcursor.so.1')
+ x.XOpenDisplay.argtypes=[c.c_char_p];x.XOpenDisplay.restype=c.c_void_p
+ x.XFree.argtypes=[c.c_void_p];x.XSync.argtypes=[c.c_void_p,c.c_int];x.XFreeCursor.argtypes=[c.c_void_p,c.c_ulong];x.XCloseDisplay.argtypes=[c.c_void_p]
+ f.XFixesGetCursorImage.argtypes=[c.c_void_p];f.XFixesGetCursorImage.restype=c.POINTER(Image)
+ f.XFixesChangeCursorByName.argtypes=[c.c_void_p,c.c_ulong,c.c_char_p]
+ f.XFixesSetCursorName.argtypes=[c.c_void_p,c.c_ulong,c.c_char_p]
+ u.XcursorImageCreate.argtypes=[c.c_int,c.c_int];u.XcursorImageCreate.restype=c.POINTER(Cursor)
+ u.XcursorImageDestroy.argtypes=[c.POINTER(Cursor)]
+ u.XcursorImageLoadCursor.argtypes=[c.c_void_p,c.POINTER(Cursor)];u.XcursorImageLoadCursor.restype=c.c_ulong
+ def make(d,pixels,w,h,hx,hy,scale):
+  target=desired if scale>1 else max(w,h);nw=max(1,round(w*target/max(w,h)));nh=max(1,round(h*target/max(w,h)));p=u.XcursorImageCreate(nw,nh)
+  if not p: raise RuntimeError('cursor allocation')
+  q=p.contents;q.xhot=hx*nw//w;q.yhot=hy*nh//h
+  for y in range(nh):
+   for z in range(nw):q.pixels[y*nw+z]=pixels[(y*h//nh)*w+z*w//nw]
+  handle=u.XcursorImageLoadCursor(d,p);u.XcursorImageDestroy(p)
+  if not handle:raise RuntimeError('cursor loading')
+  return handle
+ for display in (b':0',b':1'):
+  d=x.XOpenDisplay(display)
+  if not d:continue
+  p=f.XFixesGetCursorImage(d)
+  if not p:x.XCloseDisplay(d);continue
+  q=p.contents;name=q.name;w=q.width;h=q.height;hx=q.xhot;hy=q.yhot
+  if not name or not (0<w<=128 and 0<h<=128):x.XFree(p);x.XCloseDisplay(d);continue
+  pixels=[q.pixels[i] for i in range(w*h)];x.XFree(p)
+  original=make(d,pixels,w,h,hx,hy,1);large=make(d,pixels,w,h,hx,hy,3)
+  f.XFixesSetCursorName(d,large,name)
+  saved.append((d,original,large,name));f.XFixesChangeCursorByName(d,large,name);x.XSync(d,0)
+  check=f.XFixesGetCursorImage(d)
+  if check:
+   enlarged = enlarged or (max(check.contents.width,check.contents.height) >= desired)
+   x.XFree(check)
+ print(json.dumps({'ok':enlarged}),flush=True)
+ deadline=time.monotonic()+8;maximum=time.monotonic()+600
+ while saved and time.monotonic()<min(deadline,maximum):
+  if select.select([sys.stdin],[],[],max(0,min(deadline,maximum)-time.monotonic()))[0]:
+   if not sys.stdin.readline():break
+   deadline=time.monotonic()+8
+except Exception:
+ print(json.dumps({'ok':False}),flush=True)
+finally:
+ for d,original,large,name in reversed(saved):
+  f.XFixesSetCursorName(d,original,name)
+  f.XFixesChangeCursorByName(d,original,name);x.XSync(d,0);x.XFreeCursor(d,large);x.XFreeCursor(d,original);x.XCloseDisplay(d)
+'''
+_AIR_CURSOR_LOCK = threading.Lock()
+_AIR_CURSOR_PROCESS = None
+_AIR_CURSOR_OWNER = None
+_AIR_CURSOR_SIZE = None
+
+def air_cursor_lease(enabled, lease, size=192):
+    global _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER, _AIR_CURSOR_SIZE
+    import select
+    if type(enabled) is not bool or not isinstance(lease, str) or not re.fullmatch(r"[a-zA-Z0-9]{8,64}", lease):
+        raise ValueError("invalid cursor lease")
+    if type(size) is not int or size not in (128,192,256):
+        raise ValueError("invalid cursor size")
+    with _AIR_CURSOR_LOCK:
+        proc = _AIR_CURSOR_PROCESS
+        if not enabled:
+            if proc and _AIR_CURSOR_OWNER == lease:
+                try:
+                    proc.stdin.close()
+                    proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    return {"ok": False}
+                _AIR_CURSOR_PROCESS = None
+                _AIR_CURSOR_OWNER = None
+                _AIR_CURSOR_SIZE = None
+            return {"ok": True}
+        if proc and proc.poll() is None and _AIR_CURSOR_OWNER == lease and _AIR_CURSOR_SIZE == size:
+            try:
+                proc.stdin.write("renew\n"); proc.stdin.flush()
+                return {"ok": True}
+            except OSError:
+                pass
+        if proc:
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                return {"ok": False}
+        proc = subprocess.Popen([sys.executable, "-c", _AIR_CURSOR_WORKER, str(size)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER, _AIR_CURSOR_SIZE = proc, lease, size
+        try:
+            ready = select.select([proc.stdout], [], [], 3)[0]
+            result = json.loads(proc.stdout.readline()) if ready else {"ok": False}
+        except (OSError, ValueError):
+            result = {"ok": False}
+        if result.get("ok") is not True:
+            try: proc.stdin.close()
+            except OSError: pass
+            return {"ok": False}
+        return {"ok": True}
+
+def render_air_mouse_page():
+    """Static local target exercise. No credentials, remote scripts or control API."""
+    return r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Couchside · Air Mouse setup</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1120;color:#e8eef9;font:22px system-ui}header{position:absolute;top:3vh;left:5vw;right:5vw;text-align:center}h1{font-size:32px;margin:0 0 12px}p{color:#a5b3ca;margin:8px}button{background:#152034;color:#e8eef9;border:1px solid #33445f;border-radius:14px;padding:12px 22px;font:inherit;cursor:pointer}#target{position:absolute;width:88px;height:88px;border-radius:50%;border:3px solid #25cdb8;background:#153a40;transform:translate(-50%,-50%);pointer-events:none;display:grid;place-items:center;font-size:38px;box-shadow:0 0 0 18px #25cdb815}footer{position:absolute;bottom:3vh;width:100%;text-align:center}#result{color:#25cdb8}#close{position:absolute;right:20px;top:16px}</style>
+<header><h1>Air Mouse · four-target setup</h1><p id="instruction">On your phone, use Quick calibrate while holding still. Turn Air Mouse on.</p><p>Move the cursor onto each target, then tap Confirm target on your phone.</p><p id="result" aria-live="polite">Target 1 of 4</p></header><button id="close">Exit</button><div id="target" aria-hidden="true">+</div>
+<footer><p>Point the phone toward the TV, screen facing up (Remote grip). Use Speed to tune movement.</p><p>Hold still to pause. Recenter stops motion so you can comfortably regrip; it does not move the cursor.</p><button id="restart">Start again</button> <button id="full">Full screen</button></footer>
+<script>
+'use strict';
+const spots=[[.25,.36],[.75,.36],[.75,.67],[.25,.67]], target=document.querySelector('#target'), result=document.querySelector('#result');let step=0,errors=[];
+function place(){target.style.left=spots[Math.min(step,3)][0]*100+'vw';target.style.top=spots[Math.min(step,3)][1]*100+'vh'}
+function reset(){step=0;errors=[];target.hidden=false;target.style.display='grid';result.textContent='Target 1 of 4';place()}
+document.addEventListener('click',e=>{if(e.target.closest('button')||step>=4)return;const p=spots[step];errors.push(Math.hypot(e.clientX-innerWidth*p[0],e.clientY-innerHeight*p[1])/Math.min(innerWidth,innerHeight));step++;if(step===4){target.style.display='none';const mean=errors.reduce((a,b)=>a+b,0)/4;result.textContent=mean<.05?'Four targets complete · accuracy looks good.':'Four targets complete · try a slower Speed and repeat for more precision.';document.querySelector('#instruction').textContent='Now hold still and check for drift. If it drifts, turn Air Mouse off and Quick calibrate again.'}else{result.textContent='Target '+(step+1)+' of 4';place()}});
+document.querySelector('#restart').onclick=reset;document.querySelector('#full').onclick=()=>{if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(()=>{})};document.querySelector('#close').onclick=()=>{window.close();document.querySelector('#instruction').textContent='Test finished. Turn Air Mouse off on your phone, then close this browser or return to Steam.';target.style.display='none';step=4};document.addEventListener('keydown',e=>{if(e.key==='Escape'){target.style.display='none';step=4;result.textContent='Test stopped. Turn Air Mouse off on your phone.'}});reset();
+</script></html>'''
+
 def pair_show_on_box(port):
     """Open the loopback /pair page on the BOX'S own screen so the PIN is
     visible there.
@@ -28489,6 +28657,13 @@ class Handler(BaseHTTPRequestHandler):
                 # self-auths (?token=), then relays opaque SDP/ICE to the portal
                 # helper's webrtcbin. Absent module / no H.264 -> degrades closed.
                 self._handle_webrtc_ws(parsed, started)
+                return
+
+            if path == "/air-mouse":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_air_mouse_page(), started)
                 return
 
             if path == "/pair":
@@ -29547,6 +29722,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, {"error": "unauthorized"}, started)
                 return
 
+            if path == "/api/air-mouse/cursor":
+                self.close_connection = True
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if self.headers.get("Transfer-Encoding") or not 0 < length <= 256:
+                        raise ValueError("invalid body length")
+                    req = json.loads(self.rfile.read(length))
+                    if not isinstance(req, dict): raise ValueError("invalid body")
+                    result = air_cursor_lease(req.get("enabled"), req.get("lease"), req.get("size",192))
+                except (ValueError, TypeError):
+                    self._send(400, {"error": "invalid cursor request"}, started)
+                    return
+                self._send(200, result, started)
+                return
+
+            if path == "/api/air-mouse/show":
+                # Fixed local URL only; authenticated callers cannot supply a URL.
+                # Close because this action does not consume a request body.
+                self.close_connection = True
+                with _BOX_POP_LOCK:
+                    now = time.monotonic()
+                    if now - _BOX_POP_AT[0] < _BOX_POP_COOLDOWN:
+                        self._send(429, {"error": "Please wait before opening setup again"}, started)
+                        return
+                    _BOX_POP_AT[0] = now
+                try:
+                    pair_show_on_box_url("http://localhost:%d/air-mouse" % self.port)
+                except Exception:
+                    self._send(503, {"error": "Could not open the on-box browser"}, started)
+                    return
+                self._send(200, {"ok": True, "requested": True}, started)
+                return
+
+
             # POST /api/ticket[?once=1] — mint a short-lived ticket the app uses in
             # ?ticket= on un-pinnable <Image> (cover art) / upload requests, so the
             # real token never rides those cleartext URLs on a TLS box. Reachable
@@ -30448,6 +30657,19 @@ class Handler(BaseHTTPRequestHandler):
             # POST /api/tv/volume: absolute volume {"level": 0-100, "target":
             # "box"|"tv"}. Box converges via media-key steps (Game Mode OSD),
             # TV via the RS-232 closed loop. Checked before /api/tv/<op>.
+            if path == "/api/tv/webos/pointer":
+                if not webos_available():
+                    self._send(404, {"error": "LG TV not configured"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    result = real_webos_pointer(req)
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "invalid TV pointer request"}, started)
+                    return
+                self._send(200, result, started)
+                return
+
             if path == "/api/tv/volume":
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}

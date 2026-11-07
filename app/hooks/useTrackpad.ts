@@ -83,6 +83,8 @@ export const tpTrace = {
 };
 
 export type TrackpadCallbacks = {
+  /** Responder ownership, including cancellation; not a bubbling touch event. */
+  onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
   onRightClick: () => void;
@@ -131,6 +133,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
+        cb.current.onActiveChange?.(true);
         tpTrace.grants += 1;
         tpTrace.lastGrantAt = Date.now();
         const touches = evt.nativeEvent.touches.length || 1;
@@ -216,6 +219,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
         cb.current.onMove(rawDx * gain, rawDy * gain);
       },
       onPanResponderRelease: () => {
+        cb.current.onActiveChange?.(false);
         tpTrace.releases += 1;
         const s = st.current;
         const now = Date.now();
@@ -246,6 +250,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       // A drag can be torn away (app backgrounded, navigation) mid-marquee —
       // release the held button so it never sticks down on the box.
       onPanResponderTerminate: () => {
+        cb.current.onActiveChange?.(false);
         tpTrace.terminates += 1;
         const s = st.current;
         if (s.dragging) {

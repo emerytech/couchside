@@ -230,3 +230,20 @@ export async function launchApp(tv: DirectTv, id: string, rt: AtvRuntime): Promi
   }
   return { ok: false, error: 'this TV cannot launch apps from the app' };
 }
+
+/** Air Mouse never retries an uncertain movement or click. */
+export async function sendPointer(tv: DirectTv, rt: AtvRuntime, move: { dx: number; dy: number } | null, current: () => boolean): Promise<void> {
+  if (tv.brand !== 'webos') throw new Error('Pointer unavailable');
+  const session = webosSessionFor(tv, rt);
+  if (!session) throw new Error('Pair this LG first');
+  const result = move ? await session.movePointer(move.dx, move.dy, current) : await session.clickPointer(current);
+  if (!result.ok) throw new Error(result.error || 'Pointer disconnected');
+}
+export function stopPointer(tv: DirectTv): void { webosSessions.get(tv.host)?.stopPointer(); }
+
+export async function scrollPointer(tv: DirectTv, rt: AtvRuntime, notches: number, current: () => boolean): Promise<void> {
+  const s = tv.brand === 'webos' ? webosSessionFor(tv, rt) : null;
+  if (!s) throw new Error('Pointer unavailable');
+  const r = await s.scrollPointer(notches, current);
+  if (!r.ok) throw new Error(r.error || 'Pointer disconnected');
+}

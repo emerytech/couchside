@@ -1,3 +1,6 @@
+import { useInputLatency } from '@/hooks/useInputLatency';
+import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
+import { AirMouseControls } from '@/components/AirMouseControls';
 import { portraitPadMetrics } from '@/lib/portraitPad';
 import { CustomPresetPad } from '@/components/LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
@@ -24,7 +27,7 @@ import { getPref, setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -359,6 +362,7 @@ function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
 const TP_HAPTIC_PX = 56;
 
 type TrackpadProps = {
+  onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
   onRightClick: () => void;
@@ -377,6 +381,7 @@ type TrackpadProps = {
  *  - double-tap + drag    -> hold left button + drag = marquee select
  */
 function Trackpad({
+  onActiveChange,
   onMove,
   onLeftClick,
   onRightClick,
@@ -384,7 +389,9 @@ function Trackpad({
   onDragStart,
   onDragEnd,
 }: TrackpadProps) {
+  useEffect(() => () => onActiveChange?.(false), [onActiveChange]);
   const responder = useTrackpad({
+    onActiveChange,
     onMove,
     onLeftClick,
     onRightClick,
@@ -931,6 +938,10 @@ const MODES: { key: PadMode; label: string }[] = [
 ];
 
 function PadScreen() {
+  const [airMouseTouch, setAirMouseTouch] = useState(false);
+  const airMouseTouchRef=useRef(false);
+  const onAirTouch=useCallback((active:boolean)=>{airMouseTouchRef.current=active;setAirMouseTouch(active);},[]);
+  const [airMouseActive,setAirMouseActive]=useState(false);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
@@ -957,7 +968,11 @@ function PadScreen() {
   // — turn into a trackpad + mini-QWERTY when the phone is held sideways, instead
   // of force-locking to portrait. See the laptop derivation and early return below.
   const landscapeLaptopPref = usePref('landscapeLaptop');
-  const { settings, ready, update } = useSettings();
+  const airMouseEnabled = usePref('airMouseEnabled');
+  const { settings: savedSettings, ready, update } = useSettings();
+  const qaParams=useLocalSearchParams<{syntheticGyro?:string;syntheticUsb?:string}>();
+  const usbQa=process.env.EXPO_PUBLIC_AIR_SYNTHETIC==='1' && qaParams.syntheticGyro==='1' && qaParams.syntheticUsb==='1';
+  const settings=useMemo(()=>syntheticUsbRoute(savedSettings,usbQa),[savedSettings,usbQa]);
   const { activeBox } = useBoxes();
   const preset = normalizePadPreset(activeBox?.controlPreset);
   const prefsReady = usePrefsReady();
@@ -1032,7 +1047,7 @@ function PadScreen() {
   // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
   // Declared before useLockOrientation because the policy below reads it.
   const laptopEligible =
-    landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+    !((mode === 'trackpad' || mode === 'swipe') && (airMouseEnabled || airMouseActive)) && !(mode === 'remote' && airMouseActive) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
   const laptop = laptopEligible && landscape && !exited;
 
   useLockOrientation(
@@ -1130,6 +1145,7 @@ function PadScreen() {
   // polled from the client, it turns the pill amber + tap-to-retry live BEFORE
   // the pong watchdog acts, instead of showing a green pill over a dead pipe.
   const [stale, setStale] = useState(false);
+  useInputLatency(padFocused && status === 'connected');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
   // desktop / an elevated window has focus); the string is the hint to show.
@@ -1334,6 +1350,7 @@ function PadScreen() {
       evaluateWakeLock();
     };
     const disconnect = () => {
+      onAirTouch(false);
       focusedRef.current = false;
       // Chrome comes back the moment the Pad loses focus — see immersiveLive.
       setPadFocused(false);
@@ -2361,7 +2378,7 @@ function PadScreen() {
         </>
       ) : mode === 'remote' ? (
         <>
-          <RemoteView client={client} settings={settings} />
+          <RemoteView client={client} settings={settings} onAirMouseActive={setAirMouseActive} />
           {keyboardBar}
         </>
       ) : mode === 'swipe' || tvNav ? (
@@ -2371,11 +2388,19 @@ function PadScreen() {
               and a tap clicks; otherwise a step is an arrow key and a tap is
               select. */}
           <View style={styles.tpWrap}>
+            <View style={{flex:1}} onTouchStart={() => onAirTouch(true)} onTouchEnd={e => onAirTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => onAirTouch(false)}>
             <SwipeSurface
               onStep={tvNav ? tvStep : dpadStep}
               onStepEnd={tvNav ? NOOP : dpadRelease}
               onSelect={tvNav ? tvClick : selectTap}
             />
+            </View>
+            <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
+              available={status === 'connected' && !stale && inputBlocked == null}
+              onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
+              onStop={()=>client.cancelMouseMove()}
+              onMove={(dx,dy,current)=>{if(current() && !airMouseTouchRef.current)client.sendMouseMove(dx,dy);}}
+              onClick={current=>{if(current())tpLeft();}} />
             {tvToggleChip}
             {padToggleChip}
           </View>
@@ -2429,7 +2454,9 @@ function PadScreen() {
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
           <View style={styles.tpWrap}>
+            <View style={{flex:1}}>
             <Trackpad
+              onActiveChange={onAirTouch}
               onMove={tpMove}
               onLeftClick={tpLeft}
               onRightClick={tpRight}
@@ -2437,6 +2464,13 @@ function PadScreen() {
               onDragStart={tpDragStart}
               onDragEnd={tpDragEnd}
             />
+            </View>
+          <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
+            available={status === 'connected' && !stale && inputBlocked == null}
+            onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
+            onStop={() => client.cancelMouseMove()}
+            onMove={(dx, dy, current) => { if (current() && !airMouseTouchRef.current) client.sendMouseMove(dx, dy); }}
+            onClick={current => { if (current()) tpLeft(); }} />
             {padToggleChip}
           </View>
           {!largePad && (showMouseRow || showSteamRow) && (

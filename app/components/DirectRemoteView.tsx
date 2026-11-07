@@ -1,5 +1,6 @@
+import {remoteCircleDiameter} from '@/lib/remoteNavigation';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { hapticLight } from '@/lib/haptics';
@@ -14,6 +15,9 @@ import {
 import type { RokuKey, RokuOp } from '@/lib/tvdirect/roku';
 import {
   sendKey,
+  sendPointer,
+  scrollPointer,
+  stopPointer,
   sendOp,
   sendText as sendTextTo,
   supportsApps,
@@ -24,6 +28,7 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 import { CornerBtn, Dpad, MidBtn, Rocker } from './RemoteView';
 import { TvAppsGrid } from './TvAppsGrid';
+import { AirMouseControls } from './AirMouseControls';
 
 /** Shown once per app session: a Roku that 403s control needs its "Control by
  *  mobile apps" network access made permissive. Same rule and copy as
@@ -48,7 +53,9 @@ let rokuHintShown = false;
 export function DirectRemoteView({ tv }: { tv: DirectTv }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [circleSize, setCircleSize] = useState(200);
+  const [circleSize, setCircleSize] = useState(240);
+  const [joyActive,setJoyActive]=useState(false);
+  const joyBusy=useRef(false),joyEpoch=useRef(0);
   const [muted, setMuted] = useState(false);
   const [textOpen, setTextOpen] = useState(false);
   const [textVal, setTextVal] = useState('');
@@ -56,7 +63,7 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
   const onCircleLayout = useCallback(
     (e: { nativeEvent: { layout: { width: number; height: number } } }) => {
       const { width, height } = e.nativeEvent.layout;
-      const s = Math.max(132, Math.min(240, Math.floor(Math.min(width, height)) - 4));
+      const s = remoteCircleDiameter(width,height);
       setCircleSize((prev) => (Math.abs(prev - s) > 1 ? s : prev));
     },
     [],
@@ -137,6 +144,11 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
         <TvAppsGrid tv={tv} runtime={runtime} />
       ) : (
         <View style={styles.remoteBody}>
+      {tv.brand === 'webos' && <AirMouseControls key={tv.id + tv.host} targetKey={tv.id + tv.host} touchpadActive={joyActive} touchpad
+        onScroll={(n, current) => scrollPointer(tv, runtime, n, current)}
+        onMove={(dx, dy, current) => sendPointer(tv, runtime, { dx, dy }, current)}
+        onClick={current => sendPointer(tv, runtime, null, current)} onStop={() => stopPointer(tv)} />}
+
       {/* Power + keyboard row. Roku answers ECP in standby, so power ON is a
           real keypress here rather than the Wake-on-LAN dance the box path
           needs for webOS/Samsung. */}
@@ -185,12 +197,10 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
             onLeft={() => key('left')}
             onRight={() => key('right')}
             onOk={() => key('ok')}
-            // No pointer on a Roku: the hold-to-point joystick would arm a
-            // gesture that can send nothing. Same choice RemoteView makes when
-            // its target is a serial TV.
-            joyEnabled={false}
-            onJoyMove={() => {}}
-            onJoyActive={() => {}}
+            // LG exposes a native pointer; other direct TVs retain directional taps.
+            joyEnabled={tv.brand==='webos'}
+            onJoyMove={(dx,dy)=>{if(joyBusy.current)return;const id=joyEpoch.current;joyBusy.current=true;void sendPointer(tv,runtime,{dx,dy},()=>id===joyEpoch.current).catch(()=>{}).finally(()=>{joyBusy.current=false;});}}
+            onJoyActive={active=>{setJoyActive(active);if(!active)joyEpoch.current++;}}
           />
         </View>
 

@@ -5367,6 +5367,22 @@ _BOX_POP_AT = [0.0]                 # monotonic time of the last box-screen pop
 _BOX_POP_COOLDOWN = 5.0             # hard floor between pops
 
 
+
+def render_air_mouse_page():
+    """Static local target exercise. No credentials, remote scripts or control API."""
+    return r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Couchside · Air Mouse setup</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1120;color:#e8eef9;font:22px system-ui}header{position:absolute;top:3vh;left:5vw;right:5vw;text-align:center}h1{font-size:32px;margin:0 0 12px}p{color:#a5b3ca;margin:8px}button{background:#152034;color:#e8eef9;border:1px solid #33445f;border-radius:14px;padding:12px 22px;font:inherit;cursor:pointer}#target{position:absolute;width:88px;height:88px;border-radius:50%;border:3px solid #25cdb8;background:#153a40;transform:translate(-50%,-50%);pointer-events:none;display:grid;place-items:center;font-size:38px;box-shadow:0 0 0 18px #25cdb815}footer{position:absolute;bottom:3vh;width:100%;text-align:center}#result{color:#25cdb8}#close{position:absolute;right:20px;top:16px}</style>
+<header><h1>Air Mouse · four-target setup</h1><p id="instruction">On your phone, use Quick calibrate while holding still. Turn Air Mouse on.</p><p>Move the cursor onto each target, then tap Confirm target on your phone.</p><p id="result" aria-live="polite">Target 1 of 4</p></header><button id="close">Exit</button><div id="target" aria-hidden="true">+</div>
+<footer><p>Point the phone toward the TV, screen facing up (Remote grip). Use Speed to tune movement.</p><p>Hold still to pause. Recenter stops motion so you can comfortably regrip; it does not move the cursor.</p><button id="restart">Start again</button> <button id="full">Full screen</button></footer>
+<script>
+'use strict';
+const spots=[[.25,.36],[.75,.36],[.75,.67],[.25,.67]], target=document.querySelector('#target'), result=document.querySelector('#result');let step=0,errors=[];
+function place(){target.style.left=spots[Math.min(step,3)][0]*100+'vw';target.style.top=spots[Math.min(step,3)][1]*100+'vh'}
+function reset(){step=0;errors=[];target.hidden=false;target.style.display='grid';result.textContent='Target 1 of 4';place()}
+document.addEventListener('click',e=>{if(e.target.closest('button')||step>=4)return;const p=spots[step];errors.push(Math.hypot(e.clientX-innerWidth*p[0],e.clientY-innerHeight*p[1])/Math.min(innerWidth,innerHeight));step++;if(step===4){target.style.display='none';const mean=errors.reduce((a,b)=>a+b,0)/4;result.textContent=mean<.05?'Four targets complete · accuracy looks good.':'Four targets complete · try a slower Speed and repeat for more precision.';document.querySelector('#instruction').textContent='Now hold still and check for drift. If it drifts, turn Air Mouse off and Quick calibrate again.'}else{result.textContent='Target '+(step+1)+' of 4';place()}});
+document.querySelector('#restart').onclick=reset;document.querySelector('#full').onclick=()=>{if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(()=>{})};document.querySelector('#close').onclick=()=>{window.close();document.querySelector('#instruction').textContent='Test finished. Turn Air Mouse off on your phone, then close this browser or return to Steam.';target.style.display='none';step=4};document.addEventListener('keydown',e=>{if(e.key==='Escape'){target.style.display='none';step=4;result.textContent='Test stopped. Turn Air Mouse off on your phone.'}});reset();
+</script></html>'''
+
 def pair_show_on_box(port):
     """Open the loopback /pair page on THIS machine's screen so the PIN is
     visible there. Best-effort and detached: pairing must never fail because a
@@ -6045,6 +6061,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_gamepad_ws(parsed, started)
                 return
 
+            if path == "/air-mouse":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_air_mouse_page(), started)
+                return
+
             if path == "/pair":
                 # LOCALHOST-ONLY: two gates, both required (see the Linux
                 # agent's security notes).
@@ -6306,6 +6329,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            if path == "/api/air-mouse/show":
+                # Fixed local URL only; authenticated callers cannot supply a URL.
+                # Close because this action does not consume a request body.
+                self.close_connection = True
+                with _BOX_POP_LOCK:
+                    now = time.monotonic()
+                    if now - _BOX_POP_AT[0] < _BOX_POP_COOLDOWN:
+                        self._send(429, {"error": "Please wait before opening setup again"}, started)
+                        return
+                    _BOX_POP_AT[0] = now
+                try:
+                    os.startfile("http://localhost:%d/air-mouse" % self.port)
+                except Exception:
+                    self._send(503, {"error": "Could not open the on-box browser"}, started)
+                    return
+                self._send(200, {"ok": True, "requested": True}, started)
+                return
+
 
             if path in ('/api/upload', '/api/ticket'):
                 if not secure:

@@ -1755,6 +1755,7 @@ export type GuideHold = {
 
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
+  pointer_backends?: TvBackend[];
   available: boolean;
   /** The active backend: "panel" (RS-232), "cec" (HDMI-CEC), or "soft" (box audio). */
   backend: TvBackend;
@@ -2670,6 +2671,17 @@ export type PortActionResult = {
 };
 
 export const api = {
+  async tvPointer(settings: ConnSettings, op: 'move'|'click'|'stop', dx?: number, dy?: number): Promise<void> {
+    const r = await request<{ok:boolean}>(settings, '/api/tv/webos/pointer', {method:'POST',body:{op,dx:dx===undefined?undefined:Math.round(dx),dy:dy===undefined?undefined:Math.round(dy)}});
+    if(!r.ok) throw new Error('TV pointer disconnected');
+  },
+  async airMouseCursor(settings: ConnSettings, enabled: boolean, lease: string, size = 192): Promise<void> {
+    const r = await request<{ok: boolean}>(settings, '/api/air-mouse/cursor', { method: 'POST', body: { enabled, lease, size } });
+    if (!r.ok) throw new Error('Large cursor unavailable');
+  },
+  airMouseShow(settings: ConnSettings): Promise<{ ok: boolean; requested: boolean }> {
+    return request(settings, '/api/air-mouse/show', { method: 'POST' });
+  },
   /** Stream a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54). */
   uploadFile,
   /** Unauthenticated reachability probe. */
