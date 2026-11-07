@@ -1035,7 +1035,7 @@ function PadScreen() {
   // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
   // Declared before useLockOrientation because the policy below reads it.
   const laptopEligible =
-    !(mode === 'trackpad' && airMouseEnabled) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+    !((mode === 'trackpad' || mode === 'swipe') && airMouseEnabled) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
   const laptop = laptopEligible && landscape && !exited;
 
   useLockOrientation(
@@ -2375,11 +2375,19 @@ function PadScreen() {
               and a tap clicks; otherwise a step is an arrow key and a tap is
               select. */}
           <View style={styles.tpWrap}>
+            <View style={{flex:1}} onTouchStart={() => setAirMouseTouch(true)} onTouchEnd={e => setAirMouseTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => setAirMouseTouch(false)}>
             <SwipeSurface
               onStep={tvNav ? tvStep : dpadStep}
               onStepEnd={tvNav ? NOOP : dpadRelease}
               onSelect={tvNav ? tvClick : selectTap}
             />
+            </View>
+            <AirMouseControls floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
+              available={status === 'connected' && !stale && inputBlocked == null}
+              onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
+              onStop={()=>client.cancelMouseMove()}
+              onMove={(dx,dy,current)=>{if(current())client.sendMouseMove(dx,dy);}}
+              onClick={current=>{if(current())tpLeft();}} />
             {tvToggleChip}
             {padToggleChip}
           </View>
