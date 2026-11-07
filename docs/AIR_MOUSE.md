@@ -97,3 +97,10 @@ persistence. Cursor sizing/restoration is experimental as above. iOS and native
 LG motion acceptance remain untested. Exact-head CI and final artifacts must be
 reviewed before any separately authorized release. Pairing keys, private logs,
 network records and Claude handoffs stay local.
+
+
+Latest native preview evidence: the Android package was installed in place;
+saved secure connection survived. Native UI showed Air Mouse ON on entry and
+still ON after opening the vertical fan, and the OS reported portrait orientation.
+Browser verified the expanded upward fan and Prefs page. USB disconnected before
+native Prefs round-trip verification. These are preview checks, not release approval.
