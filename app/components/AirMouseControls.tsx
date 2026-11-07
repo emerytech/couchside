@@ -8,7 +8,7 @@ import { startSyntheticGyro } from '@/lib/airMouseSynthetic';
 import { getWsTrace } from '@/lib/gamepad';
 import { airMouseIntent } from '@/lib/airMouseIntent';
 import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestures';
-import { usePref, usePrefsReady } from '@/lib/prefs';
+import { setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { useReducedMotion } from '@/lib/skin/motion';
 import { useTheme } from '@/lib/theme';
 
@@ -40,6 +40,7 @@ export function AirMouseControls(props: Props) {
   useEffect(()=>{Animated.timing(fan,{toValue:menuOpen?1:0,duration:reducedMotion?0:180,useNativeDriver:false}).start();return()=>fan.stopAnimation();},[menuOpen,reducedMotion,fan]);
   const t = useTheme(); const latest = useRef(props); latest.current = props;
   const [message, setMessage] = useState('');
+  const fling=usePref('cursorFling');
   const enabled = usePref('airMouseEnabled'), largeCursor = usePref('airMouseLargeCursor');
   const shakeEnabled = usePref('airMouseShake'), cursorSize=usePref('airMouseCursorSize');
   const [cursorBoost,setCursorBoost]=useState(false);
@@ -220,7 +221,7 @@ export function AirMouseControls(props: Props) {
   return <View pointerEvents="box-none" style={props.floating ? {position:'absolute',right:8,bottom:8,zIndex:20,alignItems:'flex-end',gap:4} : {gap:4,alignItems:'flex-end'}}>
     {menuOpen && !!message && <Text numberOfLines={2} style={{color:t.textDim,fontSize:12,maxWidth:Math.max(180,width-60),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
     <View style={{alignItems:'center',gap:4}}>
-    <Animated.View pointerEvents={menuOpen?'auto':'none'} accessibilityElementsHidden={!menuOpen} importantForAccessibility={menuOpen?'auto':'no-hide-descendants'} style={{overflow:'hidden',width:52,height:fan.interpolate({inputRange:[0,1],outputRange:[0,236]}),opacity:fan,transform:[{translateY:fan.interpolate({inputRange:[0,1],outputRange:[18,0]})}]}}>
+    <Animated.View pointerEvents={menuOpen?'auto':'none'} accessibilityElementsHidden={!menuOpen} importantForAccessibility={menuOpen?'auto':'no-hide-descendants'} style={{overflow:'hidden',width:52,height:fan.interpolate({inputRange:[0,1],outputRange:[0,props.quickClick?236:282]}),opacity:fan,transform:[{translateY:fan.interpolate({inputRange:[0,1],outputRange:[18,0]})}]}}>
     <View style={{ alignItems: 'center',gap:4 }}>
 
       <Pressable accessibilityRole="switch" accessibilityLabel="Air Mouse" accessibilityState={{ checked: toggleOn }} disabled={props.available === false}
@@ -230,6 +231,7 @@ export function AirMouseControls(props: Props) {
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={synthetic || props.available === false} onPress={clickPointer}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
+      {!props.quickClick&&<Pressable accessibilityRole="switch" accessibilityLabel="Touchpad cursor fling" accessibilityState={{checked:fling}} accessibilityHint="Continue cursor movement after a fast touchpad swipe" style={[button,{borderColor:fling?t.blue:t.cardBorder}]} onPress={()=>{void setPref('cursorFling',!fling);}}><Text style={{color:fling?t.blue:t.textDim,fontWeight:'700',fontSize:10}}>FLING</Text><Text style={{color:fling?t.blue:t.textDim,fontSize:10}}>{fling?'ON':'OFF'}</Text></Pressable>}
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(false); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>

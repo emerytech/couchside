@@ -341,6 +341,7 @@ export type Prefs = {
   airMouseSpeed: number;
   airMouseLinear: boolean;
   cursorFling: boolean;
+  cursorFlingDistance: number;
   airMouseShake: boolean;
   airMouseCursorSize: number;
 };
@@ -408,6 +409,7 @@ export const DEFAULTS: Prefs = {
   airMouseSpeed: 1,
   airMouseLinear: false,
   cursorFling: false,
+  cursorFlingDistance: 2,
   airMouseShake: true,
   airMouseCursorSize: 192,
 };
@@ -557,6 +559,7 @@ function normalize(raw: unknown): Prefs {
     airMouseSpeed: num(o.airMouseSpeed, [.25, 1, 1.5], DEFAULTS.airMouseSpeed),
     airMouseLinear: bool(o.airMouseLinear, DEFAULTS.airMouseLinear),
     cursorFling: bool(o.cursorFling, DEFAULTS.cursorFling),
+    cursorFlingDistance: num(o.cursorFlingDistance,[1,2,4],DEFAULTS.cursorFlingDistance),
     airMouseShake: bool(o.airMouseShake, DEFAULTS.airMouseShake),
     airMouseCursorSize: num(o.airMouseCursorSize, [128,192,256], DEFAULTS.airMouseCursorSize),
   };
