@@ -1,3 +1,4 @@
+import {Bg3MovePad} from '@/components/Bg3MovePad';
 import { airMousePlacement } from '@/lib/airMousePlacement';
 import { useInputLatency } from '@/hooks/useInputLatency';
 import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
@@ -989,6 +990,7 @@ function PadScreen() {
   // doc comment in lib/prefs.ts. Read here rather than inside the surfaces so
   // ONE value drives both the send path and which segments exist.
   const keyboardModePref = usePref('keyboardMode');
+  const bg3MovePreset = usePref('bg3MovePreset');
   // AUTO-DROP THE PAD (opt-in, see prefs.ts). A running game is folded into the
   // SAME "act as keys, not a pad" state the manual toggle drives, so the box
   // tears its virtual pad down while a game is up and recreates it on exit —
@@ -1014,7 +1016,9 @@ function PadScreen() {
   // has nothing to drive. Fall back rather than render sticks that go nowhere.
   // Keyboard mode covers 'move' too: the movement zone drives the virtual
   // pad's left stick, which a no-pad handshake never creates.
-  const mode: PadMode = keyboardMode && (rawMode === 'gamepad' || rawMode === 'move') ? 'swipe' : rawMode;
+  const bg3Move = bg3MovePreset && rawMode === 'move';
+  const noPadSession = keyboardMode || bg3Move;
+  const mode: PadMode = keyboardMode && (rawMode === 'gamepad' || (rawMode === 'move' && !bg3Move)) ? 'swipe' : rawMode;
   /**
    * ONLY THE GAMEPAD ROTATES.
    *
@@ -1160,8 +1164,8 @@ function PadScreen() {
   askToSwitchRef.current = askToSwitch;
   // The no-pad decision is made at HANDSHAKE time, so the live value has to be
   // reachable from the focus effect's connect(), not just from render.
-  const keyboardModeRef = useRef(keyboardMode);
-  keyboardModeRef.current = keyboardMode;
+  const keyboardModeRef = useRef(noPadSession);
+  keyboardModeRef.current = noPadSession;
 
   // Hardware volume buttons -> box/TV volume across EVERY input mode (Pad,
   // Swipe, Track, Remote), mounted here on the always-present Pad screen rather
@@ -1433,9 +1437,9 @@ function PadScreen() {
     client.connect(settingsRef.current, {
       handoffAsk: askToSwitchRef.current,
       deviceName: DEVICE_LABEL,
-      noPad: keyboardMode,
+      noPad: noPadSession,
     });
-  }, [client, ready, keyboardMode]);
+  }, [client, ready, noPadSession]);
 
   // A freshly-learned lastIp should reach the client's stored conn so future
   // reconnects can use it. connect() with an unchanged host/port/token just
@@ -1482,7 +1486,7 @@ function PadScreen() {
       client.connect(settings, {
         handoffAsk: askToSwitch,
         deviceName: DEVICE_LABEL,
-        noPad: keyboardMode,
+        noPad: noPadSession,
       });
     } else if (stale) {
       // Connected on paper but the socket has gone silent. hardReset() rather
@@ -1492,7 +1496,7 @@ function PadScreen() {
       // the switch path performs. See GamepadClient.hardReset.
       client.hardReset();
     }
-  }, [client, settings, status, stale, canForce, askToSwitch, keyboardMode]);
+  }, [client, settings, status, stale, canForce, askToSwitch, noPadSession]);
 
   const btn = useCallback(
     (k: ButtonKey) => ({
@@ -1589,12 +1593,12 @@ function PadScreen() {
         // PERSISTED on 'move' keeps working if the game quits — yanking the
         // surface out from under someone on a poll flap would be worse than
         // an idle stick — but the segment hides, so EXIT is the way back.
-        && (m.key !== 'move' || (runningGame && !keyboardMode) || mode === 'move')
+        && (m.key !== 'move' || bg3MovePreset || (runningGame && !keyboardMode) || mode === 'move')
         // NOTE is a local scratchpad, available on any box; the pref hides the
         // segment. A box already PERSISTED on 'note' keeps it so EXIT still works.
         && (m.key !== 'note' || !hideNoteMode || mode === 'note'),
     ),
-    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode, hideNoteMode],
+    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode, hideNoteMode, bg3MovePreset],
   );
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -2126,7 +2130,7 @@ function PadScreen() {
   // Controller layouts opt in separately: normal gameplay must not start a
   // desktop cursor just because Mouse mode defaults to Air ON.
   const airAnchor = immersiveLive && landGeom.ok ? airMousePlacement(landGeom.play,landGeom.nodes.map(n=>n.hit)) : null;
-  const controllerAir = (mode === 'gamepad' || mode === 'move') && !keyboardMode && !remoteOnly ? (
+  const controllerAir = !bg3Move && (mode === 'gamepad' || mode === 'move') && !keyboardMode && !remoteOnly ? (
     <AirMouseControls floating allowLandscape defaultOn={false}
       key={hostKey(settings)+':controller'} targetKey={hostKey(settings)+':controller'}
       available={status === 'connected' && !stale && inputBlocked == null}
@@ -2149,6 +2153,10 @@ function PadScreen() {
             orientation={landscape ? 'landscape' : 'portrait'}
             onExit={mode === 'move' ? exitMove : exitLandscape}
           />
+        ) : bg3Move ? (
+          <Bg3MovePad key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} client={client} targetKey={hostKey(settings)}
+            available={padFocused && status==='connected' && !stale && inputBlocked==null}
+            locked={padLock} onToggleLock={()=>setPadLock(v=>!v)} onExit={exitMove}/>
         ) : mode === 'move' ? (
           // Movement mode: one big thumb zone driving the LEFT STICK plus a
           // small A/B/NAV/START cluster — the landscape spread or the vertical

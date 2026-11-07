@@ -1017,6 +1017,7 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
   const controllerTheme = usePref('controllerTheme');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
+  const bg3MovePreset = usePref('bg3MovePreset');
   const autoDropPad = usePref('autoDropPad');
   const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
@@ -2278,6 +2279,9 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
             <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}
               anchorRef={padLayoutAnchor} onLayout={revealPadSettings}>
               <NavPref label="Air Mouse" sub="Pointing speed, larger cursor and guided setup." value="Preferences" onPress={() => router.push('/air-mouse-settings')} />
+              <TogglePref label="Baldur’s Gate 3 MOVE"
+                sub="Keyboard/mouse-only MOVE with a touchpad and Air Mouse. Turn off for standard MOVE."
+                value={bg3MovePreset} onValueChange={v=>{void setPref('bg3MovePreset',v);hapticSelection();}} />
               <NavPref label="Control presets" sub="Optional landscape PAD layouts for this box."
                 value={padPresetLabel(activeBox?.controlPreset)} onPress={() => setPadSheet('presets')} />
               <NavPref

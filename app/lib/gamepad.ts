@@ -410,6 +410,8 @@ export class GamepadClient {
    *  agent creates a pad on connect and Steam announces a controller every
    *  time the app foregrounds. Older agents ignore the param. */
   private noPad = false;
+  private noPadAcknowledged = false;
+  private cameraKeys = false;
   /** This device's label, sent so the holder's prompt can name the requester. */
   private deviceName = 'A device';
 
@@ -974,6 +976,12 @@ export class GamepadClient {
     this.sendRaw({ t: 'kt', text: s });
   }
 
+  supportsKeyboardOnly(): boolean { return this.noPadAcknowledged; }
+  supportsCameraKeys(): boolean { return this.cameraKeys; }
+  sendCameraKey(key:'w'|'a'|'s'|'d', v:0|1): void {
+    if(this.cameraKeys)this.sendRaw({t:'kh',key,v});
+  }
+
   /** A single special key press+release (backspace, enter, arrows, …). */
   sendKey(key: SpecialKey): void {
     this.sendRaw({ t: 'k', key });
@@ -1175,7 +1183,7 @@ export class GamepadClient {
         code?: string; name?: string; holder?: string; by?: string;
         open?: boolean; value?: string;
         /** hello: named keys/chords this agent accepts (agent >= 2.9.95). */
-        keys?: unknown;
+        keys?: unknown; no_pad?: boolean; camera_keys?: unknown;
       };
       try {
         msg = JSON.parse(String(ev.data));
@@ -1183,6 +1191,8 @@ export class GamepadClient {
         return;
       }
       if (msg.t === 'hello') {
+        this.noPadAcknowledged = msg.no_pad === true || msg.dev === 'keyboard only';
+        this.cameraKeys = Array.isArray(msg.camera_keys) && ['w','a','s','d'].every(k=>(msg.camera_keys as unknown[]).includes(k));
         this.attempt = 0;
         this.setControlRequest(null); // any pending prompt is moot now
         this.dev = typeof msg.dev === 'string' ? msg.dev : null;

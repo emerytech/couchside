@@ -522,6 +522,7 @@ jobs:
         run: |
           python3 tests/test_air_mouse_guide.py
           python3 tests/test_tv_pointer_stream.py
+          python3 tests/test_camera_key_lease.py
       # Exercise the four targets and exit/restart without browser dependencies.
       - name: Air Mouse guided setup target sequence
         run: node tests/air_mouse_guide_ui.cjs

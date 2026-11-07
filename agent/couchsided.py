@@ -22162,8 +22162,8 @@ class MockKeyboard:
 # session reuses an already-enumerated device, so its first keystroke lands.
 #
 # ONLY the keyboard is shared; the pad and mouse stay per-session. Keyboard
-# frames always pair press+release (keyboard_events / _handle_kt), so no key can
-# be left held between sessions. A pad's d-pad is a LATCHED absolute axis and a
+# text/tap frames pair press+release. Camera holds are separately tracked and
+# leased by _camera_key; demotion and disconnect retire their ownership. A pad's d-pad is a LATCHED absolute axis and a
 # mouse button can be held mid-drag, so those two are torn down with the session
 # to guarantee release (see _release_devices / _gamepad_cleanup) -- the keyboard
 # has no such state to leak, which is exactly what makes sharing it safe.
@@ -27339,6 +27339,71 @@ def _volume_events_available():
     return True
 
 
+# Camera keys are separately leased and reference-counted because the keyboard
+# is shared between sessions. A lost phone cannot leave WASD held indefinitely.
+_CAMERA_KEY_LOCK = threading.RLock()
+_CAMERA_KEY_ENTRIES = {}
+_CAMERA_KEY_WORKER = None
+
+
+def _camera_keys_release(entry):
+    with _CAMERA_KEY_LOCK:
+        owned = entry.get("camera_keys", set())
+        for key in list(owned):
+            other = any(e is not entry and key in e.get("camera_keys", set())
+                        for e in _CAMERA_KEY_ENTRIES.values())
+            if not other and entry.get("keyboard") is not None:
+                try:
+                    entry["keyboard"].emit([(EV_KEY, CHAR_KEYMAP[key][0], 0)])
+                except Exception:
+                    pass
+            owned.discard(key)
+        _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+
+
+def _camera_keys_watch():
+    global _CAMERA_KEY_WORKER
+    while True:
+        time.sleep(.05)
+        with _CAMERA_KEY_LOCK:
+            for entry in list(_CAMERA_KEY_ENTRIES.values()):
+                if entry.get("camera_until", 0) <= time.monotonic():
+                    _camera_keys_release(entry)
+            if not _CAMERA_KEY_ENTRIES:
+                _CAMERA_KEY_WORKER = None
+                return
+
+
+def _camera_key(entry, req):
+    global _CAMERA_KEY_WORKER
+    key, value = req.get("key"), req.get("v")
+    if not isinstance(key, str) or key not in ("w", "a", "s", "d") or type(value) is not int or value not in (0, 1):
+        raise ValueError("invalid camera key")
+    with _CAMERA_KEY_LOCK:
+        owned = entry.setdefault("camera_keys", set())
+        others = any(e is not entry and key in e.get("camera_keys", set())
+                     for e in _CAMERA_KEY_ENTRIES.values())
+        if value and key not in owned:
+            owned.add(key)
+            _CAMERA_KEY_ENTRIES[id(entry)] = entry
+            entry["camera_until"] = time.monotonic() + .5
+            if _CAMERA_KEY_WORKER is None:
+                _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+                _CAMERA_KEY_WORKER.start()
+            if not others:
+                entry["keyboard"].emit([(EV_KEY, CHAR_KEYMAP[key][0], 1)])
+        elif not value and key in owned:
+            if not others:
+                entry["keyboard"].emit([(EV_KEY, CHAR_KEYMAP[key][0], 0)])
+            owned.discard(key)
+        entry["camera_until"] = time.monotonic() + .5
+        if not owned:
+            _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+        elif _CAMERA_KEY_WORKER is None:
+            _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+            _CAMERA_KEY_WORKER.start()
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -27346,8 +27411,8 @@ def _release_devices(entry):
     makes regaining control instant — re-creating them restarted the 0.5s
     enumeration-settle window, so the first swipe after a pass-back stalled
     ~500ms (measured). Mouse buttons are defensively released (a drag could be
-    mid-press at demote; keyboard frames always pair press+release, so keys
-    can never be left held)."""
+    mid-press at demote). Leased camera keys are released before promotion."""
+    _camera_keys_release(entry)
     dev = entry.get("device")
     if dev is not None:
         # Zero the pad BEFORE destroying it, for the same reason the mouse is
@@ -27436,6 +27501,8 @@ def _make_holder(entry, mock):
     # kill its own socket against an older agent. Old clients ignore the field.
     _wsend_json(entry, {"t": "hello", "dev": dev,
                         "text": _text_caps(mock),
+                        "no_pad": bool(entry.get("nopad")),
+                        "camera_keys": ["w", "a", "s", "d"],
                         "keys": sorted(set(SPECIAL_KEYS)
                                        | set(DESKTOP_CHORDS)
                                        | set(KEY_CHORDS)
@@ -32330,6 +32397,7 @@ class Handler(BaseHTTPRequestHandler):
             self._gamepad_cleanup(entry)
 
     def _gamepad_cleanup(self, entry):
+        _camera_keys_release(entry)
         """Remove a dead session; if it held control, promote a waiter (prefer
         one that requested). Runs from the session's own thread on exit."""
         global GAMEPAD_HOLDER
@@ -32537,6 +32605,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_control(entry, t)
         # Input frames only from the holder; a waiter's input is ignored.
         if not entry.get("held"):
+            return True
+        if t == "kh":
+            try:
+                if entry.get("keyboard") is None:
+                    entry["keyboard"] = _shared_keyboard(self.mock)
+                _camera_key(entry, msg)
+            except (ValueError, TypeError, OSError):
+                _camera_keys_release(entry)
+                _wsend_json(entry, {"t": "camera_error", "msg": "Camera keys unavailable"})
             return True
         if t == "tvp":
             # Authenticated holder only. Never replay uncertain TV movement.

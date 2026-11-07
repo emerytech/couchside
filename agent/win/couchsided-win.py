@@ -4666,6 +4666,8 @@ class WinKeyboard:
                         inputs.append(_key_input(VK_TAB, False))
                     else:
                         inputs.extend(_unicode_key_inputs(ch))
+            elif kind == "camera":
+                inputs.append(_key_input(ord(ev[1].upper()), bool(ev[2])))
             elif kind == "key":
                 vk = SPECIAL_KEYS[ev[1]]
                 inputs.append(_key_input(vk, True))
@@ -4795,6 +4797,11 @@ def keyboard_events(msg):
     device, so any character is deliverable; only unknown special-key names
     are rejected here."""
     t = msg.get("t")
+    if t == "kh":
+        key, value = msg.get("key"), msg.get("v")
+        if not isinstance(key, str) or key not in ("w", "a", "s", "d") or type(value) is not int or value not in (0, 1):
+            raise ValueError("invalid camera key")
+        return []  # Emitted by _camera_key only AFTER the Windows privilege guard.
     if t == "kt":
         text = msg.get("text")
         if not isinstance(text, str):
@@ -5193,6 +5200,71 @@ def _fg_watch_loop():
             pass
 
 
+# Camera keys are separately leased and reference-counted because the keyboard
+# is shared between sessions. A lost phone cannot leave WASD held indefinitely.
+_CAMERA_KEY_LOCK = threading.RLock()
+_CAMERA_KEY_ENTRIES = {}
+_CAMERA_KEY_WORKER = None
+
+
+def _camera_keys_release(entry):
+    with _CAMERA_KEY_LOCK:
+        owned = entry.get("camera_keys", set())
+        for key in list(owned):
+            other = any(e is not entry and key in e.get("camera_keys", set())
+                        for e in _CAMERA_KEY_ENTRIES.values())
+            if not other and entry.get("keyboard") is not None:
+                try:
+                    entry["keyboard"].emit([("camera", key, 0)])
+                except Exception:
+                    pass
+            owned.discard(key)
+        _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+
+
+def _camera_keys_watch():
+    global _CAMERA_KEY_WORKER
+    while True:
+        time.sleep(.05)
+        with _CAMERA_KEY_LOCK:
+            for entry in list(_CAMERA_KEY_ENTRIES.values()):
+                if entry.get("camera_until", 0) <= time.monotonic():
+                    _camera_keys_release(entry)
+            if not _CAMERA_KEY_ENTRIES:
+                _CAMERA_KEY_WORKER = None
+                return
+
+
+def _camera_key(entry, req):
+    global _CAMERA_KEY_WORKER
+    key, value = req.get("key"), req.get("v")
+    if not isinstance(key, str) or key not in ("w", "a", "s", "d") or type(value) is not int or value not in (0, 1):
+        raise ValueError("invalid camera key")
+    with _CAMERA_KEY_LOCK:
+        owned = entry.setdefault("camera_keys", set())
+        others = any(e is not entry and key in e.get("camera_keys", set())
+                     for e in _CAMERA_KEY_ENTRIES.values())
+        if value and key not in owned:
+            owned.add(key)
+            _CAMERA_KEY_ENTRIES[id(entry)] = entry
+            entry["camera_until"] = time.monotonic() + .5
+            if _CAMERA_KEY_WORKER is None:
+                _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+                _CAMERA_KEY_WORKER.start()
+            if not others:
+                entry["keyboard"].emit([("camera", key, 1)])
+        elif not value and key in owned:
+            if not others:
+                entry["keyboard"].emit([("camera", key, 0)])
+            owned.discard(key)
+        entry["camera_until"] = time.monotonic() + .5
+        if not owned:
+            _CAMERA_KEY_ENTRIES.pop(id(entry), None)
+        elif _CAMERA_KEY_WORKER is None:
+            _CAMERA_KEY_WORKER = threading.Thread(target=_camera_keys_watch, daemon=True)
+            _CAMERA_KEY_WORKER.start()
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -5200,6 +5272,7 @@ def _release_devices(entry):
     released (a drag could be mid-press at demote; keyboard frames always pair
     press+release, so keys can never be left held). No settle-window guard is
     needed as on Linux — SendInput is instant."""
+    _camera_keys_release(entry)
     dev = entry.get("device")
     if dev is not None:
         try:
@@ -5224,7 +5297,7 @@ def _make_holder(entry, mock):
     construct on Windows; a create failure is non-fatal — the lazy path in
     _gamepad_message retries on first use)."""
     try:
-        entry["device"] = MockGamepad() if mock else ViGEmGamepad()
+        entry["device"] = None if entry.get("nopad") else (MockGamepad() if mock else ViGEmGamepad())
     except Exception as e:
         print("[gamepad] device create failed: %s" % e, flush=True)
         _wsend_json(entry, {"t": "err", "msg": "gamepad unavailable: %s" % e})
@@ -5234,8 +5307,9 @@ def _make_holder(entry, mock):
     entry["requested"] = False
     entry["input_err_count"] = 0
     entry["input_blocked"] = False
-    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
-                        "text": "unicode"})
+    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name if entry.get("device") is not None else "keyboard only",
+                        "text": "unicode", "no_pad": bool(entry.get("nopad")),
+                        "camera_keys": ["w", "a", "s", "d"]})
     for slot, factory in (("mouse", MockMouse if mock else WinMouse),
                           ("keyboard", MockKeyboard if mock else WinKeyboard)):
         if entry.get(slot) is None:
@@ -6816,6 +6890,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None,
                  "name": name, "held": False, "requested": False,
                  "input_err_count": 0, "input_blocked": False,
+                 "nopad": q.get("nopad", [""])[0] == "1",
                  "slock": threading.Lock()}
 
         # ---- decide this session's initial role -------------------------------
@@ -6893,6 +6968,7 @@ class Handler(BaseHTTPRequestHandler):
             self._gamepad_cleanup(entry)
 
     def _gamepad_cleanup(self, entry):
+        _camera_keys_release(entry)
         """Remove a dead session; if it held control, promote a waiter (prefer
         one that requested). Runs from the session's own thread on exit."""
         global GAMEPAD_HOLDER
@@ -6928,7 +7004,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # Message-type prefixes routed to the mouse / keyboard virtual devices.
     _MOUSE_TYPES = frozenset(("m", "mb", "mw"))
-    _KEYBOARD_TYPES = frozenset(("kt", "k"))
+    _KEYBOARD_TYPES = frozenset(("kt", "k", "kh"))
 
     # Control frames (holder handoff) — handled regardless of hold state.
     _CONTROL_TYPES = frozenset(("grant", "deny", "request", "force"))
@@ -7065,7 +7141,10 @@ class Handler(BaseHTTPRequestHandler):
                 return True
 
         try:
-            target.emit(events)
+            if t == "kh":
+                _camera_key(entry, msg)
+            else:
+                target.emit(events)
             entry["input_err_count"] = 0
             if entry.get("input_blocked"):  # was blocked, now working again
                 entry["input_blocked"] = False
