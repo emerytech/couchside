@@ -2110,7 +2110,7 @@ function PadScreen() {
           onExit={exitLandscape}
         />
         {controlReq != null && (
-          <View style={styles.handoffOverlay}>
+          <View style={[styles.handoffOverlay,{top:insets.top,left:insets.left,right:insets.right}]}>
             <Text style={styles.handoffText} numberOfLines={2}>
               {controlReq} wants control
             </Text>
@@ -2228,7 +2228,7 @@ function PadScreen() {
             long enough lets the other device force the takeover — so it cannot
             be a piece of chrome that full-screen play hides. */}
         {controlReq != null && (
-          <View style={styles.handoffOverlay}>
+          <View style={[styles.handoffOverlay,{top:insets.top,left:insets.left,right:insets.right}]}>
             <Text style={styles.handoffText} numberOfLines={2}>
               {controlReq} wants control
             </Text>
