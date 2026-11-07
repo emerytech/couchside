@@ -1,6 +1,8 @@
 /** Pure gyro integrator. Measurements are rad/s; timestamps are seconds. */
 export type MotionSample = { x: number; y: number; z: number; timestamp: number };
 export type AirMouseGrip = 'remote' | 'upright';
+/** Remote pointing should cover a TV with wrist rotation, not an arm sweep. */
+export const AIR_MOUSE_REMOTE_GAIN = 4;
 /** Remote: screen up, top aimed at TV (Z yaw). Upright: screen facing user (Y yaw).
  * Apply the same frame to bias calibration and integration. */
 export function airMouseGripSample(sample: MotionSample, grip: AirMouseGrip): MotionSample {
@@ -42,7 +44,7 @@ export class AirMouseIntegrator {
     const x = dead(rawX), y = dead(rawY);
     const alpha = 1 - Math.exp(-dt / .025);
     this.filtered.x += alpha * (x - this.filtered.x); this.filtered.y += alpha * (y - this.filtered.y);
-    const gain = 1100 * Math.max(.4, Math.min(2, sensitivity));
+    const gain = 1100 * Math.max(.4, Math.min(8, sensitivity));
     const bound = (v: number) => Math.max(-60, Math.min(60, v));
     const xTotal = bound(-this.filtered.y * dt * gain) + this.carry.x;
     const yTotal = bound(-this.filtered.x * dt * gain) + this.carry.y;

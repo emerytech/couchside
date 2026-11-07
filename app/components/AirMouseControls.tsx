@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AppState, Dimensions, PanResponder, Pressable, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { AirMouseIntegrator, airMouseGripSample, type AirMouseGrip, type MotionSample } from '@/lib/airMouse';
+import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type AirMouseGrip, type MotionSample } from '@/lib/airMouse';
 import { useTheme } from '@/lib/theme';
 
 type Props = {
@@ -62,7 +62,7 @@ export function AirMouseControls(props: Props) {
         const sample = airMouseGripSample(rawSample, grip);
         if (!current()) return;
         if (calibrate) { samples.push(sample); return; }
-        const delta = engine.current.step(sample, gain);
+        const delta = engine.current.step(sample, gain * (grip === 'remote' ? AIR_MOUSE_REMOTE_GAIN : 1));
         if (!delta || busy.current || Math.abs(delta.dx) + Math.abs(delta.dy) < .05) return;
         busy.current = true;
         Promise.resolve().then(() => { if (current()) return latest.current.onMove(delta.dx, delta.dy, current); })
@@ -137,7 +137,7 @@ export function AirMouseControls(props: Props) {
         <Pressable style={button} accessibilityRole="button" disabled={props.available === false} onPress={() => { void begin(true); }}><Text style={{ color: t.text }}>Quick calibrate</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" onPress={() => { stop(); setMessage('Motion reset. Regrip comfortably, then turn Air Mouse on. The cursor stays in place.'); }}><Text style={{ color: t.text }}>Recenter</Text></Pressable>
         <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse grip" onPress={() => { stop(); engine.current = new AirMouseIntegrator(); setGrip(grip === 'remote' ? 'upright' : 'remote'); setMessage('Grip changed. Quick calibrate while holding the phone in your preferred position.'); }}><Text style={{ color: t.text }}>Grip {grip === 'remote' ? 'Remote' : 'Upright'}</Text></Pressable>
-        <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse sensitivity" onPress={() => { stop(); setGain(gain === 1 ? 1.5 : gain === 1.5 ? .6 : 1); }}><Text style={{ color: t.text }}>Speed {gain === 1 ? 'Normal' : gain === 1.5 ? 'Fast' : 'Slow'}</Text></Pressable>
+        <Pressable style={button} accessibilityRole="button" accessibilityLabel="Air Mouse sensitivity" onPress={() => { stop(); setGain(gain === 1 ? 1.5 : gain === 1.5 ? .25 : 1); }}><Text style={{ color: t.text }}>Speed {gain === 1 ? 'Normal' : gain === 1.5 ? 'Fast' : 'Slow'}</Text></Pressable>
       </View>
     </View>}
   </View>;

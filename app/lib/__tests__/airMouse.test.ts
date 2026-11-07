@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AirMouseIntegrator, airMouseGripSample } from '../airMouse.ts';
+import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample } from '../airMouse.ts';
 import { pointerMoveFrame } from '../tvdirect/webosproto.ts';
 import { WebosSession, type WebosDeps } from '../tvdirect/webos.ts';
 const sample = (timestamp: number, x = 0, y = 0) => ({timestamp, x, y, z: 0});
@@ -63,4 +63,17 @@ test('remote Z yaw and upright Y yaw share pitch and use the same calibration fr
  remote.step({...bias[0],timestamp:1});
  assert.deepEqual(remote.step({...bias[0],timestamp:1.02}),{dx:0,dy:0});
  assert.equal(raw.y,.1);
+});
+
+test('remote wrist sweep covers four times the distance without changing stillness or frame bounds', () => {
+ const distance = (gain: number) => {
+  const m = new AirMouseIntegrator(); let total = 0;
+  for(let i=0;i<=50;i++) { const d=m.step({x:0,y:-.35,z:0,timestamp:i*.02},gain); if(d) { total+=d.dx; assert.ok(Math.abs(d.dx)<=60); } }
+  for(let i=51;i<80;i++) m.step({x:0,y:0,z:0,timestamp:i*.02},gain);
+  assert.deepEqual(m.step({x:0,y:0,z:0,timestamp:1.6},gain),{dx:0,dy:0});
+  return total;
+ };
+ const normal = distance(1), remote = distance(AIR_MOUSE_REMOTE_GAIN);
+ assert.ok(remote > 1400 && remote < 1600);
+ assert.ok(Math.abs(remote/normal-4)<.05);
 });
