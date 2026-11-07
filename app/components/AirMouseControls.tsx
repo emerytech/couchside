@@ -14,6 +14,7 @@ import { useTheme } from '@/lib/theme';
 type Props = {
   targetKey: string;
   floating?: boolean;
+  quickClick?: boolean;
   allowLandscape?: boolean;
   defaultOn?: boolean;
   onActiveChange?: (active:boolean)=>void;
@@ -198,6 +199,12 @@ export function AirMouseControls(props: Props) {
     onPanResponderTerminate: () => touchHandoff(false),
     onPanResponderTerminationRequest: () => true,
   }));
+  const clickPointer = () => {
+    const id=epoch.current;
+    const current=()=>!synthetic&&mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false;
+    void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);})
+      .catch(()=>{if(current())setMessage('Click failed. Check connection.');});
+  };
   const button = { minHeight: 42, justifyContent: 'center' as const, minWidth:44, alignItems:'center' as const, paddingHorizontal: 7, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
   return <View pointerEvents="box-none" style={props.floating ? {position:'absolute',right:8,bottom:8,zIndex:20,alignItems:'flex-end',gap:4} : {gap:4,alignItems:'flex-end'}}>
     {menuOpen && !!message && <Text numberOfLines={2} style={{color:t.textDim,fontSize:12,maxWidth:Math.max(180,width-60),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
@@ -211,7 +218,7 @@ export function AirMouseControls(props: Props) {
       </Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={synthetic || props.available === false} onPress={() => { const id=epoch.current; const current=()=>mounted.current&&focused.current&&epoch.current===id&&AppState.currentState==='active'&&latest.current.available!==false; void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);}).catch(()=>{if(current())setMessage('Click failed. Check connection.');}); }}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={synthetic || props.available === false} onPress={clickPointer}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(false); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
@@ -222,6 +229,18 @@ export function AirMouseControls(props: Props) {
       </View><Text style={{color:toggleOn?t.blue:t.textDim,fontSize:9,fontWeight:'700',lineHeight:10}}>AIR</Text>
     </View>}</Pressable>
     </View>
+    {props.quickClick && toggleOn && <Pressable accessibilityRole="button"
+      accessibilityLabel="Click TV cursor" accessibilityHint="Select at the current TV pointer position"
+      disabled={synthetic || props.available === false}
+      onPressIn={()=>{handoff.current.setTouch(true,Date.now());engine.current.reset();}}
+      onPressOut={()=>{handoff.current.setTouch(false,Date.now());engine.current.reset();}}
+      onPress={clickPointer}
+      style={({pressed})=>({position:'absolute',right:64,bottom:0,minWidth:68,minHeight:48,paddingHorizontal:12,
+        borderRadius:14,borderWidth:1,borderColor:t.blue,backgroundColor:pressed?t.inset:t.card,
+        alignItems:'center',justifyContent:'center',gap:2,opacity:props.available===false?.45:1})}>
+      <MaterialCommunityIcons name="cursor-default-click" size={22} color={t.blue}/>
+      <Text style={{color:t.blue,fontWeight:'700',fontSize:11}}>CLICK</Text>
+    </Pressable>}
     {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}><Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text></View>}
   </View>;
 }

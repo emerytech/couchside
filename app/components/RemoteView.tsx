@@ -396,7 +396,7 @@ export function RemoteView({
     // Fixed, non-scrolling column: the elastic nav circle absorbs any leftover
     // height so nothing ever scrolls or clips (see circleSize).
     <View style={styles.root}>
-      {target==='tv' && remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && <AirMouseControls onActiveChange={onAirMouseActive} floating key={hostKey(settings)+':lg'} targetKey={hostKey(settings)+':lg'} available={!tvPoll.error && (!tv?.pointer_stream || client.getStatus()==='connected')} touchpadActive={joyActive}
+      {target==='tv' && remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && <AirMouseControls quickClick onActiveChange={onAirMouseActive} floating key={hostKey(settings)+':lg'} targetKey={hostKey(settings)+':lg'} available={!tvPoll.error && (!tv?.pointer_stream || client.getStatus()==='connected')} touchpadActive={joyActive}
         onMove={(dx,dy,current)=>{if(current()){if(tv?.pointer_stream)client.sendTvPointer('move',dx,dy);else return api.tvPointer(settings,'move',dx,dy);}}}
         onClick={current=>{if(current()){if(tv?.pointer_stream)client.sendTvPointer('click');else return api.tvPointer(settings,'click');}}}
         onStop={()=>{if(tv?.pointer_stream)client.sendTvPointer('stop');else void api.tvPointer(settings,'stop').catch(()=>{});}} />}
