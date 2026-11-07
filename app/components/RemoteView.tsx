@@ -487,9 +487,9 @@ export function RemoteView({
           height; circleArea (flex) centers the elastic circle between the two
           corner rows and is what onCircleLayout measures. */}
       <View style={styles.navBlock}>
-        <View style={styles.cornerRow}>
-          <CornerBtn icon="menu" label="MENU" onPress={navMenu} />
-          <CornerBtn icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
+        <View style={[styles.cornerRow,styles.cornerTop]}>
+          <CornerBtn compact icon="menu" label="MENU" onPress={navMenu} />
+          <CornerBtn compact icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
         </View>
 
         <View style={styles.circleArea} onLayout={onCircleLayout}>
@@ -511,9 +511,9 @@ export function RemoteView({
           )}
         </View>
 
-        <View style={styles.cornerRow}>
-          <CornerBtn icon="arrow-undo" label="BACK" onPress={navBack} />
-          <CornerBtn
+        <View style={[styles.cornerRow,styles.cornerBottom]}>
+          <CornerBtn compact icon="arrow-undo" label="BACK" onPress={navBack} />
+          <CornerBtn compact
             icon={nav === 'tv' ? 'home-outline' : 'logo-steam'}
             label={nav === 'tv' ? 'HOME' : 'STEAM'}
             onPress={navHome}
@@ -660,7 +660,9 @@ export function CornerBtn({
   icon,
   label,
   onPress,
+  compact=false,
 }: {
+  compact?: boolean;
   icon: IoniconName;
   label: string;
   onPress: () => void;
@@ -668,9 +670,9 @@ export function CornerBtn({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.corner, pressed && styles.pressed]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.corner, compact && styles.cornerCompact, pressed && styles.pressed]}>
       <Ionicons name={icon} size={17} color={t.text} />
-      <Text style={styles.cornerText}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.cornerText,compact&&{fontSize:8}]}>{label}</Text>
     </Pressable>
   );
 }
@@ -1026,6 +1028,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   navBlock: { flex: 1, gap: 6, minHeight: 190 },
   circleArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   cornerRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
+  cornerTop: {position:'absolute',top:0,left:0,right:0,zIndex:2},
+  cornerBottom: {position:'absolute',bottom:0,left:0,right:0,zIndex:2},
+  cornerCompact: {width:56,minWidth:56,height:44,minHeight:44,paddingHorizontal:4,paddingVertical:4,gap:0},
   corner: {
     minWidth: 92,
     alignItems: 'center',
