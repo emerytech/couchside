@@ -99,3 +99,11 @@ the TV. Horizontal motion uses gyro Z, pitch uses X. The optional Upright grip
 retains Y yaw. Changing grip stops motion and clears the old frame's calibration;
 Quick calibrate in the new position before pointing. This selects physical grip,
 not landscape screen layout. Physical feel/direction must be accepted on device.
+
+
+Remote grip sensitivity was increased after physical feedback that the initial
+mapping required excessive movement: Normal4x and Fast6x relative to the original
+1100px/radian gain; Slow restores the original1x for precision. Upright Normal
+remains1x. Per-frame60px clamp and all stop/stillness guards remain. Known-angle
+regression, TypeScript and all882app/hook tests passed. Physical comfort must
+still be accepted on the replacement wrist-gain preview.
