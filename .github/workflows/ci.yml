@@ -36,6 +36,11 @@ jobs:
       - name: Core agent dependency policy
         run: python3 tests/test_agent_dependencies.py
 
+      # Decky already published this catalog API. Preserve its allowlist and
+      # catalog parity while the separate Ports rework remains out of this train.
+      - name: Existing Decky catalog API compatibility
+        run: python3 tests/test_ports_catalog.py
+
       - name: Theme and lighting regression tests
         run: |
           python3 -m unittest discover -s tests -p 'test_steam_themes.py'
