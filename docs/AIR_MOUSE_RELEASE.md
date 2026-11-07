@@ -45,3 +45,7 @@ Direct 69 passed an in-place device update: saved boxes and secure reconnection 
 The final Windows 0.4.17 installer preserved config, pairing and TLS identity and retained normal-privilege startup. Its actual installed executable passed 13 native assertions, including simultaneous/independent camera-key releases, timeout and disconnect cleanup, and Unicode text. The temporary input-test task was removed. Windows remains unsigned under the existing release policy.
 
 Linux 2.9.138's final retry-safe source passed live HTTPS/capability/WebSocket checks without injecting input. Decky 0.2.104 bundles exactly the same source. Complete Linux/Decky assets have verified offline signatures against the installer's trusted public keys. These are staged acceptance results, not a statement of publication. Subscriber emails remain separately approved.
+
+## Android permission correction after Play validation
+
+Play's release-specific validation detected ACTIVITY_RECOGNITION inherited from expo-sensors' pedometer manifest. Couchside uses gyroscope pointing, has no health features and does not use the pedometer. The Android config now blocks that permission using Expo's manifest-merger removal support. Rebuild Play 135 and Direct 70, verify the actual packaged manifests omit the permission, and repeat a focused Direct upgrade/gyro smoke before publishing those replacement Android builds. iOS 305 and the agent artifacts are unchanged. Public tags and previously published artifacts must retain their original provenance; do not rewrite or silently replace build 69.
