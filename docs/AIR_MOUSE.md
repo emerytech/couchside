@@ -113,3 +113,5 @@ native Prefs round-trip verification. These are preview checks, not release appr
 Latest source checkpoint: enlarged TV navigation and hold/drag joystick, Swipe support, touchpad/gyro handoff, runtime portrait lock, native LG routing and shake locator are integrated. Updated combined Android installation and physical acceptance are pending. Earlier owner confirmation covered the upward menu and motion feel, not these latest additions.
 
 Continuous-motion regression: a high angular speed alone must never suppress aiming. Shake suppression now starts only after three qualifying rapid reversals confirm the locator gesture. Tests cover 20 seconds of fast figure-eight input without suppression; native sustained movement and touchpad handoff still require physical acceptance.
+
+Residual freeze investigation: owner reports touchpad stalls too. Native sensor delivery remains steady in captured intervals; a separate device-to-box latency probe showed multi-second reply delays. Shared transport versus Air-active interference is not yet isolated. Continuous aiming and touchpad handoff acceptance remain failed/pending; do not certify this preview for release.
