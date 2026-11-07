@@ -337,6 +337,8 @@ export type Prefs = {
   airMouseEnabled: boolean;
   airMouseLargeCursor: boolean;
   airMouseSpeed: number;
+  airMouseShake: boolean;
+  airMouseCursorSize: number;
 };
 
 export const DEFAULTS: Prefs = {
@@ -398,6 +400,8 @@ export const DEFAULTS: Prefs = {
   airMouseEnabled: true,
   airMouseLargeCursor: true,
   airMouseSpeed: 1,
+  airMouseShake: true,
+  airMouseCursorSize: 192,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -541,6 +545,8 @@ function normalize(raw: unknown): Prefs {
     airMouseEnabled: bool(o.airMouseEnabled, DEFAULTS.airMouseEnabled),
     airMouseLargeCursor: bool(o.airMouseLargeCursor, DEFAULTS.airMouseLargeCursor),
     airMouseSpeed: num(o.airMouseSpeed, [.25, 1, 1.5], DEFAULTS.airMouseSpeed),
+    airMouseShake: bool(o.airMouseShake, DEFAULTS.airMouseShake),
+    airMouseCursorSize: num(o.airMouseCursorSize, [128,192,256], DEFAULTS.airMouseCursorSize),
   };
 }
 

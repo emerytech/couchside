@@ -18537,6 +18537,7 @@ class _WebOSSession:
     WEBOS_LOCK."""
 
     def __init__(self, host):
+        self.host = host
         self.ws = _WebOSWS("wss://%s:%d/" % (host, WEBOS_PORT))
         self._id = 0
         self.pointer = None
@@ -18580,6 +18581,18 @@ class _WebOSSession:
                     raise IOError(msg.get("error", "ssap error"))
                 return msg.get("payload", {})
         raise IOError("ssap request timed out: %s" % uri)
+
+    def pointer_frame(self, frame):
+        if self.pointer is None:
+            payload = self.request("ssap://com.webos.service.networkinput/getPointerInputSocket")
+            path = payload.get("socketPath", "")
+            parsed = urlparse(path)
+            if (parsed.scheme not in ("ws", "wss") or parsed.hostname != self.host
+                    or parsed.port not in (3000, 3001) or parsed.username or parsed.password
+                    or "\r" in path or "\n" in path):
+                raise IOError("invalid TV pointer socket")
+            self.pointer = _WebOSWS(path)
+        self.pointer.send_text(frame)
 
     def button(self, name):
         if self.pointer is None:
@@ -18683,6 +18696,34 @@ def real_webos(op):
     uri, payload = uri_payload
     return _webos_do(lambda s: (s.request(uri, payload), op)[1])
 
+
+def real_webos_pointer(req):
+    """Bounded native pointer commands; never retry uncertain movement/click."""
+    global WEBOS
+    if not isinstance(req, dict) or req.get("op") not in ("move", "click", "stop"):
+        raise ValueError("invalid TV pointer operation")
+    op = req["op"]
+    if op == "move":
+        dx, dy = req.get("dx"), req.get("dy")
+        if any(type(v) is not int or abs(v) > 120 for v in (dx, dy)):
+            raise ValueError("invalid TV pointer delta")
+        frame = "type:move\ndx:%d\ndy:%d\ndown:0\n\n" % (dx, dy)
+    else:
+        frame = "type:click\n\n"
+    start = time.monotonic()
+    if _WEBOS_MOCK: return _webos_result(start, True, "mock TV pointer " + op)
+    with WEBOS_LOCK:
+        try:
+            if op == "stop":
+                if WEBOS and WEBOS.pointer:
+                    WEBOS.pointer.close(); WEBOS.pointer = None
+            else:
+                _webos_conn().pointer_frame(frame)
+            return _webos_result(start, True, "ok")
+        except (IOError, OSError, ValueError, KeyError):
+            if WEBOS: WEBOS.close()
+            WEBOS = None
+            return _webos_result(start, False, "TV pointer disconnected. Try again.")
 
 def real_webos_key(k):
     """Send one factory-remote key (PANEL_KEYS vocabulary) as a pointer button."""
@@ -20549,6 +20590,7 @@ def tv_info():
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
         "key_backends": tv_key_backends_available(),
+        "pointer_backends": ["webos"] if webos_available() else [],
         # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
         # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
         # Roku don't (no single input-menu key), and the RS-232 panel uses its
@@ -27751,6 +27793,7 @@ class Image(c.Structure):
  _fields_=[('x',c.c_short),('y',c.c_short),('width',c.c_ushort),('height',c.c_ushort),('xhot',c.c_ushort),('yhot',c.c_ushort),('serial',c.c_ulong),('pixels',c.POINTER(c.c_ulong)),('atom',c.c_ulong),('name',c.c_char_p)]
 class Cursor(c.Structure):
  _fields_=[('version',c.c_uint),('size',c.c_uint),('width',c.c_uint),('height',c.c_uint),('xhot',c.c_uint),('yhot',c.c_uint),('delay',c.c_uint),('pixels',c.POINTER(c.c_uint))]
+desired=int(sys.argv[1]) if len(sys.argv)>1 else 192
 saved=[]; enlarged=False
 try:
  x=c.CDLL('libX11.so.6');f=c.CDLL('libXfixes.so.3');u=c.CDLL('libXcursor.so.1')
@@ -27763,7 +27806,7 @@ try:
  u.XcursorImageDestroy.argtypes=[c.POINTER(Cursor)]
  u.XcursorImageLoadCursor.argtypes=[c.c_void_p,c.POINTER(Cursor)];u.XcursorImageLoadCursor.restype=c.c_ulong
  def make(d,pixels,w,h,hx,hy,scale):
-  nw=min(96,w*scale);nh=min(96,h*scale);p=u.XcursorImageCreate(nw,nh)
+  target=desired if scale>1 else max(w,h);nw=max(1,round(w*target/max(w,h)));nh=max(1,round(h*target/max(w,h)));p=u.XcursorImageCreate(nw,nh)
   if not p: raise RuntimeError('cursor allocation')
   q=p.contents;q.xhot=hx*nw//w;q.yhot=hy*nh//h
   for y in range(nh):
@@ -27784,7 +27827,7 @@ try:
   saved.append((d,original,large,name));f.XFixesChangeCursorByName(d,large,name);x.XSync(d,0)
   check=f.XFixesGetCursorImage(d)
   if check:
-   enlarged = enlarged or (check.contents.width >= min(96,w*3) and check.contents.height >= min(96,h*3))
+   enlarged = enlarged or (max(check.contents.width,check.contents.height) >= desired)
    x.XFree(check)
  print(json.dumps({'ok':enlarged}),flush=True)
  deadline=time.monotonic()+8;maximum=time.monotonic()+600
@@ -27802,12 +27845,15 @@ finally:
 _AIR_CURSOR_LOCK = threading.Lock()
 _AIR_CURSOR_PROCESS = None
 _AIR_CURSOR_OWNER = None
+_AIR_CURSOR_SIZE = None
 
-def air_cursor_lease(enabled, lease):
-    global _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER
+def air_cursor_lease(enabled, lease, size=192):
+    global _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER, _AIR_CURSOR_SIZE
     import select
     if type(enabled) is not bool or not isinstance(lease, str) or not re.fullmatch(r"[a-zA-Z0-9]{8,64}", lease):
         raise ValueError("invalid cursor lease")
+    if type(size) is not int or size not in (128,192,256):
+        raise ValueError("invalid cursor size")
     with _AIR_CURSOR_LOCK:
         proc = _AIR_CURSOR_PROCESS
         if not enabled:
@@ -27819,8 +27865,9 @@ def air_cursor_lease(enabled, lease):
                     return {"ok": False}
                 _AIR_CURSOR_PROCESS = None
                 _AIR_CURSOR_OWNER = None
+                _AIR_CURSOR_SIZE = None
             return {"ok": True}
-        if proc and proc.poll() is None and _AIR_CURSOR_OWNER == lease:
+        if proc and proc.poll() is None and _AIR_CURSOR_OWNER == lease and _AIR_CURSOR_SIZE == size:
             try:
                 proc.stdin.write("renew\n"); proc.stdin.flush()
                 return {"ok": True}
@@ -27832,10 +27879,10 @@ def air_cursor_lease(enabled, lease):
                 proc.wait(timeout=2)
             except (OSError, subprocess.TimeoutExpired):
                 return {"ok": False}
-        proc = subprocess.Popen([sys.executable, "-c", _AIR_CURSOR_WORKER],
+        proc = subprocess.Popen([sys.executable, "-c", _AIR_CURSOR_WORKER, str(size)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True)
-        _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER = proc, lease
+        _AIR_CURSOR_PROCESS, _AIR_CURSOR_OWNER, _AIR_CURSOR_SIZE = proc, lease, size
         try:
             ready = select.select([proc.stdout], [], [], 3)[0]
             result = json.loads(proc.stdout.readline()) if ready else {"ok": False}
@@ -29683,7 +29730,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("invalid body length")
                     req = json.loads(self.rfile.read(length))
                     if not isinstance(req, dict): raise ValueError("invalid body")
-                    result = air_cursor_lease(req.get("enabled"), req.get("lease"))
+                    result = air_cursor_lease(req.get("enabled"), req.get("lease"), req.get("size",192))
                 except (ValueError, TypeError):
                     self._send(400, {"error": "invalid cursor request"}, started)
                     return
@@ -30610,6 +30657,19 @@ class Handler(BaseHTTPRequestHandler):
             # POST /api/tv/volume: absolute volume {"level": 0-100, "target":
             # "box"|"tv"}. Box converges via media-key steps (Game Mode OSD),
             # TV via the RS-232 closed loop. Checked before /api/tv/<op>.
+            if path == "/api/tv/webos/pointer":
+                if not webos_available():
+                    self._send(404, {"error": "LG TV not configured"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    result = real_webos_pointer(req)
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "invalid TV pointer request"}, started)
+                    return
+                self._send(200, result, started)
+                return
+
             if path == "/api/tv/volume":
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}

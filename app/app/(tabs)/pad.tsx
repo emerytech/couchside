@@ -932,7 +932,7 @@ const MODES: { key: PadMode; label: string }[] = [
 ];
 
 function PadScreen() {
-  const [airMousePause, setAirMousePause] = useState(0);
+  const [airMouseTouch, setAirMouseTouch] = useState(false);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
@@ -1337,6 +1337,7 @@ function PadScreen() {
       evaluateWakeLock();
     };
     const disconnect = () => {
+      setAirMouseTouch(false);
       focusedRef.current = false;
       // Chrome comes back the moment the Pad loses focus — see immersiveLive.
       setPadFocused(false);
@@ -2373,7 +2374,7 @@ function PadScreen() {
               The SAME surface serves both: in TV nav a step moves the pointer
               and a tap clicks; otherwise a step is an arrow key and a tap is
               select. */}
-          <View style={styles.tpWrap} onTouchStart={() => setAirMousePause(v => v + 1)}>
+          <View style={styles.tpWrap}>
             <SwipeSurface
               onStep={tvNav ? tvStep : dpadStep}
               onStepEnd={tvNav ? NOOP : dpadRelease}
@@ -2432,7 +2433,7 @@ function PadScreen() {
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
           <View style={styles.tpWrap}>
-            <View style={{flex:1}} onTouchStart={() => setAirMousePause(v => v + 1)}>
+            <View style={{flex:1}} onTouchStart={() => setAirMouseTouch(true)} onTouchEnd={e => setAirMouseTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => setAirMouseTouch(false)}>
             <Trackpad
               onMove={tpMove}
               onLeftClick={tpLeft}
@@ -2442,9 +2443,9 @@ function PadScreen() {
               onDragEnd={tpDragEnd}
             />
             </View>
-          <AirMouseControls floating key={hostKey(settings)} targetKey={hostKey(settings)} pauseSignal={airMousePause}
+          <AirMouseControls floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
             available={status === 'connected' && !stale && inputBlocked == null}
-            onCursor={(enabled, lease) => api.airMouseCursor(settings, enabled, lease)}
+            onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
             onStop={() => client.cancelMouseMove()}
             onMove={(dx, dy, current) => { if (current()) client.sendMouseMove(dx, dy); }}
             onClick={current => { if (current()) tpLeft(); }} />

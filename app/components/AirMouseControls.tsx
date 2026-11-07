@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { AirMouseIntegrator, AIR_MOUSE_REMOTE_GAIN, airMouseGripSample, type MotionSample } from '@/lib/airMouse';
+import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestures';
 import { usePref, usePrefsReady } from '@/lib/prefs';
 import { useReducedMotion } from '@/lib/skin/motion';
 import { useTheme } from '@/lib/theme';
@@ -10,13 +11,13 @@ import { useTheme } from '@/lib/theme';
 type Props = {
   targetKey: string;
   floating?: boolean;
-  pauseSignal?: number;
+  touchpadActive?: boolean;
   available?: boolean;
   onMove: (dx: number, dy: number, current: () => boolean) => void | Promise<void>;
   onClick: (current: () => boolean) => void | Promise<void>;
   onStop?: () => void;
   onGuide?: () => Promise<unknown>;
-  onCursor?: (enabled: boolean, lease: string) => Promise<unknown>;
+  onCursor?: (enabled: boolean, lease: string, size: number) => Promise<unknown>;
   touchpad?: boolean;
   onScroll?: (notches: number, current: () => boolean) => void | Promise<void>;
 };
@@ -30,6 +31,11 @@ export function AirMouseControls(props: Props) {
   const t = useTheme(); const latest = useRef(props); latest.current = props;
   const [message, setMessage] = useState('');
   const enabled = usePref('airMouseEnabled'), largeCursor = usePref('airMouseLargeCursor');
+  const shakeEnabled = usePref('airMouseShake'), cursorSize=usePref('airMouseCursorSize');
+  const [cursorBoost,setCursorBoost]=useState(false);
+  const boostTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const handoff=useRef(new AirMouseTouchHandoff()), shake=useRef(new AirMouseShakeDetector());
+  const cursorQueue=useRef<Promise<void>>(Promise.resolve());
   const gain = usePref('airMouseSpeed'), prefsReady = usePrefsReady();
   const autoStarted = useRef(false); const [focusVersion, setFocusVersion] = useState(0);
   const [holding, setHolding] = useState(false);
@@ -41,21 +47,26 @@ export function AirMouseControls(props: Props) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engine = useRef(new AirMouseIntegrator());
   const stop = useCallback(() => {
-    latched.current = false;
+    latched.current = false; handoff.current.invalidate(); shake.current.reset();
+    if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=null;
+    if(mounted.current)setCursorBoost(false);
     ++epoch.current; subscription.current?.remove(); subscription.current = null;
     if (timer.current) clearTimeout(timer.current); timer.current = null;
     engine.current.reset(); latest.current.onStop?.();
     if (mounted.current) { setHolding(false); setToggleOn(false); setMessage(''); }
   }, []);
-  useFocusEffect(useCallback(() => { focused.current = true; autoStarted.current = false; setFocusVersion(v => v + 1); return () => { focused.current = false; stop(); }; }, [stop]));
+  useFocusEffect(useCallback(() => { focused.current = true; autoStarted.current = false; setFocusVersion(v => v + 1); return () => { focused.current = false; handoff.current.setTouch(false,Date.now()); stop(); }; }, [stop]));
   useLayoutEffect(() => {
     mounted.current = true;
-    const app = AppState.addEventListener('change', state => { if (state !== 'active') stop(); });
+    const app = AppState.addEventListener('change', state => { if (state !== 'active') {handoff.current.setTouch(false,Date.now());stop();} });
     const size = Dimensions.addEventListener('change', stop);
     return () => { mounted.current = false; stop(); app.remove(); size.remove(); };
   }, [stop]);
   useLayoutEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
-  useLayoutEffect(() => { if (props.pauseSignal) stop(); }, [props.pauseSignal, stop]);
+  const touchHandoff = useCallback((active: boolean) => {
+    if(handoff.current.setTouch(active,Date.now())) {engine.current.reset();latest.current.onStop?.();}
+  },[]);
+  useLayoutEffect(() => { touchHandoff(props.touchpadActive===true); }, [props.touchpadActive,touchHandoff]);
   const begin = async (calibrate = false, latch = false) => {
     stop(); latched.current = latch; const id = epoch.current;
     const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
@@ -80,17 +91,25 @@ export function AirMouseControls(props: Props) {
         const sample = airMouseGripSample(rawSample, grip);
         if (!current()) return;
         if (calibrate) { samples.push(sample); return; }
-        const delta = engine.current.step(sample, gain * (AIR_MOUSE_REMOTE_GAIN));
+        if(!handoff.current.allows(Date.now())) {engine.current.reset();return;}
+        if(shakeEnabled && largeCursor && latest.current.onCursor) {
+          const gesture=shake.current.step(rawSample);
+          if(gesture.triggered) {setCursorBoost(true);if(boostTimer.current)clearTimeout(boostTimer.current);boostTimer.current=setTimeout(()=>{if(mounted.current)setCursorBoost(false);},1500);}
+          if(gesture.suppress) {handoff.current.invalidate();engine.current.reset();latest.current.onStop?.();return;}
+        }
+        const generation=handoff.current.generation;
+        const motionCurrent=()=>current()&&handoff.current.generation===generation&&handoff.current.allows(Date.now());
+        const delta = engine.current.step(sample, gain * AIR_MOUSE_REMOTE_GAIN);
         if (!delta || busy.current || Math.abs(delta.dx) + Math.abs(delta.dy) < .05) return;
         busy.current = true;
-        Promise.resolve().then(() => { if (current()) return latest.current.onMove(delta.dx, delta.dy, current); })
+        Promise.resolve().then(() => { if (motionCurrent()) return latest.current.onMove(delta.dx, delta.dy, motionCurrent); })
           .catch(() => { if (current()) { stop(); setMessage('Connection interrupted. Hold again to retry, or use the touchpad.'); } })
           .finally(() => { busy.current = false; });
       });
       if (calibrate) timer.current = setTimeout(() => {
         if (!current()) return;
         const ok = engine.current.calibrate(samples); stop();
-        setMessage(ok ? 'Calibrated. Hold to point.' : 'Keep the phone still and try calibrating again.');
+        setMessage(ok ? 'Calibrated. Turn Air on to point.' : 'Keep the phone still and try calibrating again.');
       }, 1000);
     } catch (e) { if (current()) { stop(); setMessage(e instanceof Error && /^(Motion sensor unavailable|Motion permission is off)/.test(e.message) ? e.message : 'Air Mouse unavailable on this device. Use the touchpad.'); } }
   };
@@ -103,20 +122,22 @@ export function AirMouseControls(props: Props) {
     if (!toggleOn || !largeCursor || !props.onCursor) return;
     const lease = Date.now().toString(36) + Math.random().toString(36).slice(2);
     let retired = false, timer: ReturnType<typeof setTimeout> | undefined;
-    let pending = Promise.resolve();
-    const renew = () => {
-      pending = Promise.resolve().then(() => latest.current.onCursor?.(true, lease)).then(() => {
-        if (!retired) { setMessage(m => m.startsWith('Large pointer unavailable') ? '' : m); timer = setTimeout(renew, 4000); }
-      }).catch(() => { if (!retired) { setMessage('Large pointer unavailable on this box. Air Mouse still works.'); timer = setTimeout(renew, 4000); } });
+    const size=cursorBoost?256:cursorSize;
+    const request=(on:boolean)=>{
+      const next=cursorQueue.current.then(()=>{if(on&&retired)return;return latest.current.onCursor?.(on,lease,size);});
+      cursorQueue.current=next.then(()=>{},()=>{});return next;
     };
+    const renew=()=>{void request(true).then(()=>{
+      if(!retired){setMessage(m=>m.startsWith('Large pointer unavailable')?'':m);timer=setTimeout(renew,4000);}
+    }).catch(()=>{if(!retired){setMessage('Large pointer unavailable on this box. Air Mouse still works.');timer=setTimeout(renew,4000);}});};
     renew();
-    return () => { retired = true; if (timer) clearTimeout(timer); void pending.then(() => latest.current.onCursor?.(false, lease)).catch(() => {}); };
-  }, [toggleOn, largeCursor, props.targetKey]);
+    return ()=>{retired=true;if(timer)clearTimeout(timer);void request(false).catch(()=>{});};
+  }, [toggleOn,largeCursor,props.targetKey,cursorSize,cursorBoost]);
   const touch = useRef({ x: 0, y: 0, started: 0, scrolled: false, epoch: 0 });
   const [pad] = useState(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => { stop(); touch.current = { x: 0, y: 0, started: Date.now(), scrolled: false, epoch: epoch.current }; },
+    onPanResponderGrant: () => { touchHandoff(true); touch.current = { x: 0, y: 0, started: Date.now(), scrolled: false, epoch: epoch.current }; },
     onPanResponderMove: (_event, gesture) => {
       const state = touch.current, dx = gesture.dx - state.x, dy = gesture.dy - state.y;
       state.x = gesture.dx; state.y = gesture.dy;
@@ -133,11 +154,11 @@ export function AirMouseControls(props: Props) {
     },
     onPanResponderRelease: (_event, gesture) => {
       const tap = !touch.current.scrolled && Math.hypot(gesture.dx, gesture.dy) < 6 && Date.now() - touch.current.started < 300;
-      stop(); const id = epoch.current;
+      touchHandoff(false); const id = epoch.current;
       const current = () => mounted.current && focused.current && epoch.current === id && latest.current.available !== false && AppState.currentState === 'active';
       if (tap) void Promise.resolve().then(() => { if (current()) return latest.current.onClick(current); }).catch(() => { if (current()) setMessage('Click failed. Check the connection.'); });
     },
-    onPanResponderTerminate: stop,
+    onPanResponderTerminate: () => touchHandoff(false),
     onPanResponderTerminationRequest: () => true,
   }));
   const button = { minHeight: 42, justifyContent: 'center' as const, minWidth:44, alignItems:'center' as const, paddingHorizontal: 7, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };

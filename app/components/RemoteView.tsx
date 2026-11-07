@@ -1,3 +1,4 @@
+import { AirMouseControls } from './AirMouseControls';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -182,6 +183,11 @@ export function RemoteView({
   const hasDesktop = statusPoll.data?.caps?.desktop === true && showDesktopNav;
 
   const [target, setTarget] = useState<'box' | 'tv'>('box');
+  const lgAutoTarget=useRef('');
+  useEffect(()=>{
+    const key=hostKey(settings);
+    if(remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && lgAutoTarget.current!==key){lgAutoTarget.current=key;setTarget('tv');}
+  },[remoteBackend,tv?.pointer_backends,settings.host,settings.port]);
   const nav = hasTvKeys ? target : 'box';
 
   // MUTE button color reflects the reported mute state (tv.muted, refreshed by
@@ -371,6 +377,11 @@ export function RemoteView({
     // Fixed, non-scrolling column: the elastic nav circle absorbs any leftover
     // height so nothing ever scrolls or clips (see circleSize).
     <View style={styles.root}>
+      {target==='tv' && remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && <AirMouseControls floating key={hostKey(settings)+':lg'} targetKey={hostKey(settings)+':lg'} available={!tvPoll.error}
+        onMove={(dx,dy,current)=>{if(current())return api.tvPointer(settings,'move',dx,dy);}}
+        onClick={current=>{if(current())return api.tvPointer(settings,'click');}}
+        onStop={()=>{void api.tvPointer(settings,'stop').catch(()=>{});}} />}
+
       {/* Nav target toggle — only meaningful with an RS-232 panel */}
       {hasTvKeys && (
         <View style={styles.targetRow}>
