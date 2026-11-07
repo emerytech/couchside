@@ -64,7 +64,7 @@ export function AirMouseControls(props: Props) {
   }, [stop]);
   useLayoutEffect(() => { stop(); }, [props.targetKey, props.available, stop]);
   const touchHandoff = useCallback((active: boolean) => {
-    if(handoff.current.setTouch(active,Date.now())) {engine.current.reset();latest.current.onStop?.();}
+    if(handoff.current.setTouch(active,Date.now())) {engine.current.reset();if(active)latest.current.onStop?.();}
   },[]);
   useLayoutEffect(() => { touchHandoff(props.touchpadActive===true); }, [props.touchpadActive,touchHandoff]);
   const begin = async (calibrate = false, latch = false) => {

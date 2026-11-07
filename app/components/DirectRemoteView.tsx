@@ -200,7 +200,7 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
             // LG exposes a native pointer; other direct TVs retain directional taps.
             joyEnabled={tv.brand==='webos'}
             onJoyMove={(dx,dy)=>{if(joyBusy.current)return;const id=joyEpoch.current;joyBusy.current=true;void sendPointer(tv,runtime,{dx,dy},()=>id===joyEpoch.current).catch(()=>{}).finally(()=>{joyBusy.current=false;});}}
-            onJoyActive={active=>{setJoyActive(active);if(!active){joyEpoch.current++;stopPointer(tv);}}}
+            onJoyActive={active=>{setJoyActive(active);if(!active)joyEpoch.current++;}}
           />
         </View>
 

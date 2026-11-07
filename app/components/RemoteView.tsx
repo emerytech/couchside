@@ -232,7 +232,7 @@ export function RemoteView({
       if(native)await api.tvPointer(settings,'move',dx,dy);else await api.tvKey(settings,direction,remoteBackend);
     }).catch(()=>{}).finally(()=>{tvJoyBusy.current=false;});
   };
-  const joystickActive=(active:boolean)=>{setJoyActive(active);if(!active){tvJoyEpoch.current++;if(remoteBackend==='webos')void api.tvPointer(settings,'stop').catch(()=>{});}};
+  const joystickActive=(active:boolean)=>{setJoyActive(active);if(!active)tvJoyEpoch.current++;};
 
   // ---- senders -------------------------------------------------------------
 
