@@ -7,8 +7,7 @@ Held checkpoint, November 6, 2026. No release/version bump.
 Air Mouse starts on when entering a connected Pad > Mouse screen after preferences
 load. The preference can disable this default. The Mouse layout stays portrait
 while Air Mouse is enabled, preventing a switch to laptop mode while pointing.
-Background, blur, disconnect, rotation/reflow, target change and unmount stop
-motion and retire pending callbacks. Returning from OS background does not silently
+Background, blur, landscape rotation, target change and unmount switch motion off and retire pending callbacks. Temporary unavailable/stale status blocks motion and clears queued deltas while retaining ON; only fresh samples can resume when available. Portrait window/inset changes clear motion without switching OFF. Returning from OS background does not silently
 restart it. Touching the trackpad temporarily yields gyro movement without switching Air Mouse OFF. After release and a short settling interval, gyro aiming resumes; the final touchpad delta is preserved. The same controls are available in Swipe mode.
 
 A single bottom-right touchpad button opens an upward animated fan: On/Off,
