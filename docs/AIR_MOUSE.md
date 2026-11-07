@@ -163,6 +163,8 @@ Three candidate Wi-Fi runs measured maximum receiver gaps of about 125, 149 and
 checkpoint is `1688f39`; its final run generated 999 vectors. No multi-second
 stall recurred in these runs. Smaller 100–150 ms pauses remain, including one
 107 ms phone-side generation gap in the final run; do not claim zero freezes or
-completed physical acceptance. Synthetic mode was stopped and the phone returned
+zero measured pauses. Synthetic mode was stopped and the phone returned
 to normal input. USB reverse routes/tunnel and the bounded receiver recorder were
 removed/stopped. Raw measurements and private infrastructure details stay local.
+
+Owner acceptance, November 7: the final installed Razr preview (`1688f39`) was reported to “feel great” after returning to normal input. This confirms the subjective feel of that preview on this device; it does not establish zero timing gaps or acceptance on iOS, other Android models or native LG pointing. Release remains on hold.
