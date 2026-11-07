@@ -384,3 +384,11 @@ test('Air Mouse release discards throttled motion without disconnecting or repla
     assert.deepEqual(JSON.parse(ws.sent.at(-1)!), {t:'m',dx:2,dy:3});
   } finally { client.close(); }
 });
+
+test('TV stream bounds moves, preserves command order and never sends invalid deltas',()=>{
+ const c=freshClient();c.connect(CONN);const ws=MockWebSocket.instances[0];ws.openAndHello();
+ c.sendTvPointer('move',500,-500);c.sendTvPointer('move',NaN,3);c.sendTvPointer('click');c.sendTvPointer('stop');
+ assert.deepEqual(ws.sent.map(s=>JSON.parse(s)).filter(m=>m.t==='tvp'),[
+ {t:'tvp',op:'move',dx:120,dy:-120},{t:'tvp',op:'click'},{t:'tvp',op:'stop'}]);
+ c.close();
+});
