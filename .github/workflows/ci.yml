@@ -519,7 +519,9 @@ jobs:
         run: python3 tests/test_pair_kiosk.py
       # New local guide must retain both host gates and authenticated launch.
       - name: Air Mouse guided setup dispatch
-        run: python3 tests/test_air_mouse_guide.py
+        run: |
+          python3 tests/test_air_mouse_guide.py
+          python3 tests/test_tv_pointer_stream.py
       # Exercise the four targets and exit/restart without browser dependencies.
       - name: Air Mouse guided setup target sequence
         run: node tests/air_mouse_guide_ui.cjs
