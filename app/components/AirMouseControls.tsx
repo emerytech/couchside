@@ -1,3 +1,4 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Animated, AppState, Dimensions, PanResponder, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
@@ -156,7 +157,7 @@ export function AirMouseControls(props: Props) {
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
-    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}><Text style={{color:toggleOn?t.blue:t.textDim,fontSize:22}}>{menuOpen?'×':'◉'}</Text></Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}><MaterialCommunityIcons name={menuOpen ? 'close' : 'cursor-default-outline'} size={24} color={toggleOn?t.blue:t.textDim} /></Pressable>
     </View>
     {props.touchpad && <View {...pad.panHandlers} accessibilityLabel="TV touchpad" style={{ minHeight: 110, borderRadius: 12, backgroundColor: t.inset, padding: 14, justifyContent: 'center' }}><Text style={{ color: t.textDim, textAlign: 'center' }}>Touchpad · tap to click · two fingers to scroll</Text></View>}
   </View>;
