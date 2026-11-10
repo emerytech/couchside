@@ -1,18 +1,25 @@
-/** Deliberately accepts curated choices only, never a saved Box or pairing link. */
-export const SETUP_TYPES = ['Steam Machine / SteamOS', 'Windows gaming PC', 'Linux gaming PC', 'Handheld gaming PC', 'TV setup'] as const;
-export const SETUP_FEATURES = ['Phone controller', 'Air Mouse', 'Touchpad & keyboard', 'Game-specific controls', 'TV remote & inputs', 'Game library', 'Decky manager'] as const;
+/** Only explicit answers are included; saved boxes and device data are never read. */
 export const COUCHSIDE_SHARE_URL = 'https://couchside.tv/';
-export const FRIEND_MESSAGE = 'Your phone can be your gaming remote. Couchside gives you controller, mouse and keyboard controls for your gaming PC, plus supported TV controls. Take a look: ' + COUCHSIDE_SHARE_URL;
+export const STORY_QUESTIONS = [
+  { key: 'favorite', label: 'What’s your favorite part of Couchside?' },
+  { key: 'mostUsed', label: 'What do you find yourself using Couchside to do the most?' },
+  { key: 'future', label: 'What would you like to see added to Couchside in the future?' },
+] as const;
+export type CouchsideStory = { favorite: string; mostUsed: string; future: string };
+export const STORY_ANSWER_LIMIT = 400;
 
-export function setupShareText(type: string, features: readonly string[]): string {
-  if (!(SETUP_TYPES as readonly string[]).includes(type)) throw Error('Choose a setup type.');
-  if (!features.length || features.some(x => !(SETUP_FEATURES as readonly string[]).includes(x))) throw Error('Choose at least one Couchside feature.');
-  const selected = SETUP_FEATURES.filter(x => features.includes(x));
-  return `My gaming setup, powered by Couchside\n\n${type}\nI use my phone for: ${selected.join(', ')}.\n\nOne less reason to leave the couch.\n${COUCHSIDE_SHARE_URL}`;
+export function setupShareText(answers: CouchsideStory): string {
+  const sections = STORY_QUESTIONS.flatMap(({ key, label }) => {
+    const value = answers[key];
+    if (typeof value !== 'string' || value.length > STORY_ANSWER_LIMIT || /[\x00-\x08\x0b-\x1f\x7f]/.test(value)) throw Error('Check your answers.');
+    return value.trim() ? [`${label}\n${value.trim()}`] : [];
+  });
+  if (!sections.length) throw Error('Answer at least one question.');
+  return ['How I use Couchside', ...sections, COUCHSIDE_SHARE_URL].join('\n\n');
 }
 
-/** Opens a composer; the user still reviews, attaches any photos, and sends. */
+/** Opens a composer; the user reviews and sends their own message. */
 export function showcaseDraftUrl(summary: string): string {
-  const body = `${summary}\n\nI'd like to share how I use Couchside. Please contact me before publishing my setup, photos or name.\n\nWhat works well for me:\n[Add your story here]\n\nOptional: attach a photo after checking it for personal details. Sending this email does not subscribe me to marketing.`;
-  return `mailto:taylor@couchside.tv?subject=${encodeURIComponent('My Couchside gaming setup')}&body=${encodeURIComponent(body)}`;
+  const body = `${summary}\n\nPlease contact me before publishing my answers or name. Sending this email does not subscribe me to marketing.`;
+  return `mailto:taylor@couchside.tv?subject=${encodeURIComponent('How I use Couchside')}&body=${encodeURIComponent(body)}`;
 }

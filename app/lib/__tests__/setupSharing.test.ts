@@ -1,25 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SETUP_TYPES, SETUP_FEATURES, setupShareText, showcaseDraftUrl, FRIEND_MESSAGE } from '../setupSharing.ts';
+import { STORY_ANSWER_LIMIT, setupShareText, showcaseDraftUrl } from '../setupSharing.ts';
 
-test('setup messages include selected public choices, never fields from a saved box', () => {
-  const features = [SETUP_FEATURES[1], SETUP_FEATURES[0], SETUP_FEATURES[1]];
-  const text = setupShareText(SETUP_TYPES[0], features);
-  assert.match(text, /Steam Machine \/ SteamOS/);
-  assert.equal(text.match(/Air Mouse/g)?.length, 1);
-  assert.ok(!text.includes('TV remote & inputs'));
+test('sharing includes only explicit answers and omits blank questions', () => {
+  const text = setupShareText({ favorite: ' Air Mouse ', mostUsed: 'Playing from the couch', future: '' });
+  assert.match(text, /favorite part of Couchside\?\nAir Mouse/);
+  assert.match(text, /Playing from the couch/);
+  assert.ok(!text.includes('in the future'));
   assert.ok(text.endsWith('https://couchside.tv/'));
-  assert.throws(() => setupShareText('secret-host.local', features));
-  assert.throws(() => setupShareText(SETUP_TYPES[0], ['token=private']));
-  assert.throws(() => setupShareText(SETUP_TYPES[0], []));
+  const withBox = { favorite: '', mostUsed: '', future: 'More game presets', token: 'secret', host: 'private.local' };
+  assert.ok(!setupShareText(withBox).includes('secret'));
+  assert.ok(!setupShareText(withBox).includes('private.local'));
+  assert.throws(() => setupShareText({ favorite: ' ', mostUsed: '', future: '' }));
+  assert.throws(() => setupShareText({ favorite: 'a'.repeat(STORY_ANSWER_LIMIT + 1), mostUsed: '', future: '' }));
 });
-test('showcase email is a reviewable composer with no publication or newsletter opt-in', () => {
-  const summary = setupShareText(SETUP_TYPES[1], [SETUP_FEATURES[2]]);
+test('email safely encodes answer punctuation without adding recipients or opting in', () => {
+  const summary = setupShareText({ favorite: 'Air Mouse & TV? #1', mostUsed: '', future: 'More layouts' });
   const url = new URL(showcaseDraftUrl(summary));
   assert.equal(url.protocol, 'mailto:');
   assert.equal(url.pathname, 'taylor@couchside.tv');
   assert.ok(url.searchParams.get('body')?.includes(summary));
+  assert.equal(url.searchParams.size, 2);
   assert.match(url.searchParams.get('body')!, /contact me before publishing/);
   assert.match(url.searchParams.get('body')!, /does not subscribe me/);
-  assert.ok(!FRIEND_MESSAGE.includes('ref='));
 });

@@ -4,22 +4,20 @@ Status: implementation branch only; no deployment, release, email, entry collect
 
 ## First sharing slice
 
-Entry: Setup → Account → Share your Couchside setup. Also reachable at `/share-setup`.
+Entry: Setup → Account → Share your Couchside story. Also reachable at `/share-setup`.
 
-- Select one broad setup type and the Couchside features used.
-- Review the exact text before opening the native share sheet, or copy it. Web uses clipboard.
-- A separate introduction lets users recommend the app without composing a setup story.
-- The showcase action opens an email composer to taylor@couchside.tv. Users add their own story/photos and send themselves. This is not an automatic submission or public gallery.
-- No saved box objects, hostnames, IPs, pairing links, tokens, game history, contacts or analytics are read. No purchase or entitlement gate.
-- Email explicitly asks for contact before publication and does not imply newsletter signup. Photo attachments are manual; remind users to check for personal details.
-- No referral claims, share-success counters or unlock-attribution claims. Android share-sheet completion does not prove a message was sent.
-- This slice adds no dependency and makes no agent or purchase changes. Form selections are ephemeral and reset when the screen is recreated.
+- Three optional written prompts: favorite part, most-used purpose, and desired future additions. At least one answer is required to share.
+- Preview the exact answers before opening the native share sheet, or copy them. Web uses clipboard. Answers stay in screen state until the user chooses to share; no automatic submission.
+- Showcase/feedback action opens an email composer to taylor@couchside.tv. Users review and send themselves; contact before publication is requested. No newsletter opt-in implied.
+- No saved boxes, hostnames, IPs, pairing links, tokens, activity, contacts or analytics are read. Remind users to omit personal details from their own answers.
+- No referral claims, share counters or unlock-attribution claims. Android share-sheet completion does not prove a message was sent.
+- No dependency, agent or purchase changes. Native phone acceptance remains pending.
 
 ## Proposed milestone promotion — NOT ACTIVE
 
 Recommendation: celebrate reaching 1,000 verified paid unlocks by opening a separate, fixed-duration, free-entry giveaway. A Steam gift card is a possible prize; amount, currency and delivery region are undecided. No public prize promise or progress count exists in this slice.
 
-Purchases and referrals must not be entry requirements or improve the odds. Keep showcase participation and newsletter consent independent of entry. Do not automatically enter purchasers or existing newsletter subscribers. Do not award chances for reviews, ratings, social shares or friend purchases.
+Purchases and referrals must not be entry requirements or improve the odds. Keep showcase participation and newsletter consent independent of entry. Do not automatically enter purchasers or existing newsletter subscribers. Do not award chances for reviews, ratings, Share taps, link clicks or friend purchases. Referral bonuses are a separate proposal below, not implemented or approved.
 
 Before implementation or announcement:
 
@@ -38,3 +36,18 @@ Before implementation or announcement:
 - Google Play Real-Money Gambling, Games, and Contests / loyalty policy: https://support.google.com/googleplay/android-developer/answer/9877032
 
 These references inform the design; they are not a legal eligibility determination or store approval.
+
+## Referral entry proposal — NOT IMPLEMENTED
+
+User asked about tracking friend sharing on November 10. Track verified free-entry referrals, not alleged shares:
+
+- One base free entry per eligible verified person. Optional capped bonus: one entry per eligible friend who voluntarily confirms a free entry through an opaque random invite code; suggested maximum three, subject to rules review.
+- Sharing copy must clearly disclose the possible bonus. No positive endorsement required; no store ratings/reviews involved.
+- Provide an alternative free route to the same maximum entry allowance, with its terms reviewed for the actual jurisdictions. Neither purchases nor newsletter subscription affect entries.
+- Inviter codes contain no email or purchase identifier. No phone contact upload, automated friend messages or device fingerprinting. Friend enters and confirms their own information.
+- Server validates campaign dates, eligibility, verified email, no self-referral, duplicate referrals and bonus cap. A unique campaign/referrer/referred-person credit and transaction-safe ledger prevent replay or concurrent double credit. Email verification alone does not prove a unique human: suspicious patterns need review before drawing.
+- Owner dashboard separates invitations opened, verified referrals and eligible drawing entries. Do not label clicks as shares or confirmations as purchases.
+- Server-only winner selection uses a frozen eligible-entry ledger, secure randomness and a recorded review step. No automatic launch, draw, send or prize payment.
+- Keep feedback answers separate from entry eligibility and consent. Neither positive feedback nor publication permission buys an entry.
+
+Still decisions, not a legality determination: eligible locations/age, exact prize, dates, alternative free entry, fraud appeals and retention. Store policy review remains required before exposing promotional entry mechanics in the app.

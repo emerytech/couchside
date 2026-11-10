@@ -1,20 +1,19 @@
 import React, { useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, Share, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, ScrollView, Share, Text, TextInput, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useTheme } from '@/lib/theme';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { FRIEND_MESSAGE, SETUP_FEATURES, SETUP_TYPES, setupShareText, showcaseDraftUrl } from '@/lib/setupSharing';
+import { STORY_QUESTIONS, STORY_ANSWER_LIMIT, type CouchsideStory, setupShareText, showcaseDraftUrl } from '@/lib/setupSharing';
 
 export default function ShareSetup() {
   const t = useTheme();
   useLockOrientation('portrait');
-  const [type, setType] = useState<string>(SETUP_TYPES[0]);
-  const [features, setFeatures] = useState<string[]>([SETUP_FEATURES[0]]);
+  const [answers, setAnswers] = useState<CouchsideStory>({ favorite: '', mostUsed: '', future: '' });
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
-  const summary = features.length ? setupShareText(type, features) : '';
+  const summary = Object.values(answers).some(value => value.trim()) ? setupShareText(answers) : '';
   const card = { backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 16, padding: 18, gap: 12 };
   async function share(message: string) {
     if (busy) return;
@@ -24,7 +23,7 @@ export default function ShareSetup() {
         await Clipboard.setStringAsync(message);
         setNotice('Copied. Paste it wherever you want to share.');
       } else {
-        await Share.share({ message }, { dialogTitle: 'Share Couchside', subject: 'My Couchside setup' });
+        await Share.share({ message }, { dialogTitle: 'Share Couchside', subject: 'How I use Couchside' });
         // Android does not distinguish dismissal from a completed share.
         setNotice('You choose where and whether to send.');
       }
@@ -32,7 +31,7 @@ export default function ShareSetup() {
     finally { setBusy(false); }
   }
   async function copy() {
-    try { await Clipboard.setStringAsync(summary); setNotice('Setup copied.'); }
+    try { await Clipboard.setStringAsync(summary); setNotice('Answers copied.'); }
     catch { setNotice('Could not copy. Please try again.'); }
   }
   function button(label: string, onPress: () => void, primary = false, disabled = false) {
@@ -41,40 +40,32 @@ export default function ShareSetup() {
       <Text style={{ color: primary ? t.onAccent : t.text, fontWeight: '600', fontSize: 15 }}>{label}</Text>
     </Pressable>;
   }
-  return <><Stack.Screen options={{ title: 'Share your setup', headerBackTitle: 'Back' }} />
+  return <><Stack.Screen options={{ title: 'Your Couchside story', headerBackTitle: 'Back' }} />
     <ScrollView style={{ flex: 1, backgroundColor: t.bg }} contentContainerStyle={{ padding: 18, paddingBottom: 48, gap: 18 }}>
       <Ionicons name="share-social-outline" size={30} color={t.green} />
-      <Text style={{ color: t.text, fontSize: 27, fontWeight: '700' }}>Your setup. Your way to play.</Text>
-      <Text style={{ color: t.textDim, fontSize: 15, lineHeight: 23 }}>Show friends how Couchside fits your gaming setup. Choose what you use, preview the message, then share it your way.</Text>
+      <Text style={{ color: t.text, fontSize: 27, fontWeight: '700' }}>How do you Couchside?</Text>
+      <Text style={{ color: t.textDim, fontSize: 15, lineHeight: 23 }}>Tell us what you enjoy, what you use most, and what you’d love to see next. Answer any or all three.</Text>
       <View style={card}>
-        <Text style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>What do you play on?</Text>
-        <View accessibilityRole="radiogroup" style={{ gap: 8 }}>{SETUP_TYPES.map(x => <Pressable key={x} accessibilityRole="radio" accessibilityState={{ checked: type === x }} onPress={() => { setType(x); setNotice(''); }}
-          style={{ minHeight: 44, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: type === x ? t.blue : t.cardBorder, backgroundColor: t.inset }}>
-          <Text style={{ color: type === x ? t.blue : t.text }}>{type === x ? '● ' : '○ '}{x}</Text>
-        </Pressable>)}</View>
-        <Text style={{ color: t.text, fontSize: 18, fontWeight: '700', marginTop: 8 }}>How do you use Couchside?</Text>
-        {SETUP_FEATURES.map(x => <Pressable key={x} accessibilityRole="checkbox" accessibilityState={{ checked: features.includes(x) }} onPress={() => { setFeatures(old => old.includes(x) ? old.filter(v => v !== x) : [...old, x]); setNotice(''); }}
-          style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Ionicons name={features.includes(x) ? 'checkbox' : 'square-outline'} size={23} color={features.includes(x) ? t.blue : t.textDim} /><Text style={{ color: t.text, flex: 1 }}>{x}</Text>
-        </Pressable>)}
+        {STORY_QUESTIONS.map(({ key, label }) => <View key={key} style={{ gap: 8 }}>
+          <Text nativeID={`story-${key}`} style={{ color: t.text, fontSize: 16, fontWeight: '600', lineHeight: 23 }}>{label}</Text>
+          <TextInput accessibilityLabel={label} multiline maxLength={STORY_ANSWER_LIMIT} value={answers[key]}
+            placeholder="Your answer…" placeholderTextColor={t.textFaint} textAlignVertical="top"
+            onChangeText={value => { setAnswers(old => ({ ...old, [key]: value })); setNotice(''); }}
+            style={{ minHeight: 110, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.inset, color: t.text, fontSize: 15, lineHeight: 23 }} />
+          <Text style={{ color: t.textFaint, fontSize: 12, textAlign: 'right' }}>{answers[key].length}/{STORY_ANSWER_LIMIT}</Text>
+        </View>)}
       </View>
       <View style={card}>
         <Text style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>Your share preview</Text>
-        <Text selectable style={{ color: t.text, fontSize: 15, lineHeight: 24 }}>{summary || 'Choose at least one feature to create your message.'}</Text>
-        <Text style={{ color: t.textDim, fontSize: 12, lineHeight: 18 }}>Only the choices above are included. Your saved box names, network addresses, pairing credentials and game activity stay out of this message.</Text>
-        {button(Platform.OS === 'web' ? 'Copy my setup' : 'Share my setup', () => void share(summary), true, !summary)}
+        <Text selectable style={{ color: t.text, fontSize: 15, lineHeight: 24 }}>{summary || 'Your answers will appear here before you share.'}</Text>
+        <Text style={{ color: t.textDim, fontSize: 12, lineHeight: 18 }}>Only the answers you type are included. Leave out passwords, pairing codes, network addresses and other personal details.</Text>
+        {button(Platform.OS === 'web' ? 'Copy my answers' : 'Share my answers', () => void share(summary), true, !summary)}
         {Platform.OS !== 'web' && button('Copy message', () => void copy(), false, !summary)}
       </View>
       <View style={card}>
-        <Text style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>Know someone who’d enjoy Couchside?</Text>
-        <Text style={{ color: t.textDim, lineHeight: 22 }}>Send a friend a simple introduction. No referral codes or contact uploads.</Text>
-        <Text selectable style={{ color: t.text, lineHeight: 22 }}>{FRIEND_MESSAGE}</Text>
-        {button(Platform.OS === 'web' ? 'Copy invitation' : 'Tell a friend', () => void share(FRIEND_MESSAGE))}
-      </View>
-      <View style={card}>
-        <Text style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>Help inspire another setup</Text>
-        <Text style={{ color: t.textDim, lineHeight: 22 }}>Want to show Taylor what you’ve built? Open an email draft, add your story and optionally a photo. You review and send it yourself. We’ll ask before featuring your setup publicly.</Text>
-        {button('Draft an email to Taylor', () => { void Linking.openURL(showcaseDraftUrl(summary)).then(() => setNotice('Email composer requested. Review your story and any photos before sending.'), () => setNotice('No email app available. You can contact taylor@couchside.tv.')); }, false, !summary)}
+        <Text style={{ color: t.text, fontSize: 18, fontWeight: '700' }}>Share with Taylor</Text>
+        <Text style={{ color: t.textDim, lineHeight: 22 }}>Send your feedback or offer your story for a future showcase. This opens an email draft for you to review and send. We’ll ask before publishing your answers or name.</Text>
+        {button('Draft an email to Taylor', () => { void Linking.openURL(showcaseDraftUrl(summary)).then(() => setNotice('Email composer requested. Review your answers before sending.'), () => setNotice('No email app available. You can contact taylor@couchside.tv.')); }, false, !summary)}
       </View>
       {!!notice && <Text accessibilityLiveRegion="polite" style={{ color: t.textDim, lineHeight: 22 }}>{notice}</Text>}
     </ScrollView></>;
