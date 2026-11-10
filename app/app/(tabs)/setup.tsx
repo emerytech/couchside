@@ -2517,6 +2517,14 @@ function SetupBody({ setPadPreviewExpanded }: { setPadPreviewExpanded(expanded: 
                 agent check; then the box-software card. */}
             <AppUpdateRow />
             <NewsletterCard permanent />
+            <Pressable accessibilityRole="button" onPress={() => router.push('/share-setup')} style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="share-social-outline" size={20} color={t.green} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>Share your Couchside setup</Text>
+                <Text style={styles.rateSub}>Show how you play, or introduce a friend.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={t.textDim} />
+            </Pressable>
             <SystemUpdatesCard />
             {/* Decky Loader: install / manage from the phone. Probe-and-appear on
                 /api/decky/loader; not pref-gated — the box's `couchside
