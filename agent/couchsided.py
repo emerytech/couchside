@@ -19060,11 +19060,33 @@ def samsung_available():
 
 
 def _samsung_conn():
-    """Return a live connected _SamsungSession. Caller MUST hold SAMSUNG_LOCK."""
-    global SAMSUNG
+    """Return a live session, persisting a renewed token before using it.
+
+    Caller MUST hold SAMSUNG_LOCK. A TV can rotate its token on reconnect,
+    not only during explicit pairing. Leaving that token only in the session
+    makes the next connection reuse the old credential (issue #660).
+    """
+    global SAMSUNG, CONFIG_SAMSUNG
     if SAMSUNG is None:
-        SAMSUNG = _SamsungSession(CONFIG_SAMSUNG["host"],
-                                  CONFIG_SAMSUNG.get("token"))
+        with CONFIG_LOCK:
+            cfg = CONFIG_SAMSUNG
+        sess = _SamsungSession(cfg["host"], cfg.get("token"))
+        try:
+            with CONFIG_LOCK:
+                # Pairing/config reload can replace the target while the TV
+                # authorizes us. Never overwrite that newer configuration or
+                # send its next command through the old TV's session.
+                if CONFIG_SAMSUNG is not cfg:
+                    raise IOError("Samsung pairing changed during connection")
+                if sess.token and sess.token != cfg.get("token"):
+                    updated = dict(cfg)
+                    updated["token"] = sess.token
+                    _config_set_field("samsung", updated)
+                    CONFIG_SAMSUNG = updated
+        except Exception:
+            sess.close()
+            raise
+        SAMSUNG = sess
     return SAMSUNG
 
 
