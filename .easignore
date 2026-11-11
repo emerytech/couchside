@@ -52,3 +52,7 @@ output/
 .env*.local
 app/play-service-account.json
 *service-account*.json
+
+# Generated web previews and local routing caches are not native build inputs.
+app/dist/
+app/.expo/
