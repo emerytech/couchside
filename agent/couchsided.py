@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.138"
+VERSION = "2.9.139"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 

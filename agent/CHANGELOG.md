@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.139
+
+- Save Samsung TV authorization tokens renewed during reconnect, so future connections use the newest token rather than the old pairing credential. Existing TV addresses, Wake-on-LAN settings and other configuration are preserved.
+- This addresses a reproduced token-saving bug related to issue #660. Repeated approval prompts on The Frame 2025 still need confirmation by the reporter; Samsung's Access Notification setting can also cause prompts.
+- Includes the previously shipped 2.9.138 Air Mouse, LG pointer and BG3 camera controls, with their existing disconnect safeguards and catalog API. No phone app or Windows update is required for this Samsung fix.
+
 ## 2.9.138
 
 - Use Air Mouse from the phone for smooth cursor pointing, with guided four-target setup on the box and optional temporary cursor enlargement on supported Linux sessions.
