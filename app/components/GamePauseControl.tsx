@@ -18,6 +18,7 @@ export function GamePauseControl({ state, refresh, demo = false }: {
   const key = hostKey(settings);
   const current = useRef(key); current.current = key;
   useEffect(() => { setBusy(false); setMessage(''); }, [key]);
+  useEffect(() => { setMessage(''); }, [state?.has_record, state?.paused]);
   if (!state || (!state.available && !state.has_record)) return null;
   const resume = state.has_record;
   return <View style={styles.wrap}>
@@ -35,17 +36,23 @@ export function GamePauseControl({ state, refresh, demo = false }: {
           if (current.current !== key) return;
           const result = await api.gamePause(settings, resume ? 'resume' : 'pause');
           if (current.current !== key) return;
-          setMessage(result.ok ? (result.paused ? 'Game paused in memory. Resume here when ready.' : 'Resume requested; check the game on screen.')
-            : result.reason || 'Game could not change pause state. Refresh and retry.');
+          setMessage(result.ok ? '' : result.reason || 'Game could not change pause state. Refresh and retry.');
           refresh();
         } catch {
           if (current.current === key) { setMessage('Could not reach the box. Reconnect and check its pause state.'); refresh(); }
         } finally { if (current.current === key) setBusy(false); }
       }}>
       <Ionicons name={resume ? 'play-circle-outline' : 'pause-circle-outline'} size={18} color={t.amber} />
-      <Text style={[styles.label, { color: t.amber }]}>{busy ? 'PLEASE WAIT…' : resume ? 'RESUME GAME' : 'PAUSE GAME · EXPERIMENTAL'}</Text>
+      <Text style={[styles.label, { color: t.amber }]}>{busy ? 'PLEASE WAIT…' : resume ? 'RESUME GAME' : 'PAUSE GAME'}</Text>
+      {!resume && <Text style={[styles.preview, { color: t.textDim }]}>EXPERIMENTAL</Text>}
     </Pressable>
-    {(message || resume) && <Text accessibilityLiveRegion="polite" style={[styles.note, { color: t.textDim }]}>{message || state.reason || 'Recorded pause session · resume before closing the game.'}</Text>}
+    {(message || resume) && <Text accessibilityLiveRegion="polite" style={[styles.note, { color: t.textDim }]}>{message || (state.paused ? 'Paused in memory. Resume before closing the game.' : state.reason || 'Recorded pause session · resume before closing the game.')}</Text>}
   </View>;
 }
-const styles = StyleSheet.create({ wrap: { marginTop: 10, gap: 6 }, button: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }, label: { fontFamily: mono, fontSize: 12, flexShrink: 1 }, note: { fontSize: 12, flexShrink: 1 } });
+const styles = StyleSheet.create({
+  wrap: { gap: 8 },
+  button: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
+  label: { fontFamily: mono, fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  preview: { fontFamily: mono, fontSize: 9, letterSpacing: 0.6, marginLeft: 'auto' },
+  note: { fontSize: 12, lineHeight: 18, flexShrink: 1 },
+});

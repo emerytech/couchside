@@ -109,28 +109,30 @@ function NowPlayingContent() {
       <Text style={styles.nowTitle} numberOfLines={2}>
         {game.label ?? `App ${game.appid}`}
       </Text>
-      <GamePauseControl state={g.game_pause} refresh={poll.refresh} demo={demo} />
-      <Pressable
-        onPress={async () => {
-          hapticLight();
-          const ok = await confirm({
-            title: 'Close this game?',
-            message: `${game.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
-            confirmText: 'Close game',
-            destructive: true,
-          });
-          if (!ok) return;
-          setStopping(true);
-          void api.stopGame(settings).finally(() => {
-            setStopping(false);
-            poll.refresh();
-          });
-        }}
-        disabled={stopping || demo || !!g.game_pause?.has_record}
-        style={({ pressed }) => [styles.stopBtn, { alignSelf: 'flex-end', borderWidth: 0, marginTop: 0, paddingHorizontal: 8 }, pressed && { opacity: 0.7 }]}>
-        <Ionicons name="stop-circle-outline" size={15} color={t.red} />
-        <Text style={styles.stopText}>{demo ? 'DEMO' : g.game_pause?.has_record ? 'RESUME TO CLOSE' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
-      </Pressable>
+      <View style={(g.game_pause?.available || g.game_pause?.has_record) ? styles.nowActions : undefined}>
+        <GamePauseControl state={g.game_pause} refresh={poll.refresh} demo={demo} />
+        <Pressable
+          onPress={async () => {
+            hapticLight();
+            const ok = await confirm({
+              title: 'Close this game?',
+              message: `${game.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
+              confirmText: 'Close game',
+              destructive: true,
+            });
+            if (!ok) return;
+            setStopping(true);
+            void api.stopGame(settings).finally(() => {
+              setStopping(false);
+              poll.refresh();
+            });
+          }}
+          disabled={stopping || demo || !!g.game_pause?.has_record}
+          style={({ pressed }) => [styles.stopBtn, { alignSelf: 'flex-end', borderWidth: 0, marginTop: 0, paddingHorizontal: 8 }, pressed && { opacity: 0.7 }]}>
+          <Ionicons name="stop-circle-outline" size={15} color={t.red} />
+          <Text style={styles.stopText}>{demo ? 'DEMO' : g.game_pause?.has_record ? 'RESUME TO CLOSE' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -273,13 +275,14 @@ export function GamingCard() {
           Confirmed first: this is not undoable, and an accidental tap could
           lose unsaved progress. */}
       {g.game && (
-        <View style={styles.block}>
+        <View style={[styles.block, (g.game_pause?.available || g.game_pause?.has_record) && styles.gameActions]}>
           <View style={styles.lineRow}>
             <Text style={[styles.lineLabel, tk?.label]}>{g.game_pause?.paused ? 'PAUSED' : 'RUNNING'}</Text>
             {g.game.running_s != null && (
               <Text style={styles.dim}>{humanizeRun(g.game.running_s)}</Text>
             )}
           </View>
+          <GamePauseControl state={g.game_pause} refresh={poll.refresh} />
           <Pressable
             onPress={async () => {
               hapticLight();
@@ -306,7 +309,7 @@ export function GamingCard() {
         </View>
       )}
 
-      <GamePauseControl state={g.game_pause} refresh={poll.refresh} />
+      {!g.game && <GamePauseControl state={g.game_pause} refresh={poll.refresh} />}
 
       {gpuList.map((card, i) => (
         <GpuBlock
@@ -389,6 +392,7 @@ const makeStyles = (t: Palette) =>
     gameLabel: { color: t.text, fontSize: 15, fontWeight: '700', fontFamily: mono, flex: 1 },
 
     block: { gap: 6 },
+    gameActions: { gap: 12, paddingTop: 8, paddingBottom: 14, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: t.cardBorder },
     lineRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     lineLabel: {
       color: t.textDim,
@@ -420,6 +424,7 @@ const makeStyles = (t: Palette) =>
   nowHeaderText: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono },
   nowTime: { color: t.textDim, fontSize: 11, marginLeft: 'auto', fontFamily: mono },
   nowTitle: { color: t.text, fontSize: 16, fontWeight: '700' },
+  nowActions: { gap: 10, paddingTop: 12, marginTop: 4, borderTopWidth: 1, borderTopColor: t.cardBorder },
   stopBtn: {
     flexDirection: 'row',
     alignItems: 'center',
