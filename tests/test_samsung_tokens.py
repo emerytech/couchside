@@ -205,6 +205,35 @@ class SamsungTokenTests(unittest.TestCase):
         self.assertIs(cs.CONFIG_SAMSUNG, self.cfg)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_failed_active_selection_keeps_committed_pairing(self):
+        # Pairing and active-brand selection are separate existing writes.
+        # If the latter fails, keep the valid new pairing but never resurrect
+        # a connection to the old TV. Report the error to the pairing caller.
+        self.authorize("old-test-token")
+        old = self.connect()
+        write = cs._write_config_atomic
+        calls = []
+
+        def fail_second(raw):
+            calls.append(raw)
+            if len(calls) == 2:
+                raise OSError("selection write failed")
+            write(raw)
+
+        with patch.object(cs, "_write_config_atomic", side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, "selection write failed"):
+                cs._samsung_save("other-tv.invalid", "other-test-token")
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(saved["samsung"], cs.CONFIG_SAMSUNG)
+        self.assertEqual(saved["samsung"]["host"], "other-tv.invalid")
+        self.assertEqual(saved["samsung"]["token"], "other-test-token")
+        self.assertEqual(saved["tv_active"], "webos")
+        self.assertEqual(cs.CONFIG_TV_ACTIVE, "webos")
+        self.assertEqual(saved["unrelated"], self.raw["unrelated"])
+        self.assertIsNone(cs.SAMSUNG)
+        self.assertTrue(old.ws.closed)
+
 
 if __name__ == "__main__":
     unittest.main()
