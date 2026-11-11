@@ -1,6 +1,6 @@
 # Experimental game Pause / Resume — Linux preview
 
-Status: private preview preparation. iPhone 2.9.82(307) has been built through EAS cloud over shipped 2.9.82 with Pause/Resume added, preserving Air Mouse/BG3/fling. The earlier Ad Hoc 306 could not replace the existing store app without deletion. A local App Store-signed 306 was archived/exported and verified, but its upload failed and the owner reported an Apple error email; it is not installed or accepted. The owner directed the replacement build through Expo cloud. The cloud artifact passed version, strict signature and multicast-entitlement verification using Xcode 26.5. Internal TestFlight upload is queued; Apple processing and device installation remain unverified. No public release or active-agent replacement has occurred. Windows is not implemented and does not advertise these controls.
+Status: private preview preparation. iPhone 2.9.83(308) is being prepared through EAS cloud over shipped 2.9.82 with Pause/Resume added, preserving Air Mouse/BG3/fling. The earlier Ad Hoc 306 could not replace the existing store app without deletion. Cloud 2.9.82(307) built and passed artifact verification, but Apple rejected its upload because the 2.9.82 version train is closed. The replacement advances the app version and iOS build number; functionality is unchanged. Verify the new artifact and Apple processing before internal TestFlight installation. No public release or active-agent replacement has occurred. Windows is not implemented and does not advertise these controls.
 
 ## Behavior
 
