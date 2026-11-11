@@ -5,7 +5,7 @@
 import { Buffer } from 'buffer';
 import type { SteamThemesState, SteamThemeSettings } from './steamThemes';
 import { isPinMismatchError, isPinnedTimeoutError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
-import { raceIpFirst, ttlMemo } from './boxRoute.ts';
+import { raceIpFirst, sendPinnedOnce, ttlMemo } from './boxRoute.ts';
 import { connIsPinned } from './boxConn';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
@@ -2498,10 +2498,13 @@ async function request<T>(
     res = await attempt(usedHost, settings, path, opts);
   } else if (method !== 'GET' && fallback && connIsPinned(settings)) {
     // TLS authenticates the destination before HTTP bytes are written. Send
-    // once to the cached IPv4 address; don't probe an unusable mDNS/IPv6 route
-    // before every control command. Never retry a possibly delivered POST.
-    usedHost = fallback;
-    res = await attempt(fallback, settings, path, opts);
+    // once to the most recently proven address (cached IP only before a poll
+    // succeeds). Never retry a possibly delivered POST.
+    ({res, usedHost} = await sendPinnedOnce({
+      host: settings.host, cachedIp: fallback,
+      provenHost: lastGoodHost.get(hostKey(settings)),
+      send: host => attempt(host, settings, path, opts),
+    }));
   } else if (method === 'GET' && fallback) {
     // Idempotent + a cached IP known: race both addresses (IP-first, see
     // raceGet). Double-delivery is harmless for a GET, and this removes the

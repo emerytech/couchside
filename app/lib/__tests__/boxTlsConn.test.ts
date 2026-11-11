@@ -38,6 +38,7 @@ class FakeSock implements PinnedSocket {
   closed = false;
   dataCb: ((b: Uint8Array) => void) | null = null;
   closeCb: (() => void) | null = null;
+  errorCb: ((e: Error) => void) | null = null;
   responder: Responder | null = null;
   constructor(id: number) {
     this.id = id;
@@ -53,6 +54,7 @@ class FakeSock implements PinnedSocket {
   onClose(cb: () => void): void {
     this.closeCb = cb;
   }
+  onError(cb: (e: Error) => void): void { this.errorCb = cb; }
   // Like RN: destroy() does not emit close synchronously, and (like the old
   // connectPinned) the callbacks stay attached, so late events still fire.
   close(): void {
@@ -64,6 +66,7 @@ class FakeSock implements PinnedSocket {
   emitClose(): void {
     this.closeCb?.();
   }
+  emitError(e: Error): void { this.errorCb?.(e); }
 }
 
 const BODIES: Record<string, unknown> = {
@@ -389,4 +392,21 @@ test('a closed pooled socket identifies ticket reconnects without replaying cont
   assert.equal(socks[0].writes.length, 1);
   assert.equal(socks[1].writes.length, 1);
   assert.ok(socks.every(s => s.writes[0].startsWith('POST /api/ticket?once=1 ')));
+});
+
+test('restart write error fails the active POST promptly, reconnects queued GET, and never replays the POST', async () => {
+  const r=rig({hold:path=>path==='/api/game/resume'});
+  await r.req('/api/status');
+  const command=r.req('/api/game/resume',400,'POST').then(()=>null,(e:Error)=>e);
+  const next=r.req('/api/audio');
+  await sleep(5);
+  const old=r.socks[0], failure=new Error('broken pipe after restart');
+  old.emitError(failure);
+  const result=await Promise.race([command,sleep(40).then(()=> 'still waiting')]);
+  assert.equal(result,failure,'post-open error must not wait for a delayed close/deadline');
+  assert.deepEqual(JSON.parse((await next).body),BODIES['/api/audio']);
+  old.emitError(new Error('late old error'));old.emitClose();
+  assert.deepEqual(JSON.parse((await r.req('/api/status')).body),BODIES['/api/status']);
+  assert.equal(r.written().filter(x=>x.startsWith('POST /api/game/resume ')).length,1);
+  assert.equal(r.connects,2,'late retired-socket events cannot tear down the new connection');
 });

@@ -15,6 +15,18 @@
  * IP has proven itself, the hostname joins only if the IP request itself fails.
  */
 
+/** Send one pinned command via the latest proven address, without replay. */
+export async function sendPinnedOnce<T>(o: {
+  host: string; cachedIp?: string; provenHost?: string;
+  send: (host: string) => Promise<T>;
+}): Promise<{ res: T; usedHost: string }> {
+  // The caller must use pinned TLS: identity is checked before any HTTP bytes.
+  // Prefer the address a request actually reached, not an older stored IP.
+  // Deliberately no catch/retry: a rejected POST may already have executed.
+  const usedHost = o.provenHost ?? o.cachedIp ?? o.host;
+  return { res: await o.send(usedHost), usedHost };
+}
+
 /**
  * Race a cached IP against the configured hostname, IP first.
  *

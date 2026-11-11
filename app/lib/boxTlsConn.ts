@@ -53,8 +53,7 @@ export type PinnedSocket = {
    * this lets a consumer flip to a dead-socket state on that FIRST error instead of
    * waiting for RN's much-later `close`, during which it would keep writing frames
    * into a socket that is already gone. The WebSocket client (boxWsConn) wires it;
-   * the HTTP pool (PinnedConn) does not (it degrades on close/desync instead), so it
-   * is optional and a socket may omit it.
+   * the HTTP pool wires it too. It remains optional for older socket adapters.
    */
   onError?(cb: (e: Error) => void): void;
   close(): void;
@@ -221,6 +220,12 @@ export class PinnedConn {
         });
         s.onClose(() => {
           if (this.sock === s) this.onClose();
+        });
+        s.onError?.((e) => {
+          // A broken native write can emit error well before close. Fail the
+          // active request once; reconnect only requests not yet written.
+          // Never replay the active POST, and ignore retired-socket errors.
+          if (this.sock === s) this.failActive(e);
         });
         this.pump();
       },

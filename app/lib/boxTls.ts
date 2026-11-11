@@ -164,8 +164,7 @@ export function connectPinned(
     // Pre-settle: a connect/handshake error rejects the connect (unchanged). Post-
     // settle: the socket was live and just died — hand it to errorCb (the WS client
     // tears down NOW instead of writing into a dead socket until RN's lagging close).
-    // The HTTP pool wires no errorCb, so its post-settle errors still no-op here and
-    // it degrades on the following 'close' exactly as before.
+    // The HTTP pool also wires errorCb so a dead connection is retired promptly.
     sock.on('error', (e: Error) => { if (settled) errorCb?.(e); else fail(e); });
     sock.on('close', () => { if (settled) closeCb?.(); else fail(new Error('socket closed before TLS pin verified')); });
   });

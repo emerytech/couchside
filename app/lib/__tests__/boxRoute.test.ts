@@ -19,7 +19,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { raceIpFirst, ttlMemo } from '../boxRoute.ts';
+import { raceIpFirst, sendPinnedOnce, ttlMemo } from '../boxRoute.ts';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const after = <T>(ms: number, v: T) => sleep(ms).then(() => v);
@@ -141,4 +141,23 @@ test('ttlMemo: a rejected lookup is not cached', async () => {
   await assert.rejects(memo('h', () => { calls += 1; return Promise.reject(new Error('boom')); }));
   assert.equal(await memo('h', () => { calls += 1; return Promise.resolve('ok'); }), 'ok');
   assert.equal(calls, 2);
+});
+
+
+test('pinned command follows the address that recovered a GET instead of a stale cached IP',async()=>{
+  const recovered=await raceIpFirst({probeIp:async()=>true,viaIp:async()=>{throw new Error('stale address');},viaHost:async()=> 'box.test',staggerMs:5});
+  const sent:string[]=[];
+  const r=await sendPinnedOnce({host:'box.test',cachedIp:'192.0.2.10',provenHost:recovered,send:async host=>{sent.push(host);return {ok:true};}});
+  assert.equal(r.usedHost,'box.test');assert.deepEqual(sent,['box.test']);
+});
+test('pinned command uses cached IP before a successful poll, otherwise configured host',async()=>{
+  for(const cachedIp of [undefined,'192.0.2.10']){
+    const r=await sendPinnedOnce({host:'box.test',cachedIp,send:async host=>host});
+    assert.equal(r.res,cachedIp??'box.test');
+  }
+});
+test('an uncertain pinned POST failure never triggers a second attempt',async()=>{
+  const attempts:string[]=[];const error=new Error('connection lost after write');
+  await assert.rejects(sendPinnedOnce({host:'box.test',cachedIp:'192.0.2.10',provenHost:'192.0.2.20',send:async host=>{attempts.push(host);throw error;}}),e=>e===error);
+  assert.deepEqual(attempts,['192.0.2.20']);
 });
