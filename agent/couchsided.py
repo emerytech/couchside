@@ -19112,15 +19112,21 @@ def samsung_pair(host, timeout=60):
 
 def _samsung_save(host, token, mac=None):
     """Persist the paired Samsung config to CONFIG_PATH atomically and update
-    CONFIG_SAMSUNG. Holds CONFIG_LOCK."""
+    CONFIG_SAMSUNG, then reset the old session under SAMSUNG_LOCK.
+
+    Use the same lock order as actions (Samsung, then config): a pairing must
+    not save/reset between a reconnect's identity check and publication.
+    """
     cfg = {"host": host, "token": token}
     if mac:
         cfg["mac"] = mac
     global CONFIG_SAMSUNG
-    with CONFIG_LOCK:
-        _config_set_field("samsung", cfg)
-        CONFIG_SAMSUNG = cfg
-    set_tv_active("samsung")
+    with SAMSUNG_LOCK:
+        with CONFIG_LOCK:
+            _config_set_field("samsung", cfg)
+            CONFIG_SAMSUNG = cfg
+        set_samsung(False)
+        set_tv_active("samsung")
 
 
 # ---- Roku backend (ECP over plain HTTP) -----------------------------------
@@ -30769,7 +30775,6 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "could not persist config: %s" % e},
                                started)
                     return
-                set_samsung(False)
                 set_caps(False)
                 self._send(200, {"ok": True, "paired": True,
                                  "backend": "samsung", "host": host}, started)

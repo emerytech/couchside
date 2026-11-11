@@ -10,6 +10,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
@@ -53,6 +54,7 @@ class SamsungTokenTests(unittest.TestCase):
 
         for name, value in {"CONFIG_PATH": str(self.path),
                             "CONFIG_SAMSUNG": self.cfg, "SAMSUNG": None,
+                            "CONFIG_TV_ACTIVE": "webos", "_SAMSUNG_MOCK": False,
                             "_WebOSWS": Wire}.items():
             p = patch.object(cs, name, value)
             p.start()
@@ -143,6 +145,65 @@ class SamsungTokenTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(len(self.wires), 2)
         self.assertTrue(all(w.closed and not w.sent for w in self.wires))
+
+    def test_pairing_waits_for_action_then_resets_old_session(self):
+        attempted = threading.Event()
+        finished = threading.Event()
+        errors = []
+        owner = threading.current_thread()
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if threading.current_thread() is not owner:
+                    attempted.set()
+                self.lock.acquire()
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        def pair():
+            try:
+                cs._samsung_save("other-tv.invalid", "other-test-token")
+            except Exception as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        with patch.object(cs, "SAMSUNG_LOCK", ObservedLock()):
+            with cs.SAMSUNG_LOCK:
+                self.authorize("old-test-token")
+                old = cs._samsung_conn()
+                worker = threading.Thread(target=pair, daemon=True)
+                worker.start()
+                self.assertTrue(attempted.wait(2), "pairing takes the action lock")
+                self.assertFalse(finished.is_set())
+                self.assertIs(cs.CONFIG_SAMSUNG, self.cfg)
+                self.assertIs(cs.SAMSUNG, old)
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(errors)
+            self.assertTrue(old.ws.closed)
+            self.assertIsNone(cs.SAMSUNG)
+            self.assertEqual(cs.CONFIG_SAMSUNG["host"], "other-tv.invalid")
+            self.authorize("other-test-token")
+            new = self.connect()
+            self.assertEqual(urlparse(new.ws.url).hostname, "other-tv.invalid")
+            self.assertEqual(json.loads(self.path.read_text())["tv_active"], "samsung")
+
+    def test_failed_pair_save_keeps_current_session_and_config(self):
+        self.authorize("old-test-token")
+        old = self.connect()
+        before = self.path.read_bytes()
+        with patch.object(cs, "_write_config_atomic", side_effect=OSError("read only")):
+            with self.assertRaises(OSError):
+                cs._samsung_save("other-tv.invalid", "other-test-token")
+        self.assertIs(cs.SAMSUNG, old)
+        self.assertFalse(old.ws.closed)
+        self.assertIs(cs.CONFIG_SAMSUNG, self.cfg)
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":
