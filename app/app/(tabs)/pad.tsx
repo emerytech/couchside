@@ -1,3 +1,4 @@
+import {centerAirMousePointer} from '@/lib/airMouseCenter';
 import {Bg3MovePad} from '@/components/Bg3MovePad';
 import { airMousePlacement } from '@/lib/airMousePlacement';
 import { useInputLatency } from '@/hooks/useInputLatency';
@@ -1005,6 +1006,9 @@ function PadScreen() {
   const gamingPoll = usePoll<Gaming | null>(
     () => api.gaming(settings), autoDropPad ? 5000 : 15000, true, hostKey(settings));
   const runningGame = gamingPoll.data?.game != null;
+  const centerAir = (current:()=>boolean) => centerAirMousePointer(
+    () => api.screenInfo(settings), (x,y) => {client.cancelMouseMove();client.sendGameMove(x,y);}, current);
+
   // The EFFECTIVE keyboard-mode every surface below reads: the manual pref OR an
   // armed auto-drop with a game actually running. One value, one code path — so
   // segment list, connect noPad, and the send path all follow automatically.
@@ -2135,7 +2139,7 @@ function PadScreen() {
   // desktop cursor just because Mouse mode defaults to Air ON.
   const airAnchor = immersiveLive && landGeom.ok ? airMousePlacement(landGeom.play,landGeom.nodes.map(n=>n.hit)) : null;
   const controllerAir = !bg3Move && (mode === 'gamepad' || mode === 'move') && !keyboardMode && !remoteOnly ? (
-    <AirMouseControls floating allowLandscape defaultOn={false}
+    <AirMouseControls onCenter={centerAir} floating allowLandscape defaultOn={false}
       key={hostKey(settings)+':controller'} targetKey={hostKey(settings)+':controller'}
       available={status === 'connected' && !stale && inputBlocked == null}
       onMove={(dx,dy,current)=>{if(current())client.sendMouseMove(dx,dy);}}
@@ -2160,7 +2164,7 @@ function PadScreen() {
         ) : bg3Move ? (
           <Bg3MovePad key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} client={client} targetKey={hostKey(settings)}
             available={padFocused && status==='connected' && !stale && inputBlocked==null}
-            locked={padLock} onToggleLock={()=>setPadLock(v=>!v)} onExit={exitMove}/>
+            locked={padLock} onToggleLock={()=>setPadLock(v=>!v)} onExit={exitMove} onCenter={centerAir}/>
         ) : mode === 'move' ? (
           // Movement mode: one big thumb zone driving the LEFT STICK plus a
           // small A/B/NAV/START cluster — the landscape spread or the vertical
@@ -2421,7 +2425,7 @@ function PadScreen() {
               onSelect={tvNav ? tvClick : selectTap}
             />
             </View>
-            <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
+            <AirMouseControls onCenter={centerAir} onActiveChange={setAirMouseActive} floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
               available={status === 'connected' && !stale && inputBlocked == null}
               onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
               onStop={()=>client.cancelMouseMove()}
@@ -2492,7 +2496,7 @@ function PadScreen() {
               onDragEnd={tpDragEnd}
             />
             </View>
-          <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
+          <AirMouseControls onCenter={centerAir} onActiveChange={setAirMouseActive} floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
             available={status === 'connected' && !stale && inputBlocked == null}
             onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
             onStop={() => client.cancelMouseMove()}

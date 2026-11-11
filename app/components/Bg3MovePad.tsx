@@ -14,9 +14,9 @@ import {FloatingStick,PadKey,ChromeButton} from './LandscapePad';
 import type {PadLayout,Rect} from '@/lib/padLayout';
 import type {ButtonKey,GamepadClient} from '@/lib/gamepad';
 const abs=(r:Rect)=>({position:'absolute' as const,left:r.x,top:r.y,width:r.w,height:r.h});
-export function Bg3MovePad({layout,client,targetKey,available,locked,onToggleLock,onExit}:{
+export function Bg3MovePad({layout,client,targetKey,available,locked,onToggleLock,onExit,onCenter}:{
  layout:Extract<PadLayout,{ok:true}>;client:GamepadClient;targetKey:string;available:boolean;
- locked:boolean;onToggleLock():void;onExit():void;
+ locked:boolean;onToggleLock():void;onExit():void;onCenter?:(current:()=>boolean)=>void|Promise<void>;
 }) {
  const t=useTheme(), camera=usePref('bg3MoveCamera');
  const [manual,setManual]=useState(false),manualRef=useRef(false),live=useRef(available);live.current=available;
@@ -64,7 +64,7 @@ export function Bg3MovePad({layout,client,targetKey,available,locked,onToggleLoc
   <ChromeButton node={n.exit} u={u} text="✕ EXIT" onPress={onExit} accessibilityLabel="Exit Baldur’s Gate MOVE"/>
   <ChromeButton node={n.theme} u={u} text={cameraMode?'WASD':'CURSOR'} onPress={()=>void setPref('bg3MoveCamera',!camera)} accessibilityLabel="Switch movement zone between camera and cursor"/>
   {anchor&&extras.ok&&<View pointerEvents="box-none" style={{...abs(anchor),zIndex:20}}>
-   <AirMouseControls floating allowLandscape defaultOn targetKey={targetKey+':bg3'} available={usable} touchpadActive={manual}
+   <AirMouseControls floating allowLandscape defaultOn targetKey={targetKey+':bg3'} available={usable} touchpadActive={manual} onCenter={onCenter}
     onMove={(x,y,current)=>{if(current()&&!manualRef.current)client.sendMouseMove(x,y);}}
     onClick={current=>{if(current())inputs.click('air','l');}} onStop={()=>client.cancelMouseMove()}/>
   </View>}

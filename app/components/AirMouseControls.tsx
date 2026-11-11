@@ -11,6 +11,8 @@ import { AirMouseTouchHandoff, AirMouseShakeDetector } from '@/lib/airMouseGestu
 import { setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { useReducedMotion } from '@/lib/skin/motion';
 import { useTheme } from '@/lib/theme';
+import { hapticLight } from '@/lib/haptics';
+import { stopCursorFlings } from '@/lib/cursorFling';
 
 type Props = {
   targetKey: string;
@@ -23,6 +25,7 @@ type Props = {
   available?: boolean;
   onMove: (dx: number, dy: number, current: () => boolean) => void | Promise<void>;
   onClick: (current: () => boolean) => void | Promise<void>;
+  onCenter?: (current: () => boolean) => void | Promise<void>;
   onStop?: () => void;
   onGuide?: () => Promise<unknown>;
   onCursor?: (enabled: boolean, lease: string, size: number) => Promise<unknown>;
@@ -36,6 +39,7 @@ export function AirMouseControls(props: Props) {
   const synthetic=process.env.EXPO_PUBLIC_AIR_SYNTHETIC==='1' && params.syntheticGyro==='1';
   const {width} = useWindowDimensions();
   const [menuOpen,setMenuOpen] = useState(false);
+  const longPressed = useRef(false), fanHeld = useRef(false), centering = useRef(false);
   const fan = useRef(new Animated.Value(0)).current;
   useEffect(()=>{Animated.timing(fan,{toValue:menuOpen?1:0,duration:reducedMotion?0:180,useNativeDriver:false}).start();return()=>fan.stopAnimation();},[menuOpen,reducedMotion,fan]);
   const t = useTheme(); const latest = useRef(props); latest.current = props;
@@ -128,6 +132,7 @@ export function AirMouseControls(props: Props) {
         const sample = airMouseGripSample(rawSample, grip);
         const q=timing.current, now=Date.now();q.samples++;if(q.last){const gap=now-q.last;q.maxGap=Math.max(q.maxGap,gap);if(gap>80)q.gaps++;}q.last=now;
         if (!current()) {q.blocked++;return;}
+        if (centering.current) return;
         if (calibrate) { samples.push(sample); return; }
         if(!handoff.current.allows(Date.now())) {q.touch++;engine.current.reset();return;}
         if(shakeEnabled && largeCursor && latest.current.onCursor) {
@@ -218,6 +223,25 @@ export function AirMouseControls(props: Props) {
     void Promise.resolve().then(()=>{if(current())return latest.current.onClick(current);})
       .catch(()=>{if(current())setMessage('Click failed. Check connection.');});
   };
+  const resetAim = async () => {
+    if (synthetic || centering.current || props.available === false) return;
+    const id = epoch.current, target = props.targetKey;
+    const current = () => mounted.current && focused.current && epoch.current === id && latest.current.targetKey === target && latest.current.available !== false && AppState.currentState === 'active';
+    if (!current()) return;
+    centering.current = true;
+    stopCursorFlings(); handoff.current.setTouch(true,Date.now()); engine.current.reset(); latest.current.onStop?.();
+    try {
+      await latest.current.onCenter?.(current);
+      if (current()) { hapticLight(); setMessage(latest.current.onCenter ? 'Center requested. Phone re-aligned.' : 'Phone re-aligned. Cursor centering is unavailable on this target.'); }
+    } catch {
+      if (current()) { setMessage('Could not center the cursor. Check the box connection and Game Mode.'); setMenuOpen(true); }
+    } finally {
+      centering.current = false;
+      // Retire our touch lease even if a menu, reconnect or target switch
+      // invalidated the async operation; otherwise gyro could stay paused.
+      if (mounted.current) { engine.current.reset(); handoff.current.setTouch(latest.current.touchpadActive === true || (longPressed.current && fanHeld.current),Date.now()); }
+    }
+  };
   const button = { minHeight: 42, justifyContent: 'center' as const, minWidth:44, alignItems:'center' as const, paddingHorizontal: 7, borderRadius: 10, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card };
   return <View pointerEvents="box-none" style={props.floating ? {position:'absolute',right:8,bottom:8,zIndex:20,alignItems:'flex-end',gap:4} : {gap:4,alignItems:'flex-end'}}>
     {menuOpen && !!message && <Text accessibilityLiveRegion="polite" style={{color:t.textDim,fontSize:12,width:Math.min(240,width-32),backgroundColor:t.card,borderRadius:10,padding:8}}>{message}</Text>}
@@ -230,13 +254,13 @@ export function AirMouseControls(props: Props) {
         <Text style={{ color: toggleOn ? t.blue : t.textDim, fontWeight: '700', fontSize: 13 }}>{toggleOn ? 'ON' : 'OFF'}</Text>
       </Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Quick calibrate" style={button} onPress={() => { void begin(true); }}><Text style={{ color: t.text, fontSize: 13 }}>Cal</Text></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Recenter Air Mouse" style={button} onPress={() => { stop(); setMessage('Regrip, then turn Air on. Cursor stays in place.'); }}><Text style={{ color: t.text, fontSize: 13 }}>↺</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel={props.onCenter ? 'Center cursor and re-align Air Mouse' : 'Re-align Air Mouse'} style={button} disabled={synthetic || props.available === false} onPress={() => { void resetAim(); }}><MaterialCommunityIcons name="crosshairs" size={20} color={t.text}/></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel="Click or confirm target" style={button} disabled={synthetic || props.available === false} onPress={clickPointer}><Text style={{color:t.text,fontSize:13}}>Click</Text></Pressable>
       {!props.quickClick&&<Pressable accessibilityRole="switch" accessibilityLabel="Touchpad cursor fling" accessibilityState={{checked:fling}} accessibilityHint="Continue cursor movement after a fast touchpad swipe" style={[button,{borderColor:fling?t.blue:t.cardBorder}]} onPress={()=>{void setPref('cursorFling',!fling);}}><Text style={{color:fling?t.blue:t.textDim,fontWeight:'700',fontSize:10}}>FLING</Text><Text style={{color:fling?t.blue:t.textDim,fontSize:10}}>{fling?'ON':'OFF'}</Text></Pressable>}
       <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse preferences" style={button} onPress={() => { stop(false); router.push('/air-mouse-settings'); }}><Text style={{ color: t.blue, fontSize: 18 }}>⚙</Text></Pressable>
     </View>
     </Animated.View>
-    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||'Show pointing controls'} accessibilityState={{expanded:menuOpen}} onPress={()=>setMenuOpen(v=>!v)} style={{width:44,height:44,borderRadius:14,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}>{menuOpen ? <MaterialCommunityIcons name="close" size={24} color={toggleOn?t.blue:t.textDim} /> : <View accessibilityElementsHidden style={{alignItems:'center'}}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Air Mouse controls" accessibilityHint={message||(props.onCenter ? 'Tap for controls. Hold to center the cursor and re-align the phone.' : 'Tap for controls. Hold to re-align the phone.')} accessibilityState={{expanded:menuOpen}} delayLongPress={550} onPressIn={()=>{longPressed.current=false;fanHeld.current=true;}} onPressOut={()=>{fanHeld.current=false;if(longPressed.current){engine.current.reset();handoff.current.setTouch(latest.current.touchpadActive===true,Date.now());}}} onLongPress={()=>{longPressed.current=true;void resetAim();}} onPress={()=>{if(longPressed.current){longPressed.current=false;return;}setMenuOpen(v=>!v);}} style={{width:44,height:44,borderRadius:14,alignItems:'center',justifyContent:'center',borderWidth:1,borderColor:toggleOn?t.blue:t.cardBorder,backgroundColor:t.card}}>{menuOpen ? <MaterialCommunityIcons name="close" size={24} color={toggleOn?t.blue:t.textDim} /> : <View accessibilityElementsHidden style={{alignItems:'center'}}>
       <View style={{width:30,height:25}}><MaterialCommunityIcons name="cursor-default" size={25} color={toggleOn?t.blue:t.text} style={{position:'absolute',left:0,top:1}} />
         <View style={{position:'absolute',right:1,top:1,width:10,height:10,borderTopWidth:1.5,borderRightWidth:1.5,borderTopRightRadius:9,borderColor:toggleOn?t.blue:t.textDim}} />
         <View style={{position:'absolute',right:5,top:5,width:5,height:5,borderTopWidth:1.5,borderRightWidth:1.5,borderTopRightRadius:5,borderColor:toggleOn?t.blue:t.textDim}} />
