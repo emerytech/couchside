@@ -6,4 +6,4 @@ The first implementation supports SteamOS Game Mode through the existing authent
 
 Backend movement-only validation on the Steam Machine's 3840 by 2160 display observed the cursor at exactly 1920 by 1080. Unit checks cover the center coordinate, unsupported sessions, probe failures, inactive surfaces, and target/ownership loss during a probe. Existing Air Mouse, gesture/intent and cursor-fling checks plus TypeScript passed.
 
-This is source-only after iPhone 308. A new native preview must verify short-tap versus hold, haptics, OFF-state centering, no fan toggle after a hold, continued gyro/touchpad handoff, and cancellation on navigation/background/ownership changes. Nothing is released.
+This is included in internal TestFlight preview 309, after installed iPhone 308. Native acceptance must verify short-tap versus hold, haptics, OFF-state centering, no fan toggle after a hold, continued gyro/touchpad handoff, and cancellation on navigation/background/ownership changes. Nothing is released.
