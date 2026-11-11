@@ -19018,11 +19018,33 @@ def samsung_available():
 
 
 def _samsung_conn():
-    """Return a live connected _SamsungSession. Caller MUST hold SAMSUNG_LOCK."""
-    global SAMSUNG
+    """Return a live session, persisting a renewed token before using it.
+
+    Caller MUST hold SAMSUNG_LOCK. A TV can rotate its token on reconnect,
+    not only during explicit pairing. Leaving that token only in the session
+    makes the next connection reuse the old credential (issue #660).
+    """
+    global SAMSUNG, CONFIG_SAMSUNG
     if SAMSUNG is None:
-        SAMSUNG = _SamsungSession(CONFIG_SAMSUNG["host"],
-                                  CONFIG_SAMSUNG.get("token"))
+        with CONFIG_LOCK:
+            cfg = CONFIG_SAMSUNG
+        sess = _SamsungSession(cfg["host"], cfg.get("token"))
+        try:
+            with CONFIG_LOCK:
+                # Pairing/config reload can replace the target while the TV
+                # authorizes us. Never overwrite that newer configuration or
+                # send its next command through the old TV's session.
+                if CONFIG_SAMSUNG is not cfg:
+                    raise IOError("Samsung pairing changed during connection")
+                if sess.token and sess.token != cfg.get("token"):
+                    updated = dict(cfg)
+                    updated["token"] = sess.token
+                    _config_set_field("samsung", updated)
+                    CONFIG_SAMSUNG = updated
+        except Exception:
+            sess.close()
+            raise
+        SAMSUNG = sess
     return SAMSUNG
 
 
@@ -19090,15 +19112,21 @@ def samsung_pair(host, timeout=60):
 
 def _samsung_save(host, token, mac=None):
     """Persist the paired Samsung config to CONFIG_PATH atomically and update
-    CONFIG_SAMSUNG. Holds CONFIG_LOCK."""
+    CONFIG_SAMSUNG, then reset the old session under SAMSUNG_LOCK.
+
+    Use the same lock order as actions (Samsung, then config): a pairing must
+    not save/reset between a reconnect's identity check and publication.
+    """
     cfg = {"host": host, "token": token}
     if mac:
         cfg["mac"] = mac
     global CONFIG_SAMSUNG
-    with CONFIG_LOCK:
-        _config_set_field("samsung", cfg)
-        CONFIG_SAMSUNG = cfg
-    set_tv_active("samsung")
+    with SAMSUNG_LOCK:
+        with CONFIG_LOCK:
+            _config_set_field("samsung", cfg)
+            CONFIG_SAMSUNG = cfg
+        set_samsung(False)
+        set_tv_active("samsung")
 
 
 # ---- Roku backend (ECP over plain HTTP) -----------------------------------
@@ -30747,7 +30775,6 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "could not persist config: %s" % e},
                                started)
                     return
-                set_samsung(False)
                 set_caps(False)
                 self._send(200, {"ok": True, "paired": True,
                                  "backend": "samsung", "host": host}, started)
