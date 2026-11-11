@@ -1,6 +1,6 @@
 # Experimental game Pause / Resume — Linux preview
 
-Status: private preview preparation. iPhone 2.9.83(308) is being prepared through EAS cloud over shipped 2.9.82 with Pause/Resume added, preserving Air Mouse/BG3/fling. The earlier Ad Hoc 306 could not replace the existing store app without deletion. Cloud 2.9.82(307) built and passed artifact verification, but Apple rejected its upload because the 2.9.82 version train is closed. The replacement advances the app version and iOS build number; functionality is unchanged. Verify the new artifact and Apple processing before internal TestFlight installation. No public release or active-agent replacement has occurred. Windows is not implemented and does not advertise these controls.
+Status: internal iPhone 2.9.83(308) is installed and opens with the saved secure box connection intact. EAS cloud built the shipped 2.9.82 source plus Pause/Resume, preserving Air Mouse/BG3/fling; artifact version, strict signature and multicast entitlement passed verification. Apple reports the build valid and in internal beta testing. The app version advanced because Apple closed the shipped 2.9.82 train to further uploads. Actual offline-game pause/resume acceptance and installed-agent deployment remain pending. No public release or active-agent replacement has occurred. Windows is not implemented and does not advertise these controls.
 
 ## Behavior
 
