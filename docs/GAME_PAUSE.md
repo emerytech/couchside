@@ -1,6 +1,6 @@
 # Experimental game Pause / Resume — Linux preview
 
-Status: feature branch only. No release, installed-agent replacement, or phone binary is included. Windows is not implemented and does not advertise these controls.
+Status: private preview preparation. An internal iPhone 2.9.82(306) binary has been built over the shipped 2.9.82 source with Pause/Resume added, preserving Air Mouse/BG3/fling. Artifact version/signature/provisioning are verified; installation and actual gameplay acceptance are pending device availability. No release or active-agent replacement has occurred. Windows is not implemented and does not advertise these controls.
 
 ## Behavior
 
