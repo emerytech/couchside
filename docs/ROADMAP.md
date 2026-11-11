@@ -16,6 +16,12 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Experimental game Pause / Resume (2026-11-10)
+- **priority:** P2 · **risk:** high (process suspension) · **affects:** Linux agent + phone UI · **depends_on:** local per-game opt-in, pidfds, reviewed game compatibility.
+- **Status:** isolated Linux implementation and mock app control prepared; no release or installed-agent replacement. Windows deferred.
+- Agent-only target resolution; no client process IDs. Stable PID handles, protected-process checks, atomic private journal and local recovery CLI. Optional gaming payload field; older/Windows agents keep existing behavior.
+- Tests exercise owned disposable Linux processes and restart-style recovery plus HTTP/auth rejection and UI actions. Actual game/native acceptance is still required. See docs/GAME_PAUSE.md.
+
 ### Optional PAD presets and rotation Help (2026-10-29)
 - **priority:** P2 · **risk:** medium (input lifecycle) · **affects:** phone app only · **depends_on:** existing controller transport and host bindings.
 - **Status:** integrated for the next release cycle; gameplay acceptance remains open. No release is included in this change.

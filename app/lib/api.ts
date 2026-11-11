@@ -1490,7 +1490,16 @@ export type GpuInfo = {
   clock_mhz?: number;
 };
 
+export type GamePauseStatus = {
+  available: boolean;
+  paused: boolean;
+  has_record: boolean;
+  reason?: string;
+};
+
 export type Gaming = {
+  /** Optional experimental Linux pause support; absent on older/Windows agents. */
+  game_pause?: GamePauseStatus;
   /** The primary GPU — the discrete card when a box has one. Unchanged field,
    *  still sent by every agent, so older app code keeps working. */
   gpu?: GpuInfo;
@@ -2976,6 +2985,19 @@ export const api = {
    * Resolves false on 409 (nothing running) or on an older agent, so the caller
    * can just refresh rather than treat it as an error.
    */
+  gamePause(settings: ConnSettings, action: 'pause' | 'resume'): Promise<{ ok: boolean; paused?: boolean; reason?: string }> {
+    if (action !== 'pause' && action !== 'resume') return Promise.reject(new Error('Unknown game pause action'));
+    const path = action === 'pause' ? '/api/game/pause' : '/api/game/resume';
+    return request<{ ok: boolean; paused?: boolean; reason?: string }>(settings, path, { method: 'POST', timeoutMs: 8000 })
+      .catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 409 && error.body && typeof error.body === 'object') {
+          const body = error.body as { reason?: unknown; paused?: unknown };
+          return { ok: false, paused: body.paused === true, reason: typeof body.reason === 'string' ? body.reason.slice(0, 300) : 'The box refused this pause action. Refresh and retry.' };
+        }
+        throw error;
+      });
+  },
+
   stopGame(settings: ConnSettings): Promise<boolean> {
     return request<{ stopped: boolean }>(settings, '/api/game/stop', { method: 'POST' })
       .then((r) => !!r?.stopped)

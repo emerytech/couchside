@@ -705,10 +705,13 @@ def load_config(path):
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
     global CONFIG_LGCOM, CONFIG_TV_ACTIVE, CONFIG_TLS
     global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE, CONFIG_ERROR
+    global ALLOW_GAME_PAUSE, GAME_PAUSE_APPIDS
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
     # That fell through to the process CWD, which under systemd is "/" — see
     # _write_config_atomic for the read-only-root failure that caused.
+    ALLOW_GAME_PAUSE = False
+    GAME_PAUSE_APPIDS = frozenset()
     CONFIG_PATH = os.path.abspath(path)  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
@@ -716,6 +719,10 @@ def load_config(path):
         # Read the opt-in flags FIRST, independent of the rest of the config: they
         # must be honored even if _parse_config later rejects some other field.
         if isinstance(raw, dict):
+            ALLOW_GAME_PAUSE = raw.get("allow_game_pause") is True
+            pause_ids = raw.get("game_pause_appids", [])
+            GAME_PAUSE_APPIDS = frozenset(pause_ids) if (isinstance(pause_ids, list)
+                and len(pause_ids) <= 32 and all(type(n) is int and 0 < n < 2147483648 for n in pause_ids)) else frozenset()
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
             # The TLS block gets the SAME treatment, for a worse reason: it holds
@@ -23378,6 +23385,11 @@ def stop_running_game():
     Degrades closed: nothing running is a plain "not stopped", never a
     best-effort sweep of anything that looks game-shaped.
     """
+    try:
+        if _game_pause_read():
+            return {"stopped": False, "reason": "Resume the recorded game before closing it."}
+    except (OSError, ValueError, TypeError):
+        return {"stopped": False, "reason": "Resolve the pause recovery journal before closing the game."}
     game = _running_game()
     if not game or not game.get("pid"):
         return {"stopped": False, "reason": "nothing running"}
@@ -23422,6 +23434,299 @@ def stop_running_game():
             return {"stopped": True, "game": game}
     return {"stopped": False, "game": game,
             "reason": "still running after SIGTERM"}
+
+
+# Experimental game pause: current Steam reaper tree only, never client PIDs.
+# pidfds prevent PID-reuse signalling. A private write-ahead journal makes an
+# interrupted pause recoverable after agent restart; this is NOT a save state.
+ALLOW_GAME_PAUSE = False
+GAME_PAUSE_APPIDS = frozenset()
+_GAME_PAUSE_LOCK = threading.RLock()
+_GAME_PAUSE_FILE = os.path.join(TOKEN_STATE_DIR, "game-pause.json")
+_GAME_PAUSE_PROTECTED = frozenset((
+    "steam", "steamwebhelper", "gamescope", "gamescope-wl", "systemd",
+    "dbus-daemon", "dbus-broker", "sshd", "couchsided", "Xorg", "Xwayland",
+    "kwin_wayland", "gnome-shell", "pipewire", "wireplumber",
+))
+
+
+def _game_pause_boot():
+    with open("/proc/sys/kernel/random/boot_id") as f:
+        return f.read().strip()
+
+
+def _game_pause_proc(pid):
+    """Identity/liveness from procfs; start ticks are field 22, not wall time."""
+    try:
+        root = "/proc/%d" % pid
+        with open(root + "/stat") as f:
+            raw = f.read()
+        tail = raw[raw.rindex(")") + 2:].split()
+        with open(root + "/status") as f:
+            status = dict(line.split(":", 1) for line in f if ":" in line)
+        with open(root + "/cmdline", "r", errors="replace") as f:
+            argv = f.read().split("\x00")
+        protected = any(os.path.basename(arg) in ("couchsided.py", "couchsided-win.py", "couchside-helper.py") for arg in argv)
+        uids = [int(n) for n in status["Uid"].split()]
+        safe_uid = uids[0] if len(uids) == 4 and len(set(uids)) == 1 else -1
+        return {"protected": protected, "pid": pid, "start": int(tail[19]), "ppid": int(tail[1]),
+                "state": tail[0], "name": raw[raw.index("(") + 1:raw.rindex(")")],
+                "uid": safe_uid,
+                "tracer": int(status.get("TracerPid", "0").strip())}
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
+def _game_pause_read():
+    try:
+        fd = os.open(_GAME_PAUSE_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != UID or st.st_mode & 0o077:
+            raise ValueError("unsafe pause journal")
+        raw = f.read(32769)
+    if len(raw) > 32768:
+        raise ValueError("oversize pause journal")
+    data = json.loads(raw)
+    if (not isinstance(data, dict) or data.get("version") != 1
+            or not isinstance(data.get("boot"), str)
+            or not isinstance(data.get("game"), dict)
+            or not isinstance(data.get("processes"), list)
+            or len(data["processes"]) > 128):
+        raise ValueError("invalid pause journal")
+    for p in data["processes"]:
+        if (not isinstance(p, dict) or type(p.get("pid")) is not int
+                or p["pid"] <= 1 or type(p.get("start")) is not int
+                or p["start"] < 0):
+            raise ValueError("invalid recorded identity")
+    return data
+
+
+def _game_pause_write(data):
+    directory = os.path.dirname(_GAME_PAUSE_FILE)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    st = os.stat(directory, follow_symlinks=False)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o022:
+        raise ValueError("unsafe pause directory")
+    fd, temp = tempfile.mkstemp(prefix=".game-pause-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, _GAME_PAUSE_FILE)
+        dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    finally:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+
+
+def _game_pause_supported():
+    return sys.platform.startswith("linux") and hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+
+
+def game_pause_status():
+    try:
+        record = _game_pause_read()
+        if record:
+            live = [p for p in record["processes"]
+                    if (lambda q: q and q["start"] == p["start"]
+                        and q["state"] in ("T", "t"))(_game_pause_proc(p["pid"]))]
+            if record["boot"] != _game_pause_boot():
+                live = []
+            return {"available": _game_pause_supported(), "has_record": True,
+                    "paused": bool(live), "game": record["game"],
+                    "reason": "Resume the recorded session; this is not a saved game."}
+        game = _running_game() if ALLOW_GAME_PAUSE else None
+        available = (_game_pause_supported() and UID != 0 and ALLOW_GAME_PAUSE
+                     and game and game.get("appid") in GAME_PAUSE_APPIDS)
+        return {"available": bool(available), "has_record": False, "paused": False,
+                "reason": "Experimental; enable a specific offline Steam game locally."}
+    except (OSError, ValueError, TypeError):
+        return {"available": False, "has_record": True, "paused": False,
+                "reason": "Pause journal needs local recovery; no processes were signalled."}
+
+
+def _game_pause_ancestors():
+    protected, pid = set(), os.getpid()
+    while pid > 1 and pid not in protected:
+        protected.add(pid)
+        p = _game_pause_proc(pid)
+        pid = p["ppid"] if p else 1
+    return protected
+
+
+def _game_pause_signal(identity, sig, record=None):
+    # Open a stable kernel handle BEFORE inspecting the PID's current identity.
+    fd = os.pidfd_open(identity["pid"], 0)
+    try:
+        p = _game_pause_proc(identity["pid"])
+        if (not p or p["start"] != identity["start"] or p["uid"] != UID
+                or p["pid"] in _game_pause_ancestors()
+                or p["name"] in _GAME_PAUSE_PROTECTED or p.get("protected") or p["tracer"]):
+            raise ValueError("process identity or safety check failed")
+        if p["state"] == "Z":
+            if sig == signal.SIGSTOP:
+                raise ProcessLookupError("game exited")
+            return
+        if sig == signal.SIGSTOP:
+            if p["state"] in ("T", "t"):
+                raise ValueError("process already stopped outside Couchside")
+            # Journal BEFORE signalling, including each newly discovered child.
+            record["processes"].append({"pid": p["pid"], "start": p["start"]})
+            _game_pause_write(record)
+        signal.pidfd_send_signal(fd, sig, None, 0)
+    finally:
+        os.close(fd)
+
+
+def _game_pause_resume_locked():
+    record = _game_pause_read()
+    if not record:
+        return {"ok": True, "paused": False, "reason": "No recorded paused game."}
+    failures = []
+    # Reverse order: helpers resume before the reaper. Never signal reused PIDs.
+    if record["boot"] == _game_pause_boot():
+        for identity in reversed(record["processes"]):
+            p = _game_pause_proc(identity["pid"])
+            if not p:
+                if os.path.exists("/proc/%d" % identity["pid"]):
+                    failures.append(identity)
+                continue
+            if p["start"] != identity["start"] or p["state"] == "Z":
+                continue
+            try:
+                _game_pause_signal(identity, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            except (OSError, ValueError):
+                failures.append(identity)
+    if record["boot"] == _game_pause_boot():
+        deadline = time.monotonic() + 0.5
+        while True:
+            stopped = [identity for identity in record["processes"]
+                       if (lambda p: p and p["start"] == identity["start"]
+                           and p["state"] in ("T", "t"))(_game_pause_proc(identity["pid"]))]
+            if not stopped or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        failures.extend(stopped)
+    if failures:
+        return {"ok": False, "paused": True, "reason": "Some processes could not resume; retry Resume or recover locally."}
+    os.unlink(_GAME_PAUSE_FILE)
+    return {"ok": True, "paused": False, "game": record["game"]}
+
+
+def _resume_running_game_impl():
+    # Recovery intentionally works even after local opt-in is disabled.
+    with _GAME_PAUSE_LOCK:
+        try:
+            if not _game_pause_supported():
+                return {"ok": False, "reason": "Game resume is unavailable on this platform."}
+            return _game_pause_resume_locked()
+        except (OSError, ValueError, TypeError):
+            return {"ok": False, "reason": "Could not recover the pause journal; use local recovery."}
+
+
+def _pause_running_game_impl():
+    with _GAME_PAUSE_LOCK:
+        try:
+            if not _game_pause_supported() or not ALLOW_GAME_PAUSE or UID == 0:
+                return {"ok": False, "reason": "Experimental game pause is disabled."}
+            if _game_pause_read():
+                return {"ok": False, "reason": "Resume the recorded game before pausing again."}
+            game = _running_game()
+            if not game or game.get("appid") not in GAME_PAUSE_APPIDS:
+                return {"ok": False, "reason": "The running game is not locally enabled for experimental pause."}
+            root = _game_pause_proc(game.get("pid", 0))
+            if not root or root["pid"] <= 1 or root["uid"] != UID:
+                return {"ok": False, "reason": "No safe running game was found."}
+            with open("/proc/%d/cmdline" % root["pid"], "r", errors="replace") as f:
+                if _appid_from_cmdline(f.read()) != str(game["appid"]):
+                    return {"ok": False, "reason": "The running game changed; retry."}
+            record = {"version": 1, "boot": _game_pause_boot(), "game": game,
+                      "processes": []}
+            _game_pause_signal(root, signal.SIGSTOP, record)
+            # Freeze newly discovered descendants until stable; never stop a
+            # process group that might include Steam/the desktop/our daemon.
+            known = {root["pid"]}
+            for attempt in range(8):
+                table = {}
+                for path in glob.glob("/proc/[0-9]*/stat"):
+                    p = _game_pause_proc(int(path.split("/")[2]))
+                    if p:
+                        table[p["pid"]] = p
+                descendants = set(known)
+                for unused in range(128):
+                    added = {p["pid"] for p in table.values() if p["ppid"] in descendants}
+                    if added <= descendants:
+                        break
+                    descendants |= added
+                    if len(descendants) > 128:
+                        raise ValueError("game tree is too large")
+                fresh = descendants - known
+                if not fresh:
+                    live = [_game_pause_proc(p["pid"]) for p in record["processes"]]
+                    if any(p and p["state"] == "T" for p in live) and all(p and p["state"] in ("T", "Z") for p in live):
+                        return {"ok": True, "paused": True, "game": game}
+                    time.sleep(0.02)
+                    continue
+                for pid in sorted(fresh):
+                    _game_pause_signal(table[pid], signal.SIGSTOP, record)
+                    known.add(pid)
+            raise ValueError("game processes did not stop cleanly")
+        except (OSError, ValueError, TypeError):
+            try:
+                recovered = _game_pause_resume_locked()
+                return {"ok": False, "paused": not recovered.get("ok"),
+                        "reason": "Pause failed; resume recovery was attempted. " + recovered.get("reason", "")}
+            except (OSError, ValueError, TypeError):
+                return {"ok": False, "paused": True, "reason": "Pause interrupted; use Resume for recovery."}
+
+
+def _game_pause_control(operation):
+    # CLI and daemon share this lease; never wait indefinitely on another action.
+    with _GAME_PAUSE_LOCK:
+        fd = None
+        try:
+            directory = os.path.dirname(_GAME_PAUSE_FILE)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            st = os.stat(directory, follow_symlinks=False)
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o022:
+                raise ValueError("unsafe pause directory")
+            fd = os.open(_GAME_PAUSE_FILE + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != UID or st.st_mode & 0o077:
+                raise ValueError("unsafe pause lock")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return operation()
+        except BlockingIOError:
+            return {"ok": False, "reason": "Another pause/recovery operation is active; retry."}
+        except (OSError, ValueError):
+            return {"ok": False, "reason": "Pause recovery storage is unavailable; no new pause was started."}
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+
+def pause_running_game():
+    if not _game_pause_supported() or not ALLOW_GAME_PAUSE or UID == 0:
+        return {"ok": False, "reason": "Experimental game pause is disabled."}
+    return _game_pause_control(_pause_running_game_impl)
+
+
+def resume_running_game():
+    if not _game_pause_supported():
+        return {"ok": False, "reason": "Game resume is unavailable on this platform."}
+    return _game_pause_control(_resume_running_game_impl)
 
 
 def _proc_uptime_s(pid):
@@ -25480,7 +25785,7 @@ def _gaming_payload():
         c = _GAMING_CACHE
         if c["val"] is not None and now - c["at"] <= _GAMING_TTL:
             return c["val"]
-    payload = {"session": _couchmode_session()}
+    payload = {"session": _couchmode_session(), "game_pause": game_pause_status()}
     gpus = _gpu_sensors_all()
     if gpus:
         # `gpus` is the whole set (agent >= 2.9.67); `gpu` stays the primary
@@ -25503,11 +25808,14 @@ def _gaming_payload():
     return payload
 
 
+_MOCK_GAME_PAUSED = False
+
+
 def mock_gaming():
     """A full payload for --mock so the app's render path is exercised without
     hardware: GPU block populated (as an AMD box would), a running game, an
     external output, a pad with battery, Game Mode."""
-    return {
+    return {"game_pause": {"available": True, "paused": _MOCK_GAME_PAUSED, "has_record": _MOCK_GAME_PAUSED},
         "gpu": {"name": "amdgpu", "card": "card1", "temp_c": 61.0,
                 "vram_used_mb": 3300, "vram_total_mb": 8192,
                 # Mock a DISCRETE card: gtt smaller than vram, so the app takes
@@ -29896,6 +30204,22 @@ class Handler(BaseHTTPRequestHandler):
             # allowlist — Steam would silently open its DEFAULT page for an
             # unknown slug, so forwarding one would look like success while
             # landing somewhere else entirely.
+            if path in ("/api/game/pause", "/api/game/resume"):
+                # No identifiers, JSON, query parameters or process targets accepted.
+                if body or parsed.query:
+                    self._send(400, {"error": "This action accepts no parameters."}, started)
+                    return
+                if self.mock:
+                    global _MOCK_GAME_PAUSED
+                    _MOCK_GAME_PAUSED = path == "/api/game/pause"
+                    res = {"ok": True, "paused": _MOCK_GAME_PAUSED}
+                else:
+                    res = pause_running_game() if path == "/api/game/pause" else resume_running_game()
+                with _GAMING_LOCK:
+                    _GAMING_CACHE["val"] = None
+                self._send(200 if res.get("ok") else 409, res, started)
+                return
+
             if path == "/api/game/stop":
                 # Deliberately takes NO BODY. The agent resolves what is running
                 # itself; a client that cannot name a process cannot be steered
@@ -33201,6 +33525,8 @@ def main():
     # which is the only moment nothing can be switching sessions.
     p.add_argument("--arm-boot-session", action="store_true",
                    help="write the stored boot preference and exit (ExecStop hook)")
+    p.add_argument("--resume-game", action="store_true",
+                   help="resume only the journalled game as this user, then exit; no server or pairing changes")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
     # Env-free mock state for the Decky manager (only meaningful with --mock):
@@ -33220,6 +33546,10 @@ def main():
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
     args = p.parse_args()
+    if args.resume_game:
+        result = resume_running_game()
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 1)
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)
