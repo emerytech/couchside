@@ -1,339 +1,309 @@
 #!/usr/bin/env python3
-"""Couchside-Ports install path safety (agent side).
+"""Ports trust boundary, durable job recovery and worker lifecycle.
 
-Run: python3 tests/test_ports_install.py
-
-WHAT THIS GUARDS (CLAUDE.md §3, §6):
-
-  1. Every /api/ports route needs the bearer token.
-  2. A non-allowlisted port id is a 404 and NOTHING runs — proven by patching
-     subprocess to explode if touched (the control: it never is).
-  3. The install is OFF until the on-box opt-in marker exists (403 needs_optin),
-     and the gate is checked before any process is spawned.
-  4. When it does run, the argv is a LIST with no shell and no client string:
-     a bounded https fetch of the FROZEN bootstrap URL to a tmp file, then
-     `bash <that file>`. The executed URL is exactly the recipe's.
-  5. One job at a time — a second launch while one runs is refused (409).
+All executable fixtures are synthetic. No port/game installation or external
+network is used. Run this script directly, as CI does.
 """
+import hashlib
 import http.client
 import importlib.util
+import io
 import json
 import os
+from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
+import unittest
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_spec = importlib.util.spec_from_file_location(
-    "couchsided", os.path.join(ROOT, "agent", "couchsided.py"))
-cs = importlib.util.module_from_spec(_spec)
-sys.modules["couchsided"] = cs
-_spec.loader.exec_module(cs)
-
-FAILURES = []
-TOKEN = "test-secret-token"
-BB = "couchside-bbport"
-BB_INSTALL_URL = "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh"
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('couchsided', ROOT / 'agent/couchsided.py')
+cs = importlib.util.module_from_spec(SPEC)
+sys.modules['couchsided'] = cs
+SPEC.loader.exec_module(cs)
+BB = 'couchside-bbport'
+TOKEN = 'synthetic-ports-token'
 
 
-def check(name, got, want):
-    if got == want:
-        print("  PASS  %s" % name)
-    else:
-        print("  FAIL  %s (got %r, want %r)" % (name, got, want))
-        FAILURES.append(name)
+class Response(io.BytesIO):
+    def geturl(self):
+        return 'https://release-assets.githubusercontent.com/test/fixture'
 
 
-class Patch:
-    def __init__(self, **kw):
-        self._kw = kw
-        self._old = {}
+class PortsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = self.root / 'state'
+        self.log = self.root / 'ports.log'
+        self.marker = self.root / 'allow-ports'
+        self.marker.touch()
+        self.patches = patch.multiple(cs, _PORTS_STATE_DIR=str(self.state),
+                                     PORTS_INSTALL_LOG=str(self.log), _PORTS_MARKER=str(self.marker))
+        self.patches.start()
+        self.addCleanup(self.patches.stop)
 
-    def __enter__(self):
-        for k, v in self._kw.items():
-            self._old[k] = getattr(cs, k)
-            setattr(cs, k, v)
-        return self
+    def job(self, **values):
+        j = dict(id=BB, mode='install', job_id='a'*32, running=True,
+                 started=int(time.time())-60, finished=None, exit_code=None,
+                 ok=None, phase='starting', requires_user_files=True, user_files_prompt='fixture')
+        j.update(values)
+        cs._ports_write_job(j)
+        return j
 
-    def __exit__(self, *a):
-        for k, v in self._old.items():
-            setattr(cs, k, v)
+    def server(self, mock=True):
+        handler = type('TestHandler', (cs.Handler,), dict(token=TOKEN, token_file=None, mock=mock, port=0))
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def request(self, port, method, path, body=None, token=TOKEN):
+        c = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        headers = {'Content-Type': 'application/json'}
+        if token:
+            headers['Authorization'] = 'Bearer '+token
+        c.request(method, path, json.dumps(body) if body is not None else None, headers)
+        r = c.getresponse()
+        data = json.loads(r.read())
+        c.close()
+        return r.status, data
+
+    def test_http_auth_and_unknown_id_never_spawn(self):
+        port = self.server()
+        with patch.object(cs.subprocess, 'run', side_effect=AssertionError('spawned')):
+            for method, path in [('GET','/api/ports'),('POST','/api/ports/install'),('POST','/api/ports/uninstall')]:
+                self.assertEqual(self.request(port,method,path,{'id':BB},token=None)[0],401)
+            self.assertEqual(self.request(port,'POST','/api/ports/install',{'id':'unknown'})[0],404)
+            self.assertEqual(self.request(port,'POST','/api/ports/install',[])[0],400)
+            self.assertEqual(self.request(port,'GET','/api/ports')[1]['ports'][0]['id'],BB)
+
+    def test_mock_runs_nothing(self):
+        port = self.server()
+        with patch.object(cs.subprocess,'run',side_effect=AssertionError('spawned')):
+            self.assertTrue(self.request(port,'POST','/api/ports/install',{'id':BB})[1]['started'])
+
+    def test_install_and_uninstall_routes_select_distinct_worker_modes(self):
+        for mock in (True, False):
+            port = self.server(mock=mock)
+            with patch.object(cs, 'ports_run', return_value=({'started': True}, 200)) as run:
+                for mode in ('install', 'uninstall'):
+                    code, result = self.request(port, 'POST', '/api/ports/'+mode, {'id': BB})
+                    self.assertEqual(code, 200)
+                    if mock:
+                        self.assertEqual(result['mode'], mode)
+                        run.assert_not_called()
+                    else:
+                        run.assert_called_with(BB, mode)
+
+    def test_optin_and_unknown_refuse_before_storage_or_process(self):
+        self.marker.unlink()
+        with patch.object(cs,'_ports_lock',side_effect=AssertionError('locked')), patch.object(cs.subprocess,'run',side_effect=AssertionError('spawned')):
+            self.assertEqual(cs.ports_run('unknown','install')[1],404)
+            self.assertEqual(cs.ports_run(BB,'bad')[1],400)
+            self.assertEqual(cs.ports_run(BB,'install')[1],403)
+
+    def test_launch_uses_fixed_user_unit_and_persists_before_spawn(self):
+        def start(argv, **kwargs):
+            j = cs._ports_read_job()
+            self.assertTrue(j['running'])
+            self.assertEqual(argv[:3],['systemd-run','--user','--quiet'])
+            self.assertIn('--collect',argv)
+            self.assertIn('--property=Type=exec',argv)
+            self.assertEqual(argv[-2:],['--ports-worker',j['job_id']])
+            self.assertNotIn('shell',kwargs)
+            return subprocess.CompletedProcess(argv,0,'','')
+        with patch.object(cs.subprocess,'run',side_effect=start):
+            result, status = cs.ports_run(BB,'install')
+        self.assertEqual(status,200)
+        self.assertTrue(result['started'])
+        self.assertEqual(cs._ports_read_job()['job_id'],result['job_id'])
+
+    def test_active_job_survives_new_reader_and_refuses_competing_launch(self):
+        j = self.job()
+        with patch.object(cs,'_ports_unit_active',return_value=True), patch.object(cs.subprocess,'run',side_effect=AssertionError('spawned')):
+            self.assertEqual(cs.ports_install_status()['job_id'],j['job_id'])
+            self.assertEqual(cs.ports_run(BB,'uninstall')[1],409)
+
+    def test_dead_worker_becomes_interrupted_not_success_and_can_retry(self):
+        self.job()
+        with patch.object(cs,'_ports_unit_active',return_value=False):
+            result = cs.ports_install_status()
+        self.assertFalse(result['running'])
+        self.assertFalse(result['ok'])
+        self.assertIsNone(result['exit_code'])
+        self.assertEqual(result['phase'],'interrupted')
+        with patch.object(cs.subprocess,'run',return_value=subprocess.CompletedProcess([],0)):
+            self.assertEqual(cs.ports_run(BB,'install')[1],200)
+
+    def test_unknown_bus_and_startup_window_hold_claim(self):
+        self.job()
+        with patch.object(cs,'_ports_unit_active',return_value=None):
+            self.assertTrue(cs.ports_install_status()['recovery_pending'])
+            self.assertEqual(cs.ports_run(BB,'install')[1],409)
+        self.job(started=int(time.time()))
+        with patch.object(cs,'_ports_unit_active',return_value=False):
+            self.assertTrue(cs.ports_install_status()['running'])
+
+    def test_corrupt_state_refuses_new_job(self):
+        cs._ports_dir()
+        (self.state/'job.json').write_text('{')
+        self.assertTrue(cs.ports_install_status()['recovery_pending'])
+        with patch.object(cs.subprocess,'run',side_effect=AssertionError('spawned')):
+            self.assertEqual(cs.ports_run(BB,'install')[1],503)
+
+    def test_terminal_status_survives_restart(self):
+        self.job(running=False,ok=True,exit_code=0,finished=int(time.time()),phase='complete')
+        with patch.object(cs,'_ports_unit_active',side_effect=AssertionError('should not probe')):
+            self.assertTrue(cs.ports_install_status()['ok'])
+        self.job(running=False,ok=False,exit_code=2,finished=int(time.time()),phase='failed')
+        self.assertEqual(cs.ports_install_status()['exit_code'],2)
+
+    def asset(self,data=b'fixture'):
+        return dict(name='fixture.sh',url='https://github.com/emerytech/test/releases/download/v1/fixture.sh',
+                    size=len(data),sha256=hashlib.sha256(data).hexdigest())
+
+    def test_download_requires_exact_hash_size_and_cleans_failure(self):
+        for body in (b'fixture',b'changed',b'fixture-long',b'short'):
+            dest=self.root/'download'
+            opener=type('Opener',(),{'open':lambda *a,**k:Response(body)})()
+            with patch.object(cs.urllib.request,'build_opener',return_value=opener):
+                if body==b'fixture':
+                    cs._ports_download(self.asset(),str(dest)); self.assertEqual(dest.read_bytes(),body); dest.unlink()
+                else:
+                    with self.assertRaises(ValueError):cs._ports_download(self.asset(),str(dest))
+                    self.assertFalse(dest.exists())
+
+    def test_no_untrusted_redirect_or_missing_pin(self):
+        captured=[]
+        def opener(handler):
+            captured.append(handler)
+            return type('Opener',(),{'open':lambda *a,**k:Response(b'fixture')})()
+        with patch.object(cs.urllib.request,'build_opener',side_effect=opener):
+            cs._ports_download(self.asset(),str(self.root/'download'))
+        h=captured[0]
+        for url in ['http://github.com/file','https://evil.invalid/file','https://user@github.com/file','https://github.com:444/file']:
+            with self.assertRaises(ValueError):h.redirect_request(None,None,302,'',{},url)
+        a=self.asset();a['sha256']=''
+        with self.assertRaises(ValueError):cs._ports_download(a,str(self.root/'bad'))
+
+    def test_all_recipe_assets_verified_before_any_execution(self):
+        port=dict(cs._PORTS_BY_ID[BB]);port['installed_check']=str(self.root/'app')
+        for failed in ('setup.sh','steam_shortcut.py','uninstall.sh','Bloodborne-bbport-x86_64.AppImage'):
+            def download(asset,dest):
+                if asset['name']==failed:raise ValueError('changed bytes')
+                Path(dest).write_bytes(b'fixture')
+            stage=self.root/'stage';stage.mkdir(exist_ok=True)
+            with patch.object(cs,'_ports_download',side_effect=download),patch.object(cs.subprocess,'run',side_effect=AssertionError('executed')):
+                with self.assertRaises(ValueError):cs._ports_run_recipe(port,'install',str(stage),io.StringIO())
+            self.assertFalse((self.root/'app').exists())
+            for f in stage.iterdir():f.unlink()
+
+    def test_bounded_log_tail(self):
+        self.log.write_text('x'*200000+'\nlast\n')
+        self.assertEqual(cs._ports_read_log(1),['last'])
+
+    def test_worker_records_terminal_failure_and_cleans_stage(self):
+        self.job()
+        with patch.object(cs.os,'getuid',return_value=os.stat(self.root).st_uid or 501):
+            # Tests run as a desktop user locally/CI. Root intentionally refuses.
+            if os.getuid()==0:self.skipTest('worker refuses root')
+            with patch.object(cs,'_ports_run_recipe',side_effect=ValueError('bad digest')):
+                self.assertEqual(cs._ports_worker('a'*32),1)
+        self.assertFalse(cs.ports_install_status()['ok'])
+        self.assertEqual(list(self.state.glob('stage-*')),[])
+
+    def test_real_worker_process_retains_lock_after_reader_restart(self):
+        if os.getuid()==0:self.skipTest('worker refuses root')
+        self.job()
+        code='''import importlib.util,sys,time
+s=importlib.util.spec_from_file_location('cs',sys.argv[1]);c=importlib.util.module_from_spec(s);s.loader.exec_module(c)
+c._PORTS_STATE_DIR=sys.argv[2];c.PORTS_INSTALL_LOG=sys.argv[3];c._PORTS_MARKER=sys.argv[4]
+def recipe(*a):
+ print('fixture-running',flush=True);time.sleep(1.5);return 0
+c._ports_run_recipe=recipe
+sys.exit(c._ports_worker('a'*32))
+'''
+        p=subprocess.Popen([sys.executable,'-c',code,str(ROOT/'agent/couchsided.py'),str(self.state),str(self.log),str(self.marker)],stdout=subprocess.PIPE,text=True)
+        self.addCleanup(lambda:p.kill() if p.poll() is None else None)
+        self.assertEqual(p.stdout.readline().strip(),'fixture-running')
+        # A fresh reader has no Popen/PID registry. Kernel lock + disk still work.
+        self.assertTrue(cs.ports_install_status()['running'])
+        self.assertEqual(cs.ports_run(BB,'install')[1],409)
+        self.assertEqual(p.wait(timeout=5),0)
+        p.stdout.close()
+        self.assertTrue(cs.ports_install_status()['ok'])
+        self.assertEqual(list(self.state.glob('stage-*')),[])
 
 
-def _reset_job():
-    cs._PORTS_JOB.update({
-        "proc": None, "id": None, "mode": None, "started": 0.0, "finished": 0.0,
-        "exit_code": None, "requires_user_files": False, "user_files_prompt": None,
-    })
+    def test_verified_synthetic_script_executes_with_source_overrides_removed(self):
+        script = b'#!/bin/bash\nprintf "fixture:%s:%s" "${BASH_ENV:-empty}" "$BBPORT_REPO"\n'
+        asset=self.asset(script)
+        port=dict(cs._PORTS_BY_ID[BB], installed_check=str(self.root/'app'))
+        port['uninstall']=dict(bootstrap_url=asset['url'],sha256=asset['sha256'],size=asset['size'])
+        stage=self.root/'stage';stage.mkdir()
+        opener=type('Opener',(),{'open':lambda *a,**k:Response(script)})()
+        env=dict(os.environ,BBPORT_REPO='evil',BASH_ENV='/must-not-run')
+        with patch.object(cs.urllib.request,'build_opener',return_value=opener),patch.object(cs,'_user_env',return_value=env),self.log.open('w') as log:
+            self.assertEqual(cs._ports_run_recipe(port,'uninstall',str(stage),log),0)
+        self.assertTrue(self.log.read_text().endswith('fixture:empty:emerytech/Bloodborne-Android'))
 
-
-# ---- fakes -----------------------------------------------------------------
-
-class _ExplodingSubprocess:
-    """Any use is a test failure: proves a rejected request runs NOTHING."""
-    DEVNULL = -3
-    STDOUT = -2
-
-    class TimeoutExpired(Exception):
-        pass
-
-    def run(self, *a, **k):
-        raise AssertionError("subprocess.run called on a path that must run nothing")
-
-    def Popen(self, *a, **k):
-        raise AssertionError("subprocess.Popen called on a path that must run nothing")
-
-
-class _FakeProc:
-    def __init__(self):
-        self.returncode = None
-
-    def poll(self):
-        return None  # still "running"
-
-    def wait(self, timeout=None):
-        raise _FakeSubprocess.TimeoutExpired()
-
-
-class _FakeSubprocess:
-    DEVNULL = -3
-    STDOUT = -2
-
-    class TimeoutExpired(Exception):
-        pass
-
-    def __init__(self, run_rc=0):
-        self.run_calls = []
-        self.popen_calls = []
-        self.run_rc = run_rc
-
-    def run(self, argv, **kw):
-        self.run_calls.append(argv)
-
-        class _R:
-            pass
-        r = _R()
-        r.returncode = self.run_rc
-        return r
-
-    def Popen(self, argv, **kw):
-        self.popen_calls.append(argv)
-        return _FakeProc()
-
-
-# ---- HTTP harness ----------------------------------------------------------
-
-def _server(mock=True):
-    cs.Handler.token = TOKEN
-    cs.Handler.token_file = None
-    cs.Handler.mock = mock
-    cs.Handler.port = 0
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), cs.Handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, srv.server_address[1]
-
-
-def _req(port, method, path, token=TOKEN, body=None):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-    headers = {"Authorization": "Bearer " + token} if token is not None else {}
-    data = None
-    if body is not None:
-        data = body if isinstance(body, (bytes, str)) else json.dumps(body)
-        headers["Content-Type"] = "application/json"
-    conn.request(method, path, body=data, headers=headers)
-    resp = conn.getresponse()
-    out = resp.read()
-    conn.close()
-    try:
-        return resp.status, json.loads(out or b"{}")
-    except ValueError:
-        return resp.status, {}
-
-
-# ---------------------------------------------------------------------------
-print("\nHTTP: auth + catalogue + rejection")
-# ---------------------------------------------------------------------------
-
-def test_http_auth_and_catalog():
-    print("test_http_auth_and_catalog")
-    srv, port = _server(mock=True)
-    try:
-        check("GET no bearer -> 401", _req(port, "GET", "/api/ports", token=None)[0], 401)
-        check("GET wrong bearer -> 401", _req(port, "GET", "/api/ports", token="nope")[0], 401)
-        st, body = _req(port, "GET", "/api/ports")
-        check("GET -> 200", st, 200)
-        ids = [p["id"] for p in body.get("ports", [])]
-        check("lists bbport", BB in ids, True)
-        check("mock allowed True", body.get("allowed"), True)
-        check("mock install None", body.get("install"), None)
-    finally:
-        srv.shutdown()
-
-
-def test_http_install_auth_and_unknown_id():
-    print("test_http_install_auth_and_unknown_id")
-    srv, port = _server(mock=True)
-    try:
-        check("POST install no bearer -> 401",
-              _req(port, "POST", "/api/ports/install", token=None, body={"id": BB})[0], 401)
-        check("unknown id -> 404",
-              _req(port, "POST", "/api/ports/install", body={"id": "no-such-port"})[0], 404)
-        check("missing id -> 404",
-              _req(port, "POST", "/api/ports/install", body={})[0], 404)
-        check("non-object body -> 400",
-              _req(port, "POST", "/api/ports/install", body="not json")[0], 400)
-    finally:
-        srv.shutdown()
-
-
-def test_http_install_mock_started_runs_nothing():
-    """Mock path returns a started job with the byo-dump prompt and spawns no
-    process (subprocess would explode if touched)."""
-    print("test_http_install_mock_started_runs_nothing")
-    with Patch(subprocess=_ExplodingSubprocess()):
-        srv, port = _server(mock=True)
+    def test_lock_held_with_unavailable_unit_does_not_clear_live_job(self):
+        self.job()
+        fd=cs._ports_lock()
         try:
-            st, body = _req(port, "POST", "/api/ports/install", body={"id": BB})
-            check("mock install -> 200", st, 200)
-            check("started True", body.get("started"), True)
-            check("requires_user_files True", body.get("requires_user_files"), True)
-            check("carries the dump prompt", bool(body.get("user_files_prompt")), True)
-            st2, b2 = _req(port, "POST", "/api/ports/uninstall", body={"id": BB})
-            check("mock uninstall -> 200", st2, 200)
-            check("uninstall started True", b2.get("started"), True)
-        finally:
-            srv.shutdown()
+            with patch.object(cs,'_ports_unit_active',side_effect=AssertionError('must use lock')):
+                self.assertTrue(cs.ports_install_status()['running'])
+                self.assertEqual(cs.ports_run(BB,'install')[1],409)
+        finally:os.close(fd)
+
+    def test_recovery_removes_only_dead_jobs_own_stage(self):
+        self.job()
+        own=self.state/('stage-'+'a'*32);own.mkdir();(own/'partial').write_bytes(b'partial')
+        other=self.state/('stage-'+'b'*32);other.mkdir()
+        with patch.object(cs,'_ports_unit_active',return_value=False):
+            self.assertEqual(cs.ports_install_status()['phase'],'interrupted')
+        self.assertFalse(own.exists());self.assertTrue(other.exists())
+
+    def test_launch_timeout_retains_claim_until_reconciled(self):
+        with patch.object(cs.subprocess,'run',side_effect=subprocess.TimeoutExpired('systemd-run',15)):
+            self.assertEqual(cs.ports_run(BB,'install')[1],503)
+        with patch.object(cs,'_ports_unit_active',return_value=True):
+            self.assertTrue(cs.ports_install_status()['running'])
+            self.assertEqual(cs.ports_run(BB,'install')[1],409)
+
+    def test_internal_worker_flag_reports_refusal_without_starting_server(self):
+        result=subprocess.run([sys.executable,str(ROOT/'agent/couchsided.py'),'--ports-worker','../untrusted'],capture_output=True,timeout=5)
+        self.assertEqual(result.returncode,1)
+        self.assertNotIn(b'listening',result.stdout.lower())
+
+    def test_killed_worker_is_reconciled_after_process_restart(self):
+        if os.getuid()==0:self.skipTest('worker refuses root')
+        self.job()
+        code="""import importlib.util,sys,time
+s=importlib.util.spec_from_file_location('cs',sys.argv[1]);c=importlib.util.module_from_spec(s);s.loader.exec_module(c)
+c._PORTS_STATE_DIR=sys.argv[2];c.PORTS_INSTALL_LOG=sys.argv[3];c._PORTS_MARKER=sys.argv[4]
+def recipe(*a):
+ print('fixture-running',flush=True);time.sleep(60);return 0
+c._ports_run_recipe=recipe
+sys.exit(c._ports_worker('a'*32))
+"""
+        p=subprocess.Popen([sys.executable,'-c',code,str(ROOT/'agent/couchsided.py'),str(self.state),str(self.log),str(self.marker)],stdout=subprocess.PIPE,text=True)
+        self.addCleanup(lambda:p.kill() if p.poll() is None else None)
+        self.assertEqual(p.stdout.readline().strip(),'fixture-running')
+        p.kill();p.wait(timeout=5);p.stdout.close()
+        with patch.object(cs,'_ports_unit_active',return_value=False):
+            status=cs.ports_install_status()
+        self.assertFalse(status['running']);self.assertFalse(status['ok'])
+        self.assertEqual(status['phase'],'interrupted')
+        self.assertEqual(list(self.state.glob('stage-*')),[])
 
 
-# ---------------------------------------------------------------------------
-print("\nports_run: opt-in gate, frozen argv, concurrency")
-# ---------------------------------------------------------------------------
-
-def test_unknown_id_runs_nothing():
-    print("test_unknown_id_runs_nothing")
-    _reset_job()
-    with Patch(subprocess=_ExplodingSubprocess()):
-        payload, code = cs.ports_run("no-such-port", "install")
-    check("unknown id -> 404", code, 404)
-    check("unknown id not started", payload.get("started"), False)
-
-
-def test_optin_gate_blocks_before_spawning():
-    print("test_optin_gate_blocks_before_spawning")
-    _reset_job()
-    missing = os.path.join(tempfile.mkdtemp(prefix="ports-nomark-"), "allow-ports")
-    with Patch(_PORTS_MARKER=missing, subprocess=_ExplodingSubprocess()):
-        payload, code = cs.ports_run(BB, "install")
-    check("not opted in -> 403", code, 403)
-    check("needs_optin flagged", payload.get("needs_optin"), True)
-    check("not started", payload.get("started"), False)
-
-
-def test_install_builds_frozen_argv_list():
-    print("test_install_builds_frozen_argv_list")
-    _reset_job()
-    d = tempfile.mkdtemp(prefix="ports-mark-")
-    marker = os.path.join(d, "allow-ports")
-    open(marker, "w").close()
-    logf = os.path.join(d, "ports-install.log")
-    fake = _FakeSubprocess(run_rc=0)
-    try:
-        with Patch(_PORTS_MARKER=marker, PORTS_INSTALL_LOG=logf, subprocess=fake):
-            payload, code = cs.ports_run(BB, "install")
-        check("opted-in install -> 200", code, 200)
-        check("started True", payload.get("started"), True)
-        check("install reports byo-dump", payload.get("requires_user_files"), True)
-        # Step 1: curl of the FROZEN url to a tmp file, argv list, https pinned.
-        check("one curl fetch", len(fake.run_calls), 1)
-        fetch = fake.run_calls[0]
-        check("fetch is argv list", isinstance(fetch, list), True)
-        check("fetch is curl", fetch[0], "curl")
-        check("fetch pins https", "--proto" in fetch and "=https" in fetch, True)
-        check("fetch URL is the frozen one", BB_INSTALL_URL in fetch, True)
-        check("fetch writes to a tmp bootstrap.sh",
-              fetch[-1] == BB_INSTALL_URL and fetch[-2].endswith("bootstrap.sh"), True)
-        # Step 2: bash <that same file>, argv list, no shell, no url.
-        check("one bash spawn", len(fake.popen_calls), 1)
-        popen = fake.popen_calls[0]
-        check("spawn is argv list", isinstance(popen, list), True)
-        check("spawn runs bash on the fetched script",
-              popen[0] == "bash" and popen[1] == fetch[-2], True)
-        check("spawn argv carries no url", BB_INSTALL_URL not in popen, True)
-    finally:
-        _reset_job()
-
-
-def test_second_install_while_running_is_refused():
-    print("test_second_install_while_running_is_refused")
-    _reset_job()
-    d = tempfile.mkdtemp(prefix="ports-mark2-")
-    marker = os.path.join(d, "allow-ports")
-    open(marker, "w").close()
-    logf = os.path.join(d, "ports-install.log")
-    fake = _FakeSubprocess(run_rc=0)
-    try:
-        with Patch(_PORTS_MARKER=marker, PORTS_INSTALL_LOG=logf, subprocess=fake):
-            p1, c1 = cs.ports_run(BB, "install")
-            check("first starts", (c1, p1.get("started")), (200, True))
-            # The held _FakeProc.poll() returns None -> still running.
-            p2, c2 = cs.ports_run(BB, "install")
-            check("second -> 409", c2, 409)
-            check("second not started", p2.get("started"), False)
-            check("no extra spawn", len(fake.popen_calls), 1)
-    finally:
-        _reset_job()
-
-
-def test_uninstall_uses_uninstall_url():
-    print("test_uninstall_uses_uninstall_url")
-    _reset_job()
-    d = tempfile.mkdtemp(prefix="ports-unmark-")
-    marker = os.path.join(d, "allow-ports")
-    open(marker, "w").close()
-    logf = os.path.join(d, "ports-install.log")
-    fake = _FakeSubprocess(run_rc=0)
-    uninstall_url = (cs._PORTS_BY_ID[BB]["uninstall"]["bootstrap_url"])
-    try:
-        with Patch(_PORTS_MARKER=marker, PORTS_INSTALL_LOG=logf, subprocess=fake):
-            payload, code = cs.ports_run(BB, "uninstall")
-        check("uninstall -> 200", code, 200)
-        check("uninstall fetched the uninstall url", uninstall_url in fake.run_calls[0], True)
-        check("uninstall does not claim byo-dump", payload.get("requires_user_files"), False)
-    finally:
-        _reset_job()
-
-
-def test_download_failure_is_502_and_not_started():
-    print("test_download_failure_is_502_and_not_started")
-    _reset_job()
-    d = tempfile.mkdtemp(prefix="ports-dlfail-")
-    marker = os.path.join(d, "allow-ports")
-    open(marker, "w").close()
-    logf = os.path.join(d, "ports-install.log")
-    fake = _FakeSubprocess(run_rc=22)  # curl -f on a 404
-    try:
-        with Patch(_PORTS_MARKER=marker, PORTS_INSTALL_LOG=logf, subprocess=fake):
-            payload, code = cs.ports_run(BB, "install")
-        check("download failure -> 502", code, 502)
-        check("not started", payload.get("started"), False)
-        check("never reached the bash spawn", len(fake.popen_calls), 0)
-    finally:
-        _reset_job()
-
-
-if __name__ == "__main__":
-    for fn in (test_http_auth_and_catalog,
-               test_http_install_auth_and_unknown_id,
-               test_http_install_mock_started_runs_nothing,
-               test_unknown_id_runs_nothing,
-               test_optin_gate_blocks_before_spawning,
-               test_install_builds_frozen_argv_list,
-               test_second_install_while_running_is_refused,
-               test_uninstall_uses_uninstall_url,
-               test_download_failure_is_502_and_not_started):
-        fn()
-    if FAILURES:
-        print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))
-        sys.exit(1)
-    print("\nall good")
+if __name__=='__main__':unittest.main()

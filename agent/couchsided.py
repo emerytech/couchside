@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.136"
+VERSION = "2.9.137"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -13545,8 +13545,7 @@ _MEDIA_ROOTS = ("/run/media", "/media")
 _UTILITY_META = {
     "openpuck": {
         "label": "OpenPuck receiver",
-        "description": "Flash a plugged-in nRF52840 board into a Steam Controller 2 "
-                       "wireless receiver.",
+        "description": "Inspect, pair, test and flash your OpenPuck receiver.",
     },
     "cec": {
         "label": "TV control over HDMI-CEC",
@@ -13565,6 +13564,7 @@ def _openpuck_bootloader_mount():
     """Path to a mounted nRF52840 UF2 bootloader volume (INFO_UF2.TXT present), or
     None. Read-only; never raises. This is the flash TARGET, matched by a known
     label + the UF2 marker file, never a client-supplied path."""
+    matches = []
     for root in _MEDIA_ROOTS:
         try:
             users = os.listdir(root)
@@ -13581,10 +13581,10 @@ def _openpuck_bootloader_mount():
                     p = os.path.join(d, vol)
                     try:
                         if os.path.isfile(os.path.join(p, "INFO_UF2.TXT")):
-                            return p
+                            matches.append(p)
                     except OSError:
                         continue
-    return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def _usb_present(vid, pid):
@@ -13734,14 +13734,11 @@ _DECKY_PANEL_DIR = os.path.join(_DECKY_PLUGINS_DIR, "Couchside")
 # the player always supplies their own game dump). couchside-bbport (native
 # Bloodborne) is the first entry and the template for the rest.
 #
-# SECURITY (CLAUDE.md §3) — the catalogue IS the allowlist. A phone sends only a
-# port `id`; it is looked up in _PORTS_BY_ID and an unknown id is a 404, never a
-# pass-through. The only thing ever executed is the FROZEN recipe's bootstrap
-# URL, chosen HERE: fetched over https to a tmp file (step 1, bounded), then run
-# as `bash <file>` with an argv LIST (step 2, detached) — no shell, no pipe, no
-# client string in argv. No game data is EVER fetched: the bootstrap ships the
-# engine only, and we only run the bootstrap. `ports/index.json` is the
-# canonical copy; tests/test_ports_catalog.py pins _PORTS == that file.
+# SECURITY — the catalogue is the ID allowlist AND the content trust root.
+# All setup/runtime dependencies have exact SHA-256 and size pins. The recursive
+# upstream bootstrap is not executed: it would fetch unverified dependencies.
+# A user-service worker verifies the complete recipe before running setup; no
+# client URL, path or command is accepted. JSON catalog and agent pins stay equal.
 # ---------------------------------------------------------------------------
 _PORTS_MARKER = "/etc/couchside/allow-ports"
 PORTS_INSTALL_LOG = os.path.expanduser("~/.cache/couchside/ports-install.log")
@@ -13764,10 +13761,34 @@ _PORTS = (
             "appimage": "Bloodborne-bbport-x86_64.AppImage",
         },
         "install": {
-            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/bootstrap.sh",
+            "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/setup.sh",
+            "sha256": "f12e8f264da367cd6984e7030a0425efd0aea77791da0947388d587c3aefb347",
+            "size": 8427,
+            "assets": [
+                {
+                    "name": "steam_shortcut.py",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/steam_shortcut.py",
+                    "sha256": "79617daffec2974f2d6455627eddb1765ba5643e78854f029394f49a87f04a64",
+                    "size": 6349
+                },
+                {
+                    "name": "uninstall.sh",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+                    "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+                    "size": 759
+                },
+                {
+                    "name": "Bloodborne-bbport-x86_64.AppImage",
+                    "url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/Bloodborne-bbport-x86_64.AppImage",
+                    "sha256": "883f5543e48ff2edfb077f0478eea1421db57148f1bdb5e0df680e88ad71146c",
+                    "size": 423868960
+                }
+            ]
         },
         "uninstall": {
             "bootstrap_url": "https://github.com/emerytech/Bloodborne-Android/releases/download/couchside-bbport/uninstall.sh",
+            "sha256": "fd20edd7d7a528f37b0beb91b326bcc64f18445ee44975e8e8ce457d36c7d44b",
+            "size": 759
         },
         "setup_flow": (
             "Install drops the runtime AppImage into ~/Applications/couchside-bbport and adds menu + Steam shortcuts.",
@@ -13778,139 +13799,538 @@ _PORTS = (
 )
 _PORTS_BY_ID = {p["id"]: p for p in _PORTS}
 
-# Current/last port install-or-uninstall job. `proc` is the detached child; the
-# rest is the summary the app polls. Exactly ONE job at a time — a second launch
-# while one runs is refused (409), never allowed to truncate the live transcript
-# or spawn a rival child (the flatpak_update() lesson, KI pattern).
-_PORTS_JOB = {
-    "proc": None, "id": None, "mode": None, "started": 0.0, "finished": 0.0,
-    "exit_code": None, "requires_user_files": False, "user_files_prompt": None,
-}
+# Persisted independently of agent uptime. A transient USER service owns the
+# worker: couchside.service's default KillMode=control-group must not kill a
+# download when the agent restarts. No sudo grant or service-template change.
+_PORTS_STATE_DIR = os.path.expanduser("~/.local/state/couchside/ports")
+_PORTS_UNIT = "couchside-ports-job.service"
 _PORTS_JOB_LOCK = threading.Lock()
+_PORTS_LAUNCH_GRACE = 30
+
+
+# Add-on permissions are desktop-user settings, not root privileges. The legacy
+# installer marker remains a fallback; a locally approved choice overrides it.
+_ADDON_CHOICE = os.path.expanduser("~/.local/state/couchside/addons/ports.json")
+_ADDON_LOCK = threading.RLock()
+_ADDON_CONDITION = threading.Condition(_ADDON_LOCK)
+_ADDON_ACTIVE = set()
+_ADDON_REQUEST = None
+_ADDON_MOCK_ENABLED = False
+_ADDON_TTL = 120
+_ADDON_COOLDOWN = 150
+_ADDON_ATTEMPTS = 5
 
 
 def _ports_allowed():
-    """The on-box opt-in marker (`couchside allow-ports on`). Never raises.
-
-    Installing a port runs an installer from the internet as the desktop user —
-    a new class of phone-triggered action, so it is OFF by default and can only
-    be enabled ON THE BOX, exactly like `allow-decky`. Listing the catalogue is
-    always allowed; only the state-changing install/uninstall is gated."""
     try:
+        with open(_ADDON_CHOICE) as f:
+            choice = json.load(f)
+        return isinstance(choice, dict) and choice.get("enabled") is True
+    except FileNotFoundError:
         return os.path.exists(_PORTS_MARKER)
-    except Exception:
+    except (OSError, ValueError):
         return False
+
+
+def _addon_expire():
+    # Called by a daemon timer AND every gate. Recovery needs no phone/browser
+    # polling, and restart discards the volatile challenge (never the permission).
+    with _ADDON_LOCK:
+        req = _ADDON_REQUEST
+        if req and req["state"] in ("preparing", "pending") and time.monotonic() >= req["deadline"]:
+            req["state"] = "expired"
+            req["pin"] = None
+
+
+def addon_paused():
+    with _ADDON_LOCK:
+        _addon_expire()
+        return bool(_ADDON_REQUEST and _ADDON_REQUEST["state"] in ("preparing", "pending"))
+
+
+def addon_remote_guard(method):
+    """Drain existing remote handlers BEFORE a PIN can be rendered. Closing
+    sockets alone is insufficient: cleanup must release held keys and streams.
+    All other controls are paused too, preventing action/menu routes bypassing
+    the input gate. Safe status/verification routes cannot capture or inject.
+    """
+    def guarded(self):
+        path = urlparse(self.path).path.rstrip("/")
+        safe = ((self.command == "GET" and path in (
+                    "/api/ping", "/api/status", "/api/ports", "/addons/confirm", "/api/addons/local-status"))
+                or (self.command == "POST" and path in (
+                    "/api/addons/request", "/api/addons/verify", "/api/addons/confirm")))
+        if safe:
+            return method(self)
+        with _ADDON_CONDITION:
+            paused = addon_paused()
+            if not paused:
+                _ADDON_ACTIVE.add(self)
+        if paused:
+            # Never hold the privacy/timer lock across network IO.
+            self.close_connection = True
+            self._send(423, {"error": "Remote viewing and controls are paused for local add-on confirmation.",
+                             "confirmation_pending": True}, time.monotonic())
+            return
+        try:
+            return method(self)
+        finally:
+            with _ADDON_CONDITION:
+                _ADDON_ACTIVE.discard(self)
+                _ADDON_CONDITION.notify_all()
+    return guarded
+
+
+def addon_status(mock=False):
+    with _ADDON_LOCK:
+        _addon_expire()
+        req = _ADDON_REQUEST
+        # PIN and decline nonce are NEVER returned by an authenticated remote API.
+        return {"supported": True, "state": req["state"] if req else "idle",
+                "enabled": _ADDON_MOCK_ENABLED if mock else _ports_allowed(),
+                "requested_enabled": req["enabled"] if req else None,
+                "remote_paused": addon_paused(),
+                "expires_in": max(0, int(req["deadline"] - time.monotonic())) if req and addon_paused() else 0,
+                "attempts_remaining": req["attempts"] if req else _ADDON_ATTEMPTS}
+
+
+def addon_request(addon_id, enabled, port, mock=False):
+    global _ADDON_REQUEST
+    if addon_id != "ports":
+        return {"error": "unknown add-on"}, 404
+    if type(enabled) is not bool:
+        return {"error": "enabled must be a boolean"}, 400
+    with _ADDON_CONDITION:
+        if addon_paused():
+            return {"error": "A confirmation is already waiting on the computer."}, 409
+        now = time.monotonic()
+        if _ADDON_REQUEST and now - _ADDON_REQUEST["created"] < _ADDON_COOLDOWN:
+            return {"error": "Please wait before requesting another confirmation."}, 429
+        req = {"enabled": enabled, "nonce": secrets.token_hex(32), "pin": None,
+               "state": "preparing", "attempts": _ADDON_ATTEMPTS,
+               "created": now, "deadline": now + _ADDON_TTL}
+        _ADDON_REQUEST = req
+        timer = threading.Timer(_ADDON_TTL, _addon_expire)
+        timer.daemon = True
+        timer.start()
+        active = list(_ADDON_ACTIVE)
+    # No sensitive local display yet. Interrupt blocking reads/writes and wait
+    # for their finally blocks, including virtual input release and portal close.
+    for handler in active:
+        try:
+            handler.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    with _ADDON_CONDITION:
+        drain_deadline = time.monotonic() + 5
+        while _ADDON_ACTIVE and req["state"] == "preparing":
+            remaining = drain_deadline - time.monotonic()
+            if remaining <= 0:
+                req["state"] = "failed"
+                return {"error": "Could not pause every remote session. Close remote viewing and try again."}, 409
+            _ADDON_CONDITION.wait(remaining)
+        if req["state"] != "preparing":
+            return {"error": "Confirmation could not start. Remote access has resumed."}, 409
+        req["pin"] = "%06d" % secrets.randbelow(1000000)
+        req["state"] = "pending"
+    if not mock:
+        pair_show_on_box_url("http://localhost:%d/addons/confirm" % port)
+    return addon_status(mock), 202
+
+
+def addon_decide(nonce, approve, mock=False):
+    # The local page can ONLY decline. Enabling requires the PIN in the app.
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        req = _ADDON_REQUEST
+        if (status["state"] != "pending" or not isinstance(nonce, str)
+                or not hmac.compare_digest(nonce, req["nonce"]) or approve is not False):
+            return {"error": "This confirmation is invalid or expired."}, 403
+        req["state"] = "declined"
+        req["pin"] = None
+        return addon_status(mock), 200
+
+
+def addon_verify(pin, mock=False):
+    global _ADDON_MOCK_ENABLED
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        req = _ADDON_REQUEST
+        if status["state"] != "pending":
+            return {"error": "No active confirmation. Remote access is available."}, 409
+        if not isinstance(pin, str) or len(pin) != 6 or not pin.isascii() or not pin.isdigit():
+            correct = False
+        else:
+            correct = hmac.compare_digest(pin, req["pin"])
+        if not correct:
+            req["attempts"] -= 1
+            if req["attempts"] <= 0:
+                req["state"] = "locked"
+                req["pin"] = None
+            return dict(addon_status(mock), error="Incorrect PIN." if req["attempts"] else "Too many attempts. Nothing changed; remote access has resumed."), 403
+        # Consume once, under the same lock as verification. No replay or double save.
+        req["pin"] = None
+        req["state"] = "failed"
+        if mock:
+            _ADDON_MOCK_ENABLED = req["enabled"]
+        else:
+            directory = os.path.dirname(_ADDON_CHOICE)
+            tmp = None
+            try:
+                os.makedirs(directory, mode=0o700, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(prefix=".choice-", dir=directory)
+                with os.fdopen(fd, "w") as f:
+                    json.dump({"enabled": req["enabled"]}, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, _ADDON_CHOICE)
+            except OSError:
+                return {"error": "Could not save the add-on permission. Remote access has resumed."}, 500
+            finally:
+                if tmp and os.path.exists(tmp):
+                    os.unlink(tmp)
+        req["state"] = "approved"
+        return addon_status(mock), 200
+
+
+def render_addon_confirmation(mock=False):
+    with _ADDON_LOCK:
+        status = addon_status(mock)
+        pending = status["state"] == "pending"
+        verb = "Enable" if pending and _ADDON_REQUEST["enabled"] else "Disable"
+        nonce = _ADDON_REQUEST["nonce"] if pending else ""
+        pin = _ADDON_REQUEST["pin"] if pending else "------"
+        request_id = _ADDON_REQUEST["created"] if _ADDON_REQUEST else 0
+    # No token or client text is embedded. PIN appears only behind the existing
+    # loopback + Host gates, once remote handlers are quiescent.
+    return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Couchside · Add-ons</title><style>
+body{background:#10131b;color:#f4f6fa;font:22px system-ui;margin:0;padding:6vh 6vw}
+main{max-width:760px;margin:auto;background:#1b2130;padding:36px;border-radius:24px}
+h1{font-size:36px}p{line-height:1.5;color:#c8d0df}button{font:inherit;border:0;border-radius:14px;padding:18px 28px;cursor:pointer;background:#343e52;color:white}
+button:focus{outline:4px solid white;outline-offset:4px}.pin{font:700 56px monospace;letter-spacing:12px;color:#8fb4ff}
+</style></head><body><main><small>COUCHSIDE · COMPUTER APPROVAL</small>
+<h1 id="heading">%(verb)s Game Ports?</h1><p>Optional · Beta / experimental</p>
+<p id="instructions">Enter this PIN in your paired Couchside app to confirm. Enabling downloads nothing; each engine is installed separately. Disabling keeps your games and saves.</p>
+<div class="pin" id="pin">%(pin)s</div>
+<p id="status">Remote viewing and input are paused. They resume automatically when this request ends or expires.</p>
+<button id="decline" autofocus onclick="decline()">Decline</button>
+</main><script>
+const nonce='%(nonce)s';const requestId=%(request_id)s;let finished=false;
+function ended(message){document.getElementById('pin').textContent='------';document.getElementById('decline').disabled=true;document.getElementById('status').textContent=message;}
+async function decline(){try{await fetch('/api/addons/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nonce,approve:false})});}finally{refresh();}}
+async function refresh(){try{const r=await fetch('/api/addons/local-status');const d=await r.json();
+ if(d.state==='pending' && d.request_id!==requestId){location.reload();return;}
+ if(d.state!=='pending'){
+ ended(d.state==='approved'?'Setting saved. Remote access has resumed.':'No changes made. Remote access is available.');
+ document.getElementById('heading').textContent=d.state==='approved'?(d.enabled?'Game Ports enabled':'Game Ports disabled'):'Confirmation ended';
+ document.getElementById('pin').hidden=true;document.getElementById('decline').hidden=true;
+ document.getElementById('instructions').textContent='Press B (Back) to return to Steam, or close this browser window.';
+ if(!finished){finished=true;setTimeout(()=>{window.close();},1200);}
+ }
+ else{document.getElementById('status').textContent='Remote viewing and input paused · '+d.expires_in+' seconds remaining. Access resumes automatically.';}}
+ catch(e){ended('Connection lost. This PIN is no longer displayed. The computer restores remote access automatically at expiry.');}}
+refresh();setInterval(refresh,1000);
+</script></body></html>""" % {"verb": verb if pending else "Manage", "nonce": nonce, "pin": pin, "request_id": request_id}
+
 
 
 def _port_installed(port):
-    """True when the port's installed_check path exists. Degrades to False (a
-    missing/unreadable path reads as 'not installed', never a false 'installed')."""
-    chk = port.get("installed_check")
-    if not chk:
-        return False
     try:
-        return os.path.exists(os.path.expanduser(chk))
-    except Exception:
+        return os.path.isdir(os.path.expanduser(port["installed_check"]))
+    except (OSError, KeyError):
         return False
 
 
 def _ports_read_log(limit=200):
-    """Last `limit` non-blank lines of the install transcript, or []. The PATH IS
-    A CONSTANT — no client input selects a file. Never raises."""
+    """Bound both bytes read and output; installer output is not trusted input."""
     try:
-        with open(PORTS_INSTALL_LOG, "r", errors="replace") as f:
-            lines = f.read().splitlines()
+        with open(PORTS_INSTALL_LOG, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 131072))
+            data = f.read(131072).decode("utf-8", "replace")
+        return [line.rstrip() for line in data.splitlines() if line.strip()][-limit:]
     except OSError:
         return []
-    return [ln.rstrip() for ln in lines if ln.strip()][-limit:]
 
 
-def _ports_running():
-    """True while the install/uninstall this agent launched is still executing.
-    poll() on the Popen we hold is authoritative and reaps the child on exit.
-    Degrade-closed toward DONE so a lost handle never strands the card."""
-    proc = _PORTS_JOB["proc"]
-    if proc is None:
-        return False
+def _ports_dir():
+    os.makedirs(_PORTS_STATE_DIR, mode=0o700, exist_ok=True)
+    st = os.lstat(_PORTS_STATE_DIR)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise OSError("Ports state directory must be private to the desktop user")
+    return _PORTS_STATE_DIR
+
+
+def _ports_lock():
+    if fcntl is None:
+        raise OSError("Ports jobs require POSIX file locking")
+    path = os.path.join(_ports_dir(), "job.lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        return proc.poll() is None
-    except Exception:
-        return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _ports_write_job(job):
+    directory = _ports_dir()
+    fd, tmp = tempfile.mkstemp(prefix=".job-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(job, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(directory, "job.json"))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _ports_read_job():
+    path = os.path.join(_ports_dir(), "job.json")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd) as f:
+        job = json.loads(f.read(16385))
+    if (not isinstance(job, dict) or job.get("id") not in _PORTS_BY_ID
+            or job.get("mode") not in ("install", "uninstall")
+            or not re.fullmatch(r"[a-f0-9]{32}", str(job.get("job_id", "")))
+            or type(job.get("started")) not in (int, float)
+            or not isinstance(job.get("running"), bool)):
+        raise ValueError("Invalid Ports job record; refusing a competing job")
+    return job
+
+
+def _ports_unit_active():
+    """None means unavailable evidence: never assume an installer is dead."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", _PORTS_UNIT,
+                            "--property=ActiveState", "--value"],
+                           capture_output=True, text=True, timeout=5, env=_user_env())
+        value = r.stdout.strip()
+        if value in ("active", "activating", "reloading", "deactivating"):
+            return True
+        if value in ("inactive", "failed"):
+            return False
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _ports_reconcile(job):
+    """Called only with the job lock held. Lock + unit closes launch/restart races.
+
+    A dead worker never becomes success from an installed directory or a reused
+    PID. An unavailable user bus stays recovery_pending and refuses a second job.
+    """
+    if not job or not job["running"]:
+        return job
+    active = _ports_unit_active()
+    if active is False and time.time() - job["started"] > _PORTS_LAUNCH_GRACE:
+        job.update(running=False, ok=False, exit_code=None, finished=int(time.time()),
+                   phase="interrupted", error="The port job was interrupted. Review the log, then retry.")
+        _ports_write_job(job)
+        # The dead unit + acquired worker lock prove no process owns this stage.
+        shutil.rmtree(os.path.join(_ports_dir(), "stage-" + job["job_id"]), ignore_errors=True)
+    elif active is None:
+        job = dict(job, recovery_pending=True)
+    return job
 
 
 def ports_install_status():
-    """The current/last job summary the app polls, or None if none ran this
-    uptime. Records completion exactly once (first observation)."""
-    with _PORTS_JOB_LOCK:
-        if _PORTS_JOB["id"] is None:
+    try:
+        job = _ports_read_job()
+        if not job:
             return None
-        proc = _PORTS_JOB["proc"]
-        running = False
-        if proc is not None:
-            try:
-                running = proc.poll() is None
-            except Exception:
-                running = False
-            if not running and _PORTS_JOB["finished"] == 0.0:
-                try:
-                    _PORTS_JOB["exit_code"] = proc.returncode
-                except Exception:
-                    _PORTS_JOB["exit_code"] = None
-                _PORTS_JOB["finished"] = time.time()
-        ok = None
-        if not running and _PORTS_JOB["finished"]:
-            ok = _PORTS_JOB["exit_code"] == 0
-        return {
-            "id": _PORTS_JOB["id"], "mode": _PORTS_JOB["mode"],
-            "running": running,
-            "started": int(_PORTS_JOB["started"]),
-            "finished": (int(_PORTS_JOB["finished"]) or None),
-            "exit_code": _PORTS_JOB["exit_code"], "ok": ok,
-            "requires_user_files": bool(_PORTS_JOB["requires_user_files"]),
-            "user_files_prompt": _PORTS_JOB["user_files_prompt"],
-            "lines": _ports_read_log(),
-        }
+        try:
+            fd = _ports_lock()
+        except BlockingIOError:
+            # Independent worker holds it across download/setup. Atomic JSON
+            # updates can be read without waiting on the full installation.
+            return dict(_ports_read_job() or job, lines=_ports_read_log())
+        try:
+            job = _ports_reconcile(_ports_read_job())
+        finally:
+            os.close(fd)
+        return dict(job, lines=_ports_read_log()) if job else None
+    except (OSError, ValueError, TypeError):
+        # Corruption is not an empty/idle queue. Display recovery and fail closed.
+        return {"id": "", "mode": "install", "running": True, "started": 0,
+                "finished": None, "exit_code": None, "ok": None,
+                "requires_user_files": False, "user_files_prompt": None,
+                "recovery_pending": True, "phase": "recovery",
+                "error": "Port job status is unavailable. Check the box before retrying.",
+                "lines": []}
 
 
 def ports_catalog(mock=False):
-    """Public catalogue for GET /api/ports (frozen; no client input). `mock`
-    forces installed=False so the dev harness never stats the real FS."""
     out = []
     for p in _PORTS:
-        out.append({
-            "id": p["id"], "name": p["name"],
-            "category": p.get("category", "game"),
-            "description": p.get("description", ""),
-            "platforms": list(p.get("platforms", ())),
-            "arch": p.get("arch", ""),
-            "requires_user_files": bool(p.get("requires_user_files")),
-            "user_files_prompt": p.get("user_files_prompt"),
-            "setup_flow": list(p.get("setup_flow", ())),
-            "installed": (False if mock else _port_installed(p)),
-        })
+        out.append({k: p.get(k) for k in
+                    ("id", "name", "category", "description", "arch",
+                     "requires_user_files", "user_files_prompt")})
+        out[-1].update(platforms=list(p["platforms"]), setup_flow=list(p["setup_flow"]),
+                       installed=False if mock else _port_installed(p))
     return out
 
 
 def ports_state(mock=False):
-    """GET /api/ports payload: catalogue + opt-in flag + current/last job. In
-    mock the opt-in reads True (so the harness can exercise the Install button)
-    and no real job/marker/FS is touched."""
-    if mock:
-        return {"ports": ports_catalog(mock=True), "allowed": True, "install": None}
-    return {"ports": ports_catalog(), "allowed": _ports_allowed(),
-            "install": ports_install_status()}
+    return {"ports": ports_catalog(mock), "allowed": _ADDON_MOCK_ENABLED if mock else _ports_allowed(),
+            "install": None if mock else ports_install_status(),
+            "addon": addon_status(mock)}
+
+
+def _ports_download(asset, dest):
+    """Stream exact catalogued bytes. Every redirect remains HTTPS on GitHub's
+    release hosts; a downloaded checksum beside an executable is not a trust root.
+    No downloaded byte is executed until the whole recipe has been verified.
+    """
+    def validate(url):
+        u = urllib.parse.urlsplit(url)
+        if (u.scheme != "https" or u.hostname not in
+                ("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+                or u.username or u.password or u.port not in (None, 443)):
+            raise ValueError("Untrusted port download redirect")
+
+    class Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            validate(newurl)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    validate(asset["url"])
+    want, size = asset["sha256"], asset["size"]
+    deadline = time.monotonic() + 1800
+    if not re.fullmatch(r"[a-f0-9]{64}", want) or type(size) is not int or not 0 < size <= 1073741824:
+        raise ValueError("Missing port content pin")
+    h, total = hashlib.sha256(), 0
+    try:
+        request = urllib.request.Request(asset["url"], headers={"User-Agent": "Couchside-Ports"})
+        with urllib.request.build_opener(Redirect()).open(request, timeout=30) as r, open(dest, "xb") as f:
+            validate(r.geturl())
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("Port download deadline exceeded")
+                chunk = getattr(r, "read1", r.read)(min(1048576, size + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > size:
+                    raise ValueError("Port download exceeds pinned size")
+                h.update(chunk)
+                f.write(chunk)
+        if total != size or not hmac.compare_digest(h.hexdigest(), want):
+            raise ValueError("Port download failed SHA-256/size verification")
+    except BaseException:
+        if os.path.exists(dest):
+            os.unlink(dest)
+        raise
+
+
+def _ports_recipe(port, mode):
+    step = port[mode]
+    entry = {"name": step["bootstrap_url"].rsplit("/", 1)[-1],
+             "url": step["bootstrap_url"], "sha256": step["sha256"], "size": step["size"]}
+    return entry, [entry] + list(step.get("assets", ()))
+
+
+def _ports_run_recipe(port, mode, stage, log):
+    entry, assets = _ports_recipe(port, mode)
+    for asset in assets:
+        name = asset["name"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name in (".", ".."):
+            raise ValueError("Invalid pinned asset name")
+        print("Verifying %s" % name, file=log, flush=True)
+        _ports_download(asset, os.path.join(stage, name))
+    env = _user_env()
+    for key in list(env):
+        if key.startswith("BBPORT_") or key in ("BB_GAME_DIR", "BASH_ENV", "ENV", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"):
+            del env[key]
+    # The reviewed setup skips network download when this verified runtime is
+    # present. Supply every executable dependency locally; do not run bootstrap.sh,
+    # which fetches unpinned scripts. This is the reviewed bbport recipe contract.
+    appdir = os.path.expanduser(port["installed_check"])
+    if os.path.islink(appdir):
+        raise ValueError("Port installation directory must not be a symlink")
+    if mode == "install":
+        runtime = next(a for a in assets if a["name"] == port["source"]["appimage"])
+        os.makedirs(appdir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".verified-", dir=appdir)
+        try:
+            with os.fdopen(fd, "wb") as f, open(os.path.join(stage, runtime["name"]), "rb") as src:
+                shutil.copyfileobj(src, f, 1048576)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, os.path.join(appdir, runtime["name"]))
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    env.update(BBPORT_APPDIR=appdir, BBPORT_REPO=port["source"]["repo"],
+               BBPORT_TAG=port["source"]["tag"], BBPORT_ASSET=port["source"]["appimage"])
+    return subprocess.run(["bash", os.path.join(stage, entry["name"])], cwd=stage,
+                          env=env, stdin=subprocess.DEVNULL, stdout=log,
+                          stderr=subprocess.STDOUT, close_fds=True).returncode
+
+
+def _ports_worker(job_id):
+    """Internal fixed-recipe worker; never starts the agent server or loads tokens."""
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id) or os.getuid() == 0:
+        return 1
+    # Parent retains the lock until systemd confirms worker exec, so wait briefly
+    # for that exact launch. A rival worker never steals a live installer lock.
+    fd = None
+    for _ in range(100):
+        try:
+            fd = _ports_lock()
+            break
+        except BlockingIOError:
+            time.sleep(0.1)
+        except OSError:
+            return 1
+    if fd is None:
+        return 1
+    stage = None
+    job = None
+    try:
+        job = _ports_read_job()
+        if not job or job["job_id"] != job_id or not job["running"]:
+            return 1
+        if not _ports_allowed():
+            raise ValueError("Port installs were disabled before the job started")
+        stage = os.path.join(_ports_dir(), "stage-" + job_id)
+        os.mkdir(stage, 0o700)
+        job.update(phase="verifying")
+        _ports_write_job(job)
+        with open(PORTS_INSTALL_LOG, "a") as log:
+            try:
+                rc = _ports_run_recipe(_PORTS_BY_ID[job["id"]], job["mode"], stage, log)
+            except Exception as e:
+                print("Port job failed: %s" % e, file=log, flush=True)
+                rc = 1
+        job.update(running=False, finished=int(time.time()), exit_code=rc,
+                   ok=rc == 0, phase="complete" if rc == 0 else "failed")
+        _ports_write_job(job)
+        return rc
+    except Exception as e:
+        # Even preflight failures must have a durable terminal outcome.
+        try:
+            if job and job.get("job_id") == job_id:
+                job.update(running=False, finished=int(time.time()), exit_code=1,
+                           ok=False, phase="failed", error=str(e))
+                _ports_write_job(job)
+        except Exception:
+            pass
+        return 1
+    finally:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+        os.close(fd)
 
 
 def ports_run(port_id, mode):
-    """Start a frozen port install/uninstall, detached, writing to
-    PORTS_INSTALL_LOG. Returns (payload, http_status). `mode` in
-    {install, uninstall}.
-
-    The id is looked up in _PORTS_BY_ID (unknown -> 404, nothing runs). The URL
-    executed is the FROZEN recipe's — never from the client. Two steps, argv
-    lists only: fetch the small bootstrap over https to a tmp file, then run it
-    as `bash <file>` detached (the long AppImage download happens in that child,
-    which writes to the log, never an unread pipe)."""
     port = _PORTS_BY_ID.get(port_id)
     if not port:
         return {"started": False, "error": "unknown port"}, 404
@@ -13918,96 +14338,44 @@ def ports_run(port_id, mode):
         return {"started": False, "error": "unknown mode"}, 400
     if not _ports_allowed():
         return {"started": False, "needs_optin": True,
-                "error": "port installs are not enabled "
-                         "(run on the box: couchside allow-ports on)"}, 403
-    url = (port.get(mode) or {}).get("bootstrap_url")
-    # Frozen data, so a bad URL is a catalogue bug, not client input — refuse
-    # closed rather than run something unpinned.
-    if not isinstance(url, str) or not url.startswith("https://github.com/"):
-        return {"started": False,
-                "error": "no %s step for this port" % mode}, 409
+                "error": "port installs are not enabled (run on the box: couchside allow-ports on)"}, 403
     with _PORTS_JOB_LOCK:
-        if _ports_running():
-            return {"started": False, "running": True, "id": _PORTS_JOB["id"],
-                    "error": "a port %s is already running"
-                             % (_PORTS_JOB["mode"] or "job")}, 409
         try:
-            os.makedirs(os.path.dirname(PORTS_INSTALL_LOG), exist_ok=True)
+            fd = _ports_lock()
+        except BlockingIOError:
+            return {"started": False, "running": True, "error": "A port job is already running."}, 409
         except OSError:
-            pass
+            return {"started": False, "error": "Port job storage is unavailable."}, 503
         try:
-            tmp = tempfile.mkdtemp(prefix="couchside-port-")
-        except OSError as e:
-            return {"started": False, "error": "cannot stage: %s" % e}, 500
-        script = os.path.join(tmp, "bootstrap.sh")
-        try:
-            logf = open(PORTS_INSTALL_LOG, "w")
-        except OSError as e:
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "error": "cannot open log: %s" % e}, 500
-        # Step 1 (bounded, synchronous): fetch ONLY the small bootstrap script.
-        # https pinned via --proto; the URL is frozen. argv list, never a shell.
-        fetch = ["curl", "-fL", "--proto", "=https", "--tlsv1.2", "--retry", "3",
-                 "-o", script, url]
-        try:
-            rc = subprocess.run(
-                fetch, stdout=logf, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, timeout=60, env=_user_env()).returncode
-        except Exception as e:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False,
-                    "error": "download failed: %s" % e.__class__.__name__}, 502
-        if rc != 0:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "exit_code": rc,
-                    "error": "could not download the installer",
-                    "lines": _ports_read_log()}, 502
-        # Step 2 (detached, long): run the bootstrap. It downloads the engine
-        # AppImage + installer scripts from the SAME frozen release and wires up
-        # the menu / Steam shortcuts, all as the desktop user — no root, no
-        # game data. Output -> the log file (an unread pipe deadlocks on a long
-        # child; see flatpak_update()).
-        try:
-            proc = subprocess.Popen(
-                ["bash", script], cwd=tmp, env=_user_env(),
-                stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True)
-        except OSError as e:
-            logf.close()
-            shutil.rmtree(tmp, ignore_errors=True)
-            return {"started": False, "error": str(e)}, 500
-        finally:
-            try:
-                logf.close()
-            except OSError:
+            previous = _ports_reconcile(_ports_read_job())
+            if previous and previous["running"]:
+                return {"started": False, "running": True, "error": "A port job is running or awaiting recovery."}, 409
+            job = {"id": port_id, "mode": mode, "job_id": secrets.token_hex(16),
+                   "running": True, "started": int(time.time()), "finished": None,
+                   "exit_code": None, "ok": None, "phase": "starting",
+                   "requires_user_files": bool(port["requires_user_files"]) if mode == "install" else False,
+                   "user_files_prompt": port["user_files_prompt"] if mode == "install" else None}
+            os.makedirs(os.path.dirname(PORTS_INSTALL_LOG), exist_ok=True)
+            with open(PORTS_INSTALL_LOG, "w"):
                 pass
-        rf = bool(port.get("requires_user_files")) if mode == "install" else False
-        up = port.get("user_files_prompt") if mode == "install" else None
-        _PORTS_JOB.update({
-            "proc": proc, "id": port_id, "mode": mode,
-            "started": time.time(), "finished": 0.0, "exit_code": None,
-            "requires_user_files": rf, "user_files_prompt": up,
-        })
-    # Short wait so an installer that dies instantly surfaces now, not as a
-    # false 'started'. Outside the lock — the job is already registered.
-    try:
-        rc = proc.wait(timeout=0.8)
-    except subprocess.TimeoutExpired:
-        rc = None
-    if rc is not None and rc != 0:
-        with _PORTS_JOB_LOCK:
-            _PORTS_JOB["exit_code"] = rc
-            _PORTS_JOB["finished"] = time.time()
-        return {"started": False, "id": port_id, "mode": mode, "exit_code": rc,
-                "error": "the installer exited immediately",
-                "lines": _ports_read_log()}, 502
-    print("[ports] %s %s started (log: %s)" % (mode, port_id, PORTS_INSTALL_LOG),
-          flush=True)
-    return {"started": True, "id": port_id, "mode": mode,
-            "requires_user_files": rf, "user_files_prompt": up,
-            "log": PORTS_INSTALL_LOG}, 200
+            _ports_write_job(job)
+            # Type=exec acknowledges Python exec, not just fork. The user unit
+            # owns this job independently of couchside.service's cgroup/lifetime.
+            argv = ["systemd-run", "--user", "--quiet", "--collect", "--unit=" + _PORTS_UNIT,
+                    "--property=Type=exec", sys.executable, os.path.realpath(__file__),
+                    "--ports-worker", job["job_id"]]
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=15, env=_user_env())
+            if r.returncode:
+                raise OSError("Could not start the Ports user service")
+            return {"started": True, "id": port_id, "mode": mode,
+                    "job_id": job["job_id"], "requires_user_files": job["requires_user_files"],
+                    "user_files_prompt": job["user_files_prompt"], "log": PORTS_INSTALL_LOG}, 200
+        except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+            # A launch timeout is ambiguous: keep the durable claim. Reconcile
+            # against the unit later rather than starting a second installer.
+            return {"started": False, "error": "Port job could not start; check status before retrying."}, 503
+        finally:
+            os.close(fd)
 
 
 _DECKY_MARKER = "/etc/couchside/allow-decky"
@@ -17331,23 +17699,7 @@ def _sha256_file(path):
 
 
 def _openpuck_fw_valid(path, want_sha=None):
-    """True if `path` is a trustworthy OpenPuck firmware image: it passes _is_uf2
-    (UF2 magic + whole 512-byte blocks), its size is in the sane [MIN, MAX] window,
-    and — when want_sha is given — its sha256 matches EXACTLY. Degrades closed: any
-    error, wrong size, or hash mismatch -> False, so a bad image is never flashed."""
-    try:
-        if not path or not os.path.isfile(path):
-            return False
-        if not _is_uf2(path):
-            return False
-        size = os.path.getsize(path)
-        if size < _OPENPUCK_FW_MIN_SIZE or size > _OPENPUCK_FW_MAX_SIZE:
-            return False
-        if want_sha is not None and _sha256_file(path) != want_sha:
-            return False
-        return True
-    except OSError:
-        return False
+    return _op_validate_firmware(path, want_sha)
 
 
 def _openpuck_download(url, dest, timeout=60):
@@ -17390,19 +17742,9 @@ def _openpuck_download(url, dest, timeout=60):
 
 
 def _openpuck_pick_asset(assets):
-    """From a GitHub release 'assets' list, pick the STANDARD OpenPuck UF2: prefer a
-    name matching OpenPuck-*-standard*.uf2; otherwise the first *.uf2 that is NOT a
-    *-factory-reset* variant (a release may ship a factory-reset image we must never
-    default to). Returns the asset dict or None."""
-    uf2 = [a for a in (assets or []) if isinstance(a, dict)
-           and (a.get("name") or "").lower().endswith(".uf2")]
-    non_reset = [a for a in uf2
-                 if "factory-reset" not in (a.get("name") or "").lower()]
-    for a in non_reset:
-        n = (a.get("name") or "").lower()
-        if n.startswith("openpuck-") and "standard" in n:
-            return a
-    return non_reset[0] if non_reset else None
+    """Only exact standard application builds; never reset/bootloader variants."""
+    return next((a for a in assets if isinstance(a, dict) and
+                 re.fullmatch(r'OpenPuck-[\w.-]+-standard\.uf2', a.get('name', ''))), None)
 
 
 def _openpuck_resolve_pinned():
@@ -17446,8 +17788,8 @@ def _openpuck_resolve_latest():
         tag = meta.get("tag_name") or "latest"
         asset = _openpuck_pick_asset(meta.get("assets") or [])
         url = asset.get("browser_download_url") if asset else None
-        if not url:
-            return None, None, "no standard .uf2 asset in the latest release."
+        if not url or not url.startswith("https://github.com/emerytech/openpuck/releases/download/"):
+            return None, None, "no trusted standard .uf2 asset in the latest release."
         safe = "".join(c for c in tag if c.isalnum() or c in "._-") or "latest"
         dest = os.path.join(os.path.dirname(_openpuck_cache_path()),
                             "OpenPuck-latest-%s.uf2" % safe)
@@ -17507,78 +17849,536 @@ def mock_openpuck_latest():
             "is_newer": True, "pinned_tag": _OPENPUCK_FW_TAG}
 
 
-def real_openpuck_flash(variant="pinned"):
-    """Flash OpenPuck firmware onto a plugged-in nRF52840 board that is in its UF2
-    bootloader. Returns the standard ActionResult (ok/exit_code/stdout/stderr/
-    duration_ms).
+# ---- OpenPuck native transport (stdlib only; shared with Windows agent) ----
+# Uses only the vendor bulk interface, never claims the controller input slots.
+# No client supplies a path, USB command, firmware bytes, or pairing secret.
+_OP_LOCK = threading.Lock()
+_OP_PAIR_PLANS = {}
+_OP_SYSUSB = '/sys/bus/usb/devices'
+_OP_HIDRAW = '/sys/class/hidraw'
 
-    `variant` is the allowlisted {pinned|latest} enum (validated by the caller):
-      - 'pinned' (default): the fork build pinned in source, resolved by
-        _openpuck_resolve_pinned() (cache -> fork download -> seed, sha-verified).
-      - 'latest': the fork's newest standard release, fetched + verified on demand
-        (opt-in only). Never reached without an explicit client request.
 
-    §3-safe: the flash TARGET is _openpuck_bootloader_mount() (a label + UF2-marker
-    match, never client input) and the firmware is agent-owned — the client supplies
-    neither a URL, a path, nor the bytes; it only selects the id + variant enum. The
-    copy is shutil.copyfile into the desktop user's own automount: no sudo, no shell.
+def _op_status(p):
+    if len(p) < 51 or p[0] < 1:
+        raise ValueError('Unsupported OpenPuck status protocol.')
+    return {'protocol': p[0], 'mode': p[1], 'connected': p[11] == 1,
+            'reports': int.from_bytes(p[12:14], 'little'),
+            'new_reports': int.from_bytes(p[15:17], 'little'),
+            'battery': p[36] or None, 'rssi': -p[37] if p[37] else None,
+            'dirty': bool(p[38]), 'build': p[39:51].split(b'\0')[0].decode('ascii', 'replace'),
+            'slots': [{'slot': i + 1, 'connected': p[61+i*3] == 1,
+                       'battery': p[62+i*3] or None, 'rssi': -p[63+i*3] if p[63+i*3] else None}
+                      for i in range(4)] if p[0] >= 8 and len(p) >= 73 else []}
 
-    The resolved firmware is ALWAYS verified (UF2 magic + size, and sha256 for the
-    pinned build) before it is written — a bootloader silently ignores a truncated /
-    non-UF2 image and never reboots, so copying garbage would falsely read as
-    success. The board then reboots the instant the UF2 lands and yanks its USB
-    mass-storage mid-write, so the copy errors (ENXIO/EIO) even on a SUCCESSFUL
-    flash; that specific errno is treated as success (both directions are tested)."""
-    start = time.monotonic()
 
-    def _done(ok, exit_code, stdout, stderr):
-        return {"ok": ok, "exit_code": exit_code, "stdout": stdout,
-                "stderr": stderr,
-                "duration_ms": int((time.monotonic() - start) * 1000)}
+def _op_serial(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Z0-9]{1,16}', value):
+        raise ValueError('Missing or unsupported USB serial. Reconnect the device.')
+    return value
 
-    mount = _openpuck_bootloader_mount()
-    if mount is None:
-        # Degrade closed: no board in DFU -> nothing to flash, no guessed path.
-        return _done(False, -1, "",
-                     "No board in DFU mode. Plug in an nRF52840 board (or "
-                     "double-tap its reset button) and try again.")
 
-    if variant == "latest":
-        fw, tag, err = _openpuck_resolve_latest()
-        if tag:
-            # Carry the AGPL §6 corresponding-source offer WITH the conveyed build:
-            # a latest flash conveys a tag other than the app-pinned one, so the
-            # static NOTICE/licenses offer (0.9.40) would not cover it — name this
-            # build's own source here.
-            ok_msg = ("Flashed OpenPuck %s. The board is rebooting as a Steam "
-                      "Controller Puck. Source: "
-                      "https://github.com/emerytech/openpuck/releases/tag/%s"
-                      % (tag, tag))
-        else:
-            ok_msg = "Flashed. The board is rebooting as a Steam Controller Puck."
-    else:
-        fw, err = _openpuck_resolve_pinned()
-        ok_msg = "Flashed. The board is rebooting as a Steam Controller Puck."
+def _op_usb_inventory():
+    """Trusted local USB discovery; an official puck has no matching vendor pipes."""
+    if sys.platform == 'win32':
+        return _op_win_inventory()
+    result = []
+    for name in os.listdir(_OP_SYSUSB):
+        root = os.path.join(_OP_SYSUSB, name)
+        def read(n):
+            with open(os.path.join(root, n)) as f:
+                return f.read().strip()
+        try:
+            if read('idVendor').lower() != '28de':
+                continue
+            pid = int(read('idProduct'), 16)
+            if pid not in (0x1304, 0x1301, 0x1302, 0x1303, 0x1205):
+                continue
+            serial = _op_serial(read('serial'))
+            item = {'serial': serial, 'pid': pid, 'root': os.path.realpath(root)}
+            if pid == 0x1304:
+                with open(os.path.join(root, 'descriptors'), 'rb') as f:
+                    descriptors = f.read(16384)
+                iface, endpoints, match = None, {}, None
+                off = 0
+                while off + 2 <= len(descriptors):
+                    size, kind = descriptors[off:off+2]
+                    if size < 2 or off + size > len(descriptors):
+                        break
+                    d = descriptors[off:off+size]
+                    if kind == 4 and size >= 9:
+                        iface = d[2] if d[5] == 255 and d[6] != 0x5d and d[3] == 0 else None
+                        endpoints = {}
+                    if kind == 5 and size >= 7 and iface is not None and d[3] & 3 == 2:
+                        endpoints['in' if d[2] & 128 else 'out'] = d[2]
+                        if len(endpoints) == 2:
+                            match = (iface, dict(endpoints))
+                    off += size
+                if not match:
+                    continue
+                item.update(interface=match[0], endpoints=match[1],
+                            path='/dev/bus/usb/%03d/%03d' % (int(read('busnum')), int(read('devnum'))))
+            result.append(item)
+        except (OSError, ValueError):
+            continue
+    return result
 
-    if fw is None:
-        # Degrade closed: no verified firmware from any source. Surface the reason
-        # and how to recover (network, or re-run the installer to seed it).
-        return _done(False, -1, "",
-                     "Couldn't get the OpenPuck firmware — %s Connect the box to "
-                     "the internet and try again, or re-run the Couchside "
-                     "installer." % (err or "no source available."))
 
-    # fw is already fully verified by the resolver; write it onto the board.
-    dst = os.path.join(mount, os.path.basename(fw))
+class _OpUSB:
+    def __init__(self, item):
+        self.item, self.handle = item, None
+        if sys.platform == 'win32':
+            self.native = _OpWinUSB(item)
+            return
+        import ctypes as c
+        import fcntl
+        self.c, self.ioctl = c, fcntl.ioctl
+        self.fd = os.open(item['path'], os.O_RDWR | os.O_CLOEXEC)
+        try:
+            # USBDEVFS_CLAIMINTERFACE; do not detach kernel drivers.
+            self.ioctl(self.fd, 0x8004550f, struct.pack('I', item['interface']))
+            class Control(c.Structure):
+                _fields_ = [('type', c.c_ubyte), ('request', c.c_ubyte), ('value', c.c_ushort),
+                            ('index', c.c_ushort), ('length', c.c_ushort), ('timeout', c.c_uint), ('data', c.c_void_p)]
+            def descriptor(kind, index, language, size):
+                buf = c.create_string_buffer(size)
+                query = Control(0x80, 6, (kind << 8) | index, language, size, 1000, c.addressof(buf))
+                got = self.ioctl(self.fd, 0xc0005500 | (c.sizeof(query) << 16), query)
+                return buf.raw[:got]
+            desc = descriptor(1, 0, 0, 18)
+            if len(desc) != 18 or desc[8:12] != bytes([0xde, 0x28, 4, 0x13]) or not desc[16]:
+                raise ValueError('Connected USB device changed.')
+            raw = descriptor(3, desc[16], 0x409, 255)
+            if len(raw) < 2 or _op_serial(raw[2:].decode('utf-16-le')) != item['serial']:
+                raise ValueError('Connected puck serial changed.')
+            control = Control(0x21, 0x22, 1, item['interface'], 0, 1000, None)
+            self.ioctl(self.fd, 0xc0005500 | (c.sizeof(control) << 16), control)
+        except BaseException:
+            self.close()
+            raise
+
+    def transfer(self, data=None):
+        if sys.platform == 'win32':
+            return self.native.transfer(data)
+        c = self.c
+        class Bulk(c.Structure):
+            _fields_ = [('ep', c.c_uint), ('length', c.c_uint), ('timeout', c.c_uint), ('data', c.c_void_p)]
+        buf = c.create_string_buffer(data, len(data)) if data is not None else c.create_string_buffer(256)
+        bulk = Bulk(self.item['endpoints']['out' if data is not None else 'in'], len(buf), 700, c.addressof(buf))
+        size = self.ioctl(self.fd, 0xc0005502 | (c.sizeof(bulk) << 16), bulk)
+        if data is not None and size != len(data):
+            raise OSError('Short USB command write.')
+        return buf.raw[:size]
+
+    def request(self, command, marker=0xa5):
+        self.transfer(bytes(command))
+        deadline, pending = time.monotonic() + 3, b''
+        while time.monotonic() < deadline:
+            try:
+                pending += self.transfer()
+            except OSError as e:
+                if getattr(e, 'errno', None) == 110:
+                    continue
+                raise
+            while len(pending) >= 2:
+                if pending[0] not in (0xa5, 0xa7) or pending[1] < 51:
+                    pending = pending[1:]
+                    continue
+                size = pending[1] + 2
+                if len(pending) < size:
+                    break
+                frame, pending = pending[:size], pending[size:]
+                if frame[0] == marker:
+                    return frame[2:]
+        raise OSError('OpenPuck did not reply. Close other configurators and reconnect it.')
+
+    def close(self):
+        if sys.platform == 'win32':
+            self.native.close()
+        elif getattr(self, 'fd', None) is not None:
+            try:
+                self.ioctl(self.fd, 0x80045510, struct.pack('I', self.item['interface']))
+            except OSError:
+                pass
+            os.close(self.fd)
+            self.fd = None
+
+
+def _op_one_puck(serial=None):
+    items = [d for d in _op_usb_inventory() if d['pid'] == 0x1304]
+    if serial is not None:
+        _op_serial(serial)
+        items = [d for d in items if d['serial'] == serial]
+    if len(items) != 1:
+        raise ValueError('Connect exactly one OpenPuck in Steam mode; close other configurators.')
+    return items[0]
+
+
+class _OpHID:
+    def __init__(self, item):
+        self.item, self.fd, self.native = item, None, None
+        if sys.platform == 'win32':
+            self.native = _OpWinHID(item)
+            return
+        import fcntl
+        self.ioctl = fcntl.ioctl
+        # Only HID interfaces below the exact USB device discovered above.
+        paths = []
+        for name in os.listdir(_OP_HIDRAW):
+            root = os.path.join(_OP_HIDRAW, name, 'device')
+            if not os.path.realpath(root).startswith(item['root'] + '/'):
+                continue
+            try:
+                with open(os.path.join(root, 'report_descriptor'), 'rb') as f:
+                    desc = f.read(8192)
+                if b'\x06\x00\xff' in desc:  # vendor usage page FF00
+                    paths.append('/dev/' + name)
+            except OSError:
+                pass
+        for path in paths:
+            try:
+                self.fd = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+                if self.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii') == item['serial']:
+                    return
+            except (OSError, ValueError, UnicodeError):
+                pass
+            self.close()
+        raise OSError('Cannot access USB controller. Close Steam and check USB permissions/data cable.')
+
+    def command(self, opcode, payload=b'', read=False):
+        if len(payload) > 61:
+            raise ValueError('Oversize HID command.')
+        for _ in range(3 if read else 1):
+            buf = bytearray(bytes([1, opcode, len(payload)]) + payload + bytes(61-len(payload)))
+            if self.native:
+                self.native.feature(buf, False)
+            else:
+                self.ioctl(self.fd, 0xc0404806, buf, True)
+            time.sleep(.03)
+            if not read:
+                return b''
+            buf = bytearray([1] + [0]*63)
+            if self.native:
+                self.native.feature(buf, True)
+            else:
+                self.ioctl(self.fd, 0xc0404807, buf, True)
+            off = 1 if buf[0] == 1 else 0
+            if buf[off] == opcode and buf[off+1] <= len(buf)-off-2:
+                return bytes(buf[off+2:off+2+buf[off+1]])
+        raise OSError('Unexpected controller reply. Close Steam and reconnect the controller.')
+
+    def close(self):
+        if self.native:
+            self.native.close()
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def _op_bonds(payload):
+    if len(payload) != 98 or payload[0] != 1 or payload[1] > 15:
+        raise ValueError('Unsupported puck pairing table.')
+    return [{'slot': i, 'used': bool(payload[1] & (1 << i)), 'record': payload[2+24*i:26+24*i]}
+            for i in range(4)]
+
+
+def _op_controller_bonds(hid):
+    result = []
+    for i, key in enumerate((b'esb/bond\0', b'esb/bond_2\0')):
+        raw = hid.command(0xed, key, True)
+        if raw and not 8 <= len(raw) <= 24:
+            raise ValueError('Unsupported controller pairing record.')
+        record = raw.ljust(24, b'\0')
+        result.append({'slot': i, 'used': any(record[:8]), 'record': record})
+    return result
+
+
+def _op_pair_plan(puck, controller, pb, cb):
+    def slot(rows, serial):
+        return next((r for r in rows if r['used'] and r['record'][8:].split(b'\0')[0] == serial.encode()),
+                    next((r for r in rows if not r['used']), None))
+    p, c = slot(pb, controller), slot(cb, puck)
+    if p is None or c is None:
+        raise ValueError('No free pairing slot. Existing pairings have not been replaced.')
+    key = c['record'][:8] if c['used'] else p['record'][:8] if p['used'] else secrets.token_bytes(8)
+    if not any(key):
+        raise ValueError('Invalid pairing key.')
+    return {'puck_slot': p['slot'], 'controller_slot': c['slot'],
+            'puck_record': key + _op_serial(controller).encode().ljust(16, b'\0'),
+            'controller_record': key + _op_serial(puck).encode().ljust(16, b'\0')}
+
+
+def _op_inspect():
+    item = _op_one_puck()
+    usb = _OpUSB(item)
     try:
-        shutil.copyfile(fw, dst)
-    except OSError as e:
-        if e.errno in (errno.ENXIO, errno.EIO):
-            # Expected: the board rebooted and pulled its drive mid-write. Success.
-            return _done(True, 0, ok_msg, "")
-        return _done(False, e.errno or -1, "", "Flash failed: %s" % e)
-    # Some kernels finish the copy before the board yanks the drive. Also success.
-    return _done(True, 0, ok_msg, "")
+        result = _op_status(usb.request([1]))
+        return dict(result, serial=item['serial'])
+    finally:
+        usb.close()
+
+
+def _op_check(serial):
+    item = _op_one_puck(serial)
+    usb = _OpUSB(item)
+    responses = active = 0
+    try:
+        for _ in range(20):
+            start = time.monotonic()
+            s = _op_status(usb.request([1]))
+            responses += 1
+            if (s['connected'] or any(r['connected'] for r in s['slots'])) and s['new_reports'] > 0:
+                active += 1
+            time.sleep(max(0, .5 - (time.monotonic() - start)))
+        return {'responses': responses, 'active_samples': active, 'usb_ok': responses == 20,
+                'wireless_ok': active >= 15,
+                'message': 'USB replies checked. Wireless activity does not verify every button or axis.'}
+    finally:
+        usb.close()
+
+
+def _op_prepare(serial):
+    puck = _op_one_puck(serial)
+    controllers = [d for d in _op_usb_inventory() if d['pid'] != 0x1304]
+    if len(controllers) != 1:
+        raise ValueError('Connect exactly one powered-on controller by USB to this computer and close Steam.')
+    controller = controllers[0]
+    usb, hid = _OpUSB(puck), None
+    try:
+        hid = _OpHID(controller)
+        verified = hid.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii')
+        if verified != controller['serial']:
+            raise ValueError('Controller identity changed.')
+        pb, cb = _op_bonds(usb.request([9], 0xa7)), _op_controller_bonds(hid)
+        plan = _op_pair_plan(puck['serial'], controller['serial'], pb, cb)
+        token = secrets.token_urlsafe(24)
+        _OP_PAIR_PLANS.clear()
+        _OP_PAIR_PLANS[token] = dict(plan, puck=puck['serial'], controller=controller['serial'],
+                                     before_puck=pb, before_controller=cb, expires=time.monotonic()+90)
+        return {'confirmation': token, 'puck_serial': puck['serial'], 'controller_serial': controller['serial'],
+                'puck_slot': plan['puck_slot']+1, 'controller_slot': plan['controller_slot']+1, 'expires_in': 90}
+    finally:
+        if hid:
+            hid.close()
+        usb.close()
+
+
+def _op_pair(token):
+    plan = _OP_PAIR_PLANS.pop(token, None)
+    if not plan or plan['expires'] < time.monotonic():
+        raise ValueError('Pairing confirmation expired. Find the USB controller again.')
+    puck = _op_one_puck(plan['puck'])
+    controllers = [d for d in _op_usb_inventory() if d['pid'] != 0x1304 and d['serial'] == plan['controller']]
+    if len(controllers) != 1:
+        raise ValueError('Controller disconnected or changed. Find it again.')
+    usb, hid, wrote = _OpUSB(puck), None, False
+    try:
+        hid = _OpHID(controllers[0])
+        if hid.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii') != plan['controller']:
+            raise ValueError('Controller identity changed.')
+        if _op_bonds(usb.request([9], 0xa7)) != plan['before_puck'] or _op_controller_bonds(hid) != plan['before_controller']:
+            raise ValueError('Pairing records changed. Find the USB controller again.')
+        wireless = hid.command(0xed, b'user/wireless_transport\0', True)
+        # Private, agent-local backup; secrets never enter a response or log.
+        folder = os.path.join(os.path.dirname(_openpuck_cache_path()), 'pairing-backups')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        backup = dict(plan, wireless=wireless)
+        with os.fdopen(os.open(os.path.join(folder, secrets.token_hex(12)+'.json'),
+                               os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'w') as f:
+            json.dump(backup, f, default=lambda b: list(b))
+        wrote = True
+        usb.transfer(bytes([0x0d, plan['puck_slot'], 1]) + plan['puck_record'])
+        after = _op_bonds(usb.request([9], 0xa7))
+        expected = [dict(r) for r in plan['before_puck']]
+        expected[plan['puck_slot']] = {'slot': plan['puck_slot'], 'used': True, 'record': plan['puck_record']}
+        if after != expected:
+            raise OSError('Puck pairing verification failed.')
+        for key, value in ((b'esb/bond_2\0' if plan['controller_slot'] else b'esb/bond\0', plan['controller_record']),
+                           (b'user/wireless_transport\0', bytes([plan['controller_slot']+2]))):
+            hid.command(0xee, key+value)
+            hid.command(0xef, key)
+            if hid.command(0xed, key, True).ljust(len(value), b'\0') != value:
+                raise OSError('Controller pairing verification failed.')
+        expected = [dict(r) for r in plan['before_controller']]
+        expected[plan['controller_slot']] = {'slot': plan['controller_slot'], 'used': True, 'record': plan['controller_record']}
+        if _op_controller_bonds(hid) != expected:
+            raise OSError('Controller pairing slots changed unexpectedly.')
+        usb.transfer(bytes([0x0e, 0xff]))
+        try:
+            hid.command(0x95, bytes([0x52, 0xaf, 0x27, 0xa4]))
+        except OSError:
+            pass  # expected reboot; both records were verified first
+        return {'message': 'Pairing records verified. Unplug only the controller USB cable, keep it on, then inspect and run the wireless check.'}
+    except Exception as e:
+        if wrote:
+            raise OSError('Pairing incomplete; records may be partly written. Private backups saved on this computer. Reconnect both devices and find the controller again. ' + str(e)) from e
+        raise
+    finally:
+        if hid:
+            hid.close()
+        usb.close()
+
+
+def _op_action(op, body, mock=False):
+    """All requests stay under normal bearer auth. Unknown fields fail before USB."""
+    fields = {'inspect': set(), 'test': {'serial'}, 'prepare_pair': {'serial'},
+              'pair': {'confirmation'}, 'bootloader': {'serial'}}
+    if op not in fields or not isinstance(body, dict) or set(body) != fields[op]:
+        return 400, {'ok': False, 'error': 'Unknown OpenPuck action or fields.'}
+    if 'serial' in body:
+        try:
+            _op_serial(body['serial'])
+        except ValueError as e:
+            return 400, {'ok': False, 'error': str(e)}
+    if 'confirmation' in body and (not isinstance(body['confirmation'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{32}', body['confirmation'])):
+        return 400, {'ok': False, 'error': 'Invalid pairing confirmation.'}
+    if not _OP_LOCK.acquire(blocking=False):
+        return 409, {'ok': False, 'error': 'Another OpenPuck operation is running.'}
+    try:
+        if mock:
+            return 200, dict(_op_mock(op, body), ok=True)
+        if op == 'inspect':
+            result = _op_inspect()
+        elif op == 'test':
+            result = _op_check(body['serial'])
+        elif op == 'prepare_pair':
+            result = _op_prepare(body['serial'])
+        elif op == 'pair':
+            result = _op_pair(body['confirmation'])
+        else:
+            usb = _OpUSB(_op_one_puck(body['serial']))
+            try:
+                _op_status(usb.request([1]))  # prove OpenPuck before a reset
+                usb.transfer(bytes([0x0c]))
+            finally:
+                usb.close()
+            result = {'message': 'Bootloader requested. Mount NICENANO in your file manager if needed, then use the existing Flash button.'}
+        return 200, dict(result, ok=True)
+    except (OSError, ValueError) as e:
+        return 200, {'ok': False, 'error': str(e)}
+    finally:
+        _OP_LOCK.release()
+
+
+def _op_mock(op, body):
+    if op == 'inspect':
+        return {'serial': 'TESTPUCK', 'build': '0.9.40', 'protocol': 19, 'dirty': False,
+                'connected': True, 'new_reports': 250,
+                'slots': [{'slot': 1, 'connected': True, 'battery': 95, 'rssi': -47}]}
+    if op == 'test':
+        return {'responses': 20, 'active_samples': 20, 'usb_ok': True, 'wireless_ok': True}
+    if op == 'prepare_pair':
+        return {'confirmation': 'M'*32, 'puck_serial': 'TESTPUCK', 'controller_serial': 'TESTCONTROLLER',
+                'puck_slot': 1, 'controller_slot': 2, 'expires_in': 90}
+    return {'message': 'Mock operation complete.'}
+# ---- End OpenPuck native transport ----
+
+
+def _op_board_identity(mount):
+    marker = os.path.join(mount, 'INFO_UF2.TXT')
+    if os.path.islink(marker) or os.path.realpath(mount) != os.path.abspath(mount):
+        raise ValueError('Bootloader mount must not be a symlink.')
+    with open(marker) as f:
+        info = f.read(8193)
+    if len(info) > 8192 or 'UF2 Bootloader' not in info or not re.search(r'Board-ID:\s*nRF52840-(?:nicenano|feather|pca10056)\b', info, re.I):
+        raise ValueError('Unsupported bootloader board. Nothing was written.')
+    return os.stat(mount).st_dev, info
+
+
+def _op_reboot_write_error(err, written, total, phase, platform):
+    # Windows CRT reports EBADF when the UF2 device disappears during _commit.
+    # Only after ALL bytes were written may sync/close errors enter USB verification.
+    return written == total and (err in (5, 6, 19) or
+        (platform == 'win32' and phase == 'syncing' and err in (9, 22)))
+
+
+def real_openpuck_flash(variant='pinned'):
+    """Use the existing firmware resolver; success requires a full write and a new USB puck.
+
+    Bootloader write/fsync errors alone are never proof of a completed flash.
+    Serialize with inspection/pairing and preserve the existing ActionResult API.
+    """
+    start = time.monotonic()
+    def done(ok, msg):
+        return {'ok': ok, 'exit_code': 0 if ok else -1, 'stdout': msg if ok else '',
+                'stderr': '' if ok else msg, 'duration_ms': int((time.monotonic()-start)*1000)}
+    if variant not in ('pinned', 'latest'):
+        return done(False, 'Unknown firmware variant.')
+    if not _OP_LOCK.acquire(blocking=False):
+        return done(False, 'Another OpenPuck operation is running.')
+    try:
+        mount = _openpuck_bootloader_mount()
+        if not mount:
+            return done(False, 'No mounted board in DFU mode. Mount NICENANO in the file manager, then retry.')
+        identity = _op_board_identity(mount)
+        before = {d['serial'] for d in _op_usb_inventory() if d['pid'] == 0x1304}
+        if variant == 'latest':
+            fw, tag, err = _openpuck_resolve_latest()
+        else:
+            fw, err = _openpuck_resolve_pinned()
+            tag = _OPENPUCK_FW_TAG
+        if not fw:
+            return done(False, 'Could not get verified firmware: ' + str(err))
+        if not _openpuck_fw_valid(fw, _OPENPUCK_FW_SHA256 if variant == 'pinned' else None):
+            return done(False, 'Firmware verification failed.')
+        with open(fw, 'rb') as f:
+            data = f.read(_OPENPUCK_FW_MAX_SIZE+1)
+        if _op_board_identity(mount) != identity:
+            return done(False, 'The connected board changed. Retry after checking USB.')
+        written = 0
+        phase = 'writing'
+        try:
+            # Exclusive, random filename prevents following an existing removable-media link.
+            fd = os.open(os.path.join(mount, 'CS'+secrets.token_hex(3).upper()+'.UF2'),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
+            try:
+                while written < len(data):
+                    n = os.write(fd, data[written:written+16384])
+                    if not n:
+                        raise OSError('Board stopped accepting firmware.')
+                    written += n
+                phase = 'syncing'
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            if not _op_reboot_write_error(e.errno, written, len(data), phase, sys.platform):
+                return done(False, 'Firmware write was not confirmed complete: '+str(e))
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if not os.path.exists(mount):
+                after = {d['serial'] for d in _op_usb_inventory() if d['pid'] == 0x1304}
+                if len(after-before) == 1:
+                    return done(True, 'Flashed OpenPuck %s; USB reboot verified. Source: https://github.com/emerytech/openpuck/releases/tag/%s' % (tag, tag))
+            time.sleep(.5)
+        return done(False, 'Write finished, but the puck USB reboot was not confirmed. Reconnect and inspect it before retrying; no success counted.')
+    except (OSError, ValueError) as e:
+        return done(False, str(e))
+    finally:
+        _OP_LOCK.release()
+
+
+def _op_validate_firmware(path, want_sha=None):
+    try:
+        size = os.path.getsize(path)
+        if not _OPENPUCK_FW_MIN_SIZE <= size <= _OPENPUCK_FW_MAX_SIZE or size % 512:
+            return False
+        seen, addresses = set(), set()
+        with open(path, 'rb') as f:
+            data = f.read(_OPENPUCK_FW_MAX_SIZE+1)
+        if len(data) != size:
+            return False
+        for off in range(0, size, 512):
+            b = data[off:off+512]
+            magic, magic2, flags, addr, length, num, total, family = struct.unpack_from('<8I', b)
+            if (magic != 0x0a324655 or magic2 != 0x9e5d5157 or struct.unpack_from('<I', b, 508)[0] != 0x0ab16f30
+                    or flags != 0x2000 or family != 0xada52840 or length != 256 or addr % 256
+                    or addr < 0x26000 or addr+256 > 0xed000 or num >= size//512 or total != size//512
+                    or num in seen or addr in addresses):
+                return False
+            seen.add(num); addresses.add(addr)
+        return want_sha is None or hashlib.sha256(data).hexdigest() == want_sha
+    except (OSError, ValueError, struct.error, TypeError):
+        return False
 
 
 def mock_openpuck_flash(variant="pinned"):
@@ -28363,6 +29163,8 @@ class Handler(BaseHTTPRequestHandler):
         body = html.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -28480,6 +29282,7 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         self._send(204, None, started)
 
+    @addon_remote_guard
     def do_GET(self):
         started = time.monotonic()
         try:
@@ -28517,6 +29320,23 @@ class Handler(BaseHTTPRequestHandler):
                 # self-auths (?token=), then relays opaque SDP/ICE to the portal
                 # helper's webrtcbin. Absent module / no H.264 -> degrades closed.
                 self._handle_webrtc_ws(parsed, started)
+                return
+
+            if path == "/api/addons/local-status":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                with _ADDON_LOCK:
+                    status = addon_status(self.mock)
+                    status["request_id"] = _ADDON_REQUEST["created"] if _ADDON_REQUEST else 0
+                self._send(200, status, started)
+                return
+
+            if path == "/addons/confirm":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_addon_confirmation(self.mock), started)
                 return
 
             if path == "/pair":
@@ -29496,6 +30316,7 @@ class Handler(BaseHTTPRequestHandler):
         body.update(r)
         self._send(200, body, started)
 
+    @addon_remote_guard
     def do_POST(self):
         started = time.monotonic()
         try:
@@ -29511,6 +30332,29 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._read_body()
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            # A separate LOCAL-ONLY approval route. A bearer token cannot approve.
+            # Host prevents DNS rebinding; the unguessable page-only nonce prevents
+            # cross-site form/fetch requests. No CORS, no remote approval endpoint.
+            if path == "/api/addons/confirm":
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self.close_connection = True
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                try:
+                    req = json.loads(self._read_body().decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"nonce", "approve"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "invalid confirmation"}, started)
+                    return
+                payload, code = addon_decide(req["nonce"], req["approve"], self.mock)
+                self._send(code, payload, started)
                 return
 
             # UNAUTHENTICATED PIN pairing (the only unauthenticated POSTs): a
@@ -30260,15 +31104,39 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
+            if path == "/api/addons/verify":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"pin"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "PIN required"}, started)
+                    return
+                payload, code = addon_verify(req["pin"], self.mock)
+                self._send(code, payload, started)
+                return
+
+            if path == "/api/addons/request":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    if not isinstance(req, dict) or set(req) != {"id", "enabled"}:
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "id and enabled required"}, started)
+                    return
+                payload, code = addon_request(req["id"], req["enabled"], self.port, self.mock)
+                self._send(code, payload, started)
+                return
+
             # POST /api/ports/install | /api/ports/uninstall {"id": "..."}:
             # install or remove a port from the FROZEN catalogue. The id is
             # looked up in _PORTS_BY_ID — an unknown id is a 404 and nothing
-            # runs. The only thing executed is the recipe's frozen bootstrap URL
-            # (ports_run: https fetch to a tmp file, then `bash <file>` as the
-            # desktop user; no shell, no client string in argv, no game data).
+            # runs. A fixed user-service worker verifies the full executable
+            # recipe (pinned hashes/sizes), then runs setup as the desktop user.
+            # No client URL, command or game data is accepted.
             # Gated by the on-box opt-in (couchside allow-ports on) -> 403.
             if path in ("/api/ports/install", "/api/ports/uninstall"):
-                mode = "install" if path.endswith("install") else "uninstall"
+                mode = "install" if path == "/api/ports/install" else "uninstall"
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}
                     if not isinstance(req, dict):
@@ -30438,6 +31306,16 @@ class Handler(BaseHTTPRequestHandler):
             # uninstall/reload as JOBS (the loader op stays under /utilities).
             if path.startswith("/api/decky/"):
                 self._handle_decky_post(path, body, started)
+                return
+
+            if path.startswith('/api/utilities/openpuck/device/'):
+                op = path[len('/api/utilities/openpuck/device/'):]
+                try:
+                    request = json.loads(body.decode('utf-8')) if body else {}
+                except (ValueError, UnicodeError):
+                    request = None
+                code, result = _op_action(op, request, self.mock)
+                self._send(code, result, started)
                 return
 
             uprefix = "/api/utilities/"
@@ -31408,6 +32286,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    @addon_remote_guard
     def do_DELETE(self):
         started = time.monotonic()
         try:
@@ -32026,6 +32905,22 @@ class Handler(BaseHTTPRequestHandler):
                     break
         finally:
             if hsock is not None:
+                # WebRTC media travels outside the agent socket. During privacy
+                # preparation, require EOF from the helper AFTER its pipeline
+                # teardown; merely closing signaling is not proof media stopped.
+                if addon_paused():
+                    try:
+                        hsock.shutdown(socket.SHUT_WR)
+                        hsock.settimeout(3)
+                        end = time.monotonic() + 3
+                        while hsock.recv(65536):
+                            if time.monotonic() >= end:
+                                raise OSError("portal did not finish teardown")
+                    except OSError:
+                        with _ADDON_LOCK:
+                            if addon_paused():
+                                _ADDON_REQUEST["state"] = "failed"
+                                _ADDON_REQUEST["pin"] = None
                 try:
                     hsock.close()                      # closing -> helper reaps
                 except OSError:
@@ -32146,6 +33041,8 @@ class Handler(BaseHTTPRequestHandler):
                 waiters = [s for s in GAMEPAD_SESSIONS]
                 promote = next((s for s in waiters if s.get("requested")), None) \
                     or (waiters[0] if waiters else None)
+                if addon_paused():
+                    promote = None
                 if promote is not None:
                     GAMEPAD_HOLDER = promote
             # Destroy OUR devices under nothing (destroy is idempotent); grab
@@ -32324,6 +33221,8 @@ class Handler(BaseHTTPRequestHandler):
         keyboard) are dropped unless this session currently holds control, so a
         connected-but-waiting phone can never move the pointer.
         """
+        if addon_paused():
+            return False
         try:
             msg = json.loads(payload.decode("utf-8"))
             if not isinstance(msg, dict):
@@ -32897,6 +33796,7 @@ def load_token(args):
 
 def main():
     p = argparse.ArgumentParser(description="Couchside box agent")
+    p.add_argument("--ports-worker", default=None, help=argparse.SUPPRESS)
     p.add_argument("--port", type=int, default=None,
                    help="listen port (overrides config; default %d)" % DEFAULT_PORT)
     p.add_argument("--host", default="0.0.0.0")
@@ -32930,6 +33830,8 @@ def main():
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
     args = p.parse_args()
+    if args.ports_worker is not None:
+        raise SystemExit(_ports_worker(args.ports_worker))
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)

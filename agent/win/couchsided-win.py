@@ -90,10 +90,1002 @@ try:
 except ImportError:
     qrmod = None
 
+
+# BEGIN SHARED OPENPUCK
+_OPENPUCK_FW_TAG = "0.9.40"
+_OPENPUCK_FW_NAME = "OpenPuck-0.9.40-standard.uf2"
+_OPENPUCK_FW_URL = ("https://github.com/emerytech/openpuck/releases/download/%s/%s"
+                    % (_OPENPUCK_FW_TAG, _OPENPUCK_FW_NAME))
+# sha256 of the pinned asset above (verified at author time). The fetch ABORTS on
+# any mismatch, so a tampered or served-stale byte stream is never flashed.
+_OPENPUCK_FW_SHA256 = \
+    "ee2de6a415f87cacc2999893fd7803462a6d76f1ad4acbcd7962f0115575f478"
+# A real OpenPuck build is ~370 KB. The floor/ceiling guard a truncated or garbage
+# download that still happened to start with the UF2 magic; _is_uf2 separately
+# enforces the 512-byte-block shape + magic.
+_OPENPUCK_FW_MIN_SIZE = 300_000
+_OPENPUCK_FW_MAX_SIZE = 4_000_000
+# The fork's newest release — used ONLY by the opt-in "check for newer" path and by
+# an explicit variant=latest flash; a newer build is NEVER fetched or flashed on its
+# own. Assets are matched to the standard (non-factory-reset) .uf2.
+_OPENPUCK_RELEASES_API = \
+    "https://api.github.com/repos/emerytech/openpuck/releases/latest"
+
+# install.sh fetches the pinned .uf2 straight from the fork and drops it HERE as an
+# OFFLINE fallback (root-owned; the agent only reads it). The runtime fetch below
+# prefers this seed / its own cache over the network. Absent + offline -> the flash
+# degrades closed with a clear error.
+_OPENPUCK_FIRMWARE = "/etc/couchside/openpuck/firmware.uf2"
+
+# The nRF52840 nice!nano presents its UF2 bootloader as a mass-storage volume with
+# one of these labels + an INFO_UF2.TXT marker. That mount is the drag-drop flash
+# target; its presence is how we know a board is plugged in AND in DFU mode.
+_UF2_BOOTLOADER_LABELS = ("NICENANO", "NRF52BOOT", "FTHR840BOOT")
+# A flashed board re-enumerates as Valve's Steam Controller Puck.
+_OPENPUCK_USB = ("28de", "1304")
+# udisks automount roots for the desktop user the agent runs as. A constant so a
+# test can point detection at a fixture tree.
+_MEDIA_ROOTS = ("/run/media", "/media")
+
+def _openpuck_cache_path():
+    """Agent-WRITABLE cache for the runtime-fetched firmware. The install seed at
+    _OPENPUCK_FIRMWARE is root-owned (read-only to the agent), so a downloaded copy
+    lands here instead. One file per pinned tag, so a future tag bump never reuses
+    stale bytes."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "couchside", "openpuck",
+                        "OpenPuck-%s.uf2" % _OPENPUCK_FW_TAG)
+
+
+def _sha256_file(path):
+    """Hex sha256 of a file, streamed. Raises OSError if it can't be read."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _openpuck_fw_valid(path, want_sha=None):
+    return _op_validate_firmware(path, want_sha)
+
+
+def _openpuck_download(url, dest, timeout=60):
+    """Download `url` to `dest` atomically (write a .part sibling, then os.replace).
+    Reads at most _OPENPUCK_FW_MAX_SIZE + 1 bytes so a wrong/huge target can't fill
+    the disk. `url` and `dest` are ALWAYS agent-chosen, never client input. Raises
+    on any failure; the caller verifies the result before trusting it."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "couchside-agent/%s" % VERSION})
+    tmp = dest + ".part"
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r, \
+                open(tmp, "wb") as f:
+            hdr = r.getheader("Content-Length")
+            expected = int(hdr) if (hdr or "").strip().isdigit() else None
+            written = 0
+            remaining = _OPENPUCK_FW_MAX_SIZE + 1
+            while remaining > 0:
+                chunk = r.read(min(65536, remaining))
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+                remaining -= len(chunk)
+        # A clean-EOF truncation (server/CDN closes the connection early) does NOT
+        # raise in http.client — a short read would otherwise pass as a complete
+        # file, and the 'latest' path has no sha pin to catch it. If the server
+        # declared a length, the bytes written MUST match it exactly.
+        if expected is not None and written != expected:
+            raise IOError("short read: got %d of %d bytes" % (written, expected))
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return dest
+
+
+def _openpuck_pick_asset(assets):
+    """Only exact standard application builds; never reset/bootloader variants."""
+    return next((a for a in assets if isinstance(a, dict) and
+                 re.fullmatch(r'OpenPuck-[\w.-]+-standard\.uf2', a.get('name', ''))), None)
+
+
+def _openpuck_resolve_pinned():
+    """A path to a VERIFIED copy of the PINNED firmware, fetching from the fork only
+    if needed. Order, cheapest first: agent cache -> download from the fork ->
+    install seed. EVERY candidate must match the pinned sha256 (+ size + UF2 magic)
+    before it is returned, so an offline box only ever flashes the exact pinned
+    build. Returns (path, None) or (None, error_message). Never raises."""
+    cache = _openpuck_cache_path()
+    # 1. A verified pinned copy already on disk (runtime cache, then the install
+    #    seed) is BYTE-IDENTICAL to the fork asset — same pinned sha — so prefer it
+    #    and skip the network entirely. An offline box with a good seed must never
+    #    wait on a doomed download first: that round-trip can trip the app's flash
+    #    timeout. (A mutated re-tag can't slip through — both are sha-checked.)
+    if _openpuck_fw_valid(cache, _OPENPUCK_FW_SHA256):
+        return cache, None
+    if _openpuck_fw_valid(_OPENPUCK_FIRMWARE, _OPENPUCK_FW_SHA256):
+        return _OPENPUCK_FIRMWARE, None
+    # 2. No local pinned copy: fetch from the fork's pinned release, verify, cache.
+    try:
+        _openpuck_download(_OPENPUCK_FW_URL, cache)
+        if _openpuck_fw_valid(cache, _OPENPUCK_FW_SHA256):
+            return cache, None
+        try:
+            os.unlink(cache)
+        except OSError:
+            pass
+        return None, "the downloaded firmware failed verification (sha256/size/UF2)."
+    except Exception as e:
+        return None, "couldn't download firmware (%s)." % (str(e)[:120])
+
+
+def _openpuck_resolve_latest():
+    """Download + verify the fork's NEWEST standard firmware for the opt-in
+    variant=latest flash. No sha pin is possible for a build we haven't seen, so the
+    gate is UF2 magic + a sane size (via _openpuck_fw_valid). The download URL is
+    computed by the agent from the GitHub API — the client never supplies it.
+    Returns (path, tag, None) or (None, None, error_message). Never raises."""
+    try:
+        meta = json.loads(_http_text(_OPENPUCK_RELEASES_API))
+        tag = meta.get("tag_name") or "latest"
+        asset = _openpuck_pick_asset(meta.get("assets") or [])
+        url = asset.get("browser_download_url") if asset else None
+        if not url or not url.startswith("https://github.com/emerytech/openpuck/releases/download/"):
+            return None, None, "no trusted standard .uf2 asset in the latest release."
+        safe = "".join(c for c in tag if c.isalnum() or c in "._-") or "latest"
+        dest = os.path.join(os.path.dirname(_openpuck_cache_path()),
+                            "OpenPuck-latest-%s.uf2" % safe)
+        _openpuck_download(url, dest)
+        if not _openpuck_fw_valid(dest):  # magic + size (no sha pin for latest)
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+            return None, None, "the downloaded firmware failed verification (size/UF2)."
+        return dest, tag, None
+    except Exception as e:
+        return None, None, "couldn't fetch the newest firmware (%s)." % (str(e)[:120])
+
+
+# The fork's latest-release lookup is cached so the app's "check for newer" button
+# can't hammer GitHub; a network failure returns available:false, never raises.
+_OPENPUCK_LATEST_TTL_S = 10 * 60
+_openpuck_latest_cache = {"at": 0.0, "data": None}
+_openpuck_latest_lock = threading.Lock()
+
+
+def openpuck_latest(force=False):
+    """Read-only info about the fork's newest release for the OPT-IN newer-check:
+    {available, tag, name, size, is_newer, pinned_tag}. Cached (10 min). Never
+    raises; offline -> {available: False, error, pinned_tag}."""
+    now = time.monotonic()
+    with _openpuck_latest_lock:
+        c = _openpuck_latest_cache
+        if not force and c["data"] is not None \
+                and now - c["at"] < _OPENPUCK_LATEST_TTL_S:
+            return c["data"]
+    try:
+        meta = json.loads(_http_text(_OPENPUCK_RELEASES_API))
+        tag = meta.get("tag_name") or None
+        asset = _openpuck_pick_asset(meta.get("assets") or [])
+        if not asset:
+            data = {"available": False, "pinned_tag": _OPENPUCK_FW_TAG,
+                    "error": "no standard .uf2 asset in the latest release"}
+        else:
+            data = {"available": True, "tag": tag,
+                    "name": asset.get("name"), "size": asset.get("size"),
+                    "is_newer": _ver_tuple(tag) > _ver_tuple(_OPENPUCK_FW_TAG),
+                    "pinned_tag": _OPENPUCK_FW_TAG}
+    except Exception as e:
+        data = {"available": False, "pinned_tag": _OPENPUCK_FW_TAG,
+                "error": str(e)[:200]}
+    with _openpuck_latest_lock:
+        _openpuck_latest_cache["at"] = now
+        _openpuck_latest_cache["data"] = data
+    return data
+
+
+def mock_openpuck_latest():
+    return {"available": True, "tag": "0.9.41",
+            "name": "OpenPuck-0.9.41-standard.uf2", "size": 377856,
+            "is_newer": True, "pinned_tag": _OPENPUCK_FW_TAG}
+
+
+# ---- OpenPuck native transport (stdlib only; shared with Windows agent) ----
+# Uses only the vendor bulk interface, never claims the controller input slots.
+# No client supplies a path, USB command, firmware bytes, or pairing secret.
+_OP_LOCK = threading.Lock()
+_OP_PAIR_PLANS = {}
+_OP_SYSUSB = '/sys/bus/usb/devices'
+_OP_HIDRAW = '/sys/class/hidraw'
+
+
+def _op_status(p):
+    if len(p) < 51 or p[0] < 1:
+        raise ValueError('Unsupported OpenPuck status protocol.')
+    return {'protocol': p[0], 'mode': p[1], 'connected': p[11] == 1,
+            'reports': int.from_bytes(p[12:14], 'little'),
+            'new_reports': int.from_bytes(p[15:17], 'little'),
+            'battery': p[36] or None, 'rssi': -p[37] if p[37] else None,
+            'dirty': bool(p[38]), 'build': p[39:51].split(b'\0')[0].decode('ascii', 'replace'),
+            'slots': [{'slot': i + 1, 'connected': p[61+i*3] == 1,
+                       'battery': p[62+i*3] or None, 'rssi': -p[63+i*3] if p[63+i*3] else None}
+                      for i in range(4)] if p[0] >= 8 and len(p) >= 73 else []}
+
+
+def _op_serial(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Z0-9]{1,16}', value):
+        raise ValueError('Missing or unsupported USB serial. Reconnect the device.')
+    return value
+
+
+def _op_usb_inventory():
+    """Trusted local USB discovery; an official puck has no matching vendor pipes."""
+    if sys.platform == 'win32':
+        return _op_win_inventory()
+    result = []
+    for name in os.listdir(_OP_SYSUSB):
+        root = os.path.join(_OP_SYSUSB, name)
+        def read(n):
+            with open(os.path.join(root, n)) as f:
+                return f.read().strip()
+        try:
+            if read('idVendor').lower() != '28de':
+                continue
+            pid = int(read('idProduct'), 16)
+            if pid not in (0x1304, 0x1301, 0x1302, 0x1303, 0x1205):
+                continue
+            serial = _op_serial(read('serial'))
+            item = {'serial': serial, 'pid': pid, 'root': os.path.realpath(root)}
+            if pid == 0x1304:
+                with open(os.path.join(root, 'descriptors'), 'rb') as f:
+                    descriptors = f.read(16384)
+                iface, endpoints, match = None, {}, None
+                off = 0
+                while off + 2 <= len(descriptors):
+                    size, kind = descriptors[off:off+2]
+                    if size < 2 or off + size > len(descriptors):
+                        break
+                    d = descriptors[off:off+size]
+                    if kind == 4 and size >= 9:
+                        iface = d[2] if d[5] == 255 and d[6] != 0x5d and d[3] == 0 else None
+                        endpoints = {}
+                    if kind == 5 and size >= 7 and iface is not None and d[3] & 3 == 2:
+                        endpoints['in' if d[2] & 128 else 'out'] = d[2]
+                        if len(endpoints) == 2:
+                            match = (iface, dict(endpoints))
+                    off += size
+                if not match:
+                    continue
+                item.update(interface=match[0], endpoints=match[1],
+                            path='/dev/bus/usb/%03d/%03d' % (int(read('busnum')), int(read('devnum'))))
+            result.append(item)
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+class _OpUSB:
+    def __init__(self, item):
+        self.item, self.handle = item, None
+        if sys.platform == 'win32':
+            self.native = _OpWinUSB(item)
+            return
+        import ctypes as c
+        import fcntl
+        self.c, self.ioctl = c, fcntl.ioctl
+        self.fd = os.open(item['path'], os.O_RDWR | os.O_CLOEXEC)
+        try:
+            # USBDEVFS_CLAIMINTERFACE; do not detach kernel drivers.
+            self.ioctl(self.fd, 0x8004550f, struct.pack('I', item['interface']))
+            class Control(c.Structure):
+                _fields_ = [('type', c.c_ubyte), ('request', c.c_ubyte), ('value', c.c_ushort),
+                            ('index', c.c_ushort), ('length', c.c_ushort), ('timeout', c.c_uint), ('data', c.c_void_p)]
+            def descriptor(kind, index, language, size):
+                buf = c.create_string_buffer(size)
+                query = Control(0x80, 6, (kind << 8) | index, language, size, 1000, c.addressof(buf))
+                got = self.ioctl(self.fd, 0xc0005500 | (c.sizeof(query) << 16), query)
+                return buf.raw[:got]
+            desc = descriptor(1, 0, 0, 18)
+            if len(desc) != 18 or desc[8:12] != bytes([0xde, 0x28, 4, 0x13]) or not desc[16]:
+                raise ValueError('Connected USB device changed.')
+            raw = descriptor(3, desc[16], 0x409, 255)
+            if len(raw) < 2 or _op_serial(raw[2:].decode('utf-16-le')) != item['serial']:
+                raise ValueError('Connected puck serial changed.')
+            control = Control(0x21, 0x22, 1, item['interface'], 0, 1000, None)
+            self.ioctl(self.fd, 0xc0005500 | (c.sizeof(control) << 16), control)
+        except BaseException:
+            self.close()
+            raise
+
+    def transfer(self, data=None):
+        if sys.platform == 'win32':
+            return self.native.transfer(data)
+        c = self.c
+        class Bulk(c.Structure):
+            _fields_ = [('ep', c.c_uint), ('length', c.c_uint), ('timeout', c.c_uint), ('data', c.c_void_p)]
+        buf = c.create_string_buffer(data, len(data)) if data is not None else c.create_string_buffer(256)
+        bulk = Bulk(self.item['endpoints']['out' if data is not None else 'in'], len(buf), 700, c.addressof(buf))
+        size = self.ioctl(self.fd, 0xc0005502 | (c.sizeof(bulk) << 16), bulk)
+        if data is not None and size != len(data):
+            raise OSError('Short USB command write.')
+        return buf.raw[:size]
+
+    def request(self, command, marker=0xa5):
+        self.transfer(bytes(command))
+        deadline, pending = time.monotonic() + 3, b''
+        while time.monotonic() < deadline:
+            try:
+                pending += self.transfer()
+            except OSError as e:
+                if getattr(e, 'errno', None) == 110:
+                    continue
+                raise
+            while len(pending) >= 2:
+                if pending[0] not in (0xa5, 0xa7) or pending[1] < 51:
+                    pending = pending[1:]
+                    continue
+                size = pending[1] + 2
+                if len(pending) < size:
+                    break
+                frame, pending = pending[:size], pending[size:]
+                if frame[0] == marker:
+                    return frame[2:]
+        raise OSError('OpenPuck did not reply. Close other configurators and reconnect it.')
+
+    def close(self):
+        if sys.platform == 'win32':
+            self.native.close()
+        elif getattr(self, 'fd', None) is not None:
+            try:
+                self.ioctl(self.fd, 0x80045510, struct.pack('I', self.item['interface']))
+            except OSError:
+                pass
+            os.close(self.fd)
+            self.fd = None
+
+
+def _op_one_puck(serial=None):
+    items = [d for d in _op_usb_inventory() if d['pid'] == 0x1304]
+    if serial is not None:
+        _op_serial(serial)
+        items = [d for d in items if d['serial'] == serial]
+    if len(items) != 1:
+        raise ValueError('Connect exactly one OpenPuck in Steam mode; close other configurators.')
+    return items[0]
+
+
+class _OpHID:
+    def __init__(self, item):
+        self.item, self.fd, self.native = item, None, None
+        if sys.platform == 'win32':
+            self.native = _OpWinHID(item)
+            return
+        import fcntl
+        self.ioctl = fcntl.ioctl
+        # Only HID interfaces below the exact USB device discovered above.
+        paths = []
+        for name in os.listdir(_OP_HIDRAW):
+            root = os.path.join(_OP_HIDRAW, name, 'device')
+            if not os.path.realpath(root).startswith(item['root'] + '/'):
+                continue
+            try:
+                with open(os.path.join(root, 'report_descriptor'), 'rb') as f:
+                    desc = f.read(8192)
+                if b'\x06\x00\xff' in desc:  # vendor usage page FF00
+                    paths.append('/dev/' + name)
+            except OSError:
+                pass
+        for path in paths:
+            try:
+                self.fd = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+                if self.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii') == item['serial']:
+                    return
+            except (OSError, ValueError, UnicodeError):
+                pass
+            self.close()
+        raise OSError('Cannot access USB controller. Close Steam and check USB permissions/data cable.')
+
+    def command(self, opcode, payload=b'', read=False):
+        if len(payload) > 61:
+            raise ValueError('Oversize HID command.')
+        for _ in range(3 if read else 1):
+            buf = bytearray(bytes([1, opcode, len(payload)]) + payload + bytes(61-len(payload)))
+            if self.native:
+                self.native.feature(buf, False)
+            else:
+                self.ioctl(self.fd, 0xc0404806, buf, True)
+            time.sleep(.03)
+            if not read:
+                return b''
+            buf = bytearray([1] + [0]*63)
+            if self.native:
+                self.native.feature(buf, True)
+            else:
+                self.ioctl(self.fd, 0xc0404807, buf, True)
+            off = 1 if buf[0] == 1 else 0
+            if buf[off] == opcode and buf[off+1] <= len(buf)-off-2:
+                return bytes(buf[off+2:off+2+buf[off+1]])
+        raise OSError('Unexpected controller reply. Close Steam and reconnect the controller.')
+
+    def close(self):
+        if self.native:
+            self.native.close()
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def _op_bonds(payload):
+    if len(payload) != 98 or payload[0] != 1 or payload[1] > 15:
+        raise ValueError('Unsupported puck pairing table.')
+    return [{'slot': i, 'used': bool(payload[1] & (1 << i)), 'record': payload[2+24*i:26+24*i]}
+            for i in range(4)]
+
+
+def _op_controller_bonds(hid):
+    result = []
+    for i, key in enumerate((b'esb/bond\0', b'esb/bond_2\0')):
+        raw = hid.command(0xed, key, True)
+        if raw and not 8 <= len(raw) <= 24:
+            raise ValueError('Unsupported controller pairing record.')
+        record = raw.ljust(24, b'\0')
+        result.append({'slot': i, 'used': any(record[:8]), 'record': record})
+    return result
+
+
+def _op_pair_plan(puck, controller, pb, cb):
+    def slot(rows, serial):
+        return next((r for r in rows if r['used'] and r['record'][8:].split(b'\0')[0] == serial.encode()),
+                    next((r for r in rows if not r['used']), None))
+    p, c = slot(pb, controller), slot(cb, puck)
+    if p is None or c is None:
+        raise ValueError('No free pairing slot. Existing pairings have not been replaced.')
+    key = c['record'][:8] if c['used'] else p['record'][:8] if p['used'] else secrets.token_bytes(8)
+    if not any(key):
+        raise ValueError('Invalid pairing key.')
+    return {'puck_slot': p['slot'], 'controller_slot': c['slot'],
+            'puck_record': key + _op_serial(controller).encode().ljust(16, b'\0'),
+            'controller_record': key + _op_serial(puck).encode().ljust(16, b'\0')}
+
+
+def _op_inspect():
+    item = _op_one_puck()
+    usb = _OpUSB(item)
+    try:
+        result = _op_status(usb.request([1]))
+        return dict(result, serial=item['serial'])
+    finally:
+        usb.close()
+
+
+def _op_check(serial):
+    item = _op_one_puck(serial)
+    usb = _OpUSB(item)
+    responses = active = 0
+    try:
+        for _ in range(20):
+            start = time.monotonic()
+            s = _op_status(usb.request([1]))
+            responses += 1
+            if (s['connected'] or any(r['connected'] for r in s['slots'])) and s['new_reports'] > 0:
+                active += 1
+            time.sleep(max(0, .5 - (time.monotonic() - start)))
+        return {'responses': responses, 'active_samples': active, 'usb_ok': responses == 20,
+                'wireless_ok': active >= 15,
+                'message': 'USB replies checked. Wireless activity does not verify every button or axis.'}
+    finally:
+        usb.close()
+
+
+def _op_prepare(serial):
+    puck = _op_one_puck(serial)
+    controllers = [d for d in _op_usb_inventory() if d['pid'] != 0x1304]
+    if len(controllers) != 1:
+        raise ValueError('Connect exactly one powered-on controller by USB to this computer and close Steam.')
+    controller = controllers[0]
+    usb, hid = _OpUSB(puck), None
+    try:
+        hid = _OpHID(controller)
+        verified = hid.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii')
+        if verified != controller['serial']:
+            raise ValueError('Controller identity changed.')
+        pb, cb = _op_bonds(usb.request([9], 0xa7)), _op_controller_bonds(hid)
+        plan = _op_pair_plan(puck['serial'], controller['serial'], pb, cb)
+        token = secrets.token_urlsafe(24)
+        _OP_PAIR_PLANS.clear()
+        _OP_PAIR_PLANS[token] = dict(plan, puck=puck['serial'], controller=controller['serial'],
+                                     before_puck=pb, before_controller=cb, expires=time.monotonic()+90)
+        return {'confirmation': token, 'puck_serial': puck['serial'], 'controller_serial': controller['serial'],
+                'puck_slot': plan['puck_slot']+1, 'controller_slot': plan['controller_slot']+1, 'expires_in': 90}
+    finally:
+        if hid:
+            hid.close()
+        usb.close()
+
+
+def _op_pair(token):
+    plan = _OP_PAIR_PLANS.pop(token, None)
+    if not plan or plan['expires'] < time.monotonic():
+        raise ValueError('Pairing confirmation expired. Find the USB controller again.')
+    puck = _op_one_puck(plan['puck'])
+    controllers = [d for d in _op_usb_inventory() if d['pid'] != 0x1304 and d['serial'] == plan['controller']]
+    if len(controllers) != 1:
+        raise ValueError('Controller disconnected or changed. Find it again.')
+    usb, hid, wrote = _OpUSB(puck), None, False
+    try:
+        hid = _OpHID(controllers[0])
+        if hid.command(0xae, b'\x01', True)[1:].split(b'\0')[0].decode('ascii') != plan['controller']:
+            raise ValueError('Controller identity changed.')
+        if _op_bonds(usb.request([9], 0xa7)) != plan['before_puck'] or _op_controller_bonds(hid) != plan['before_controller']:
+            raise ValueError('Pairing records changed. Find the USB controller again.')
+        wireless = hid.command(0xed, b'user/wireless_transport\0', True)
+        # Private, agent-local backup; secrets never enter a response or log.
+        folder = os.path.join(os.path.dirname(_openpuck_cache_path()), 'pairing-backups')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        backup = dict(plan, wireless=wireless)
+        with os.fdopen(os.open(os.path.join(folder, secrets.token_hex(12)+'.json'),
+                               os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600), 'w') as f:
+            json.dump(backup, f, default=lambda b: list(b))
+        wrote = True
+        usb.transfer(bytes([0x0d, plan['puck_slot'], 1]) + plan['puck_record'])
+        after = _op_bonds(usb.request([9], 0xa7))
+        expected = [dict(r) for r in plan['before_puck']]
+        expected[plan['puck_slot']] = {'slot': plan['puck_slot'], 'used': True, 'record': plan['puck_record']}
+        if after != expected:
+            raise OSError('Puck pairing verification failed.')
+        for key, value in ((b'esb/bond_2\0' if plan['controller_slot'] else b'esb/bond\0', plan['controller_record']),
+                           (b'user/wireless_transport\0', bytes([plan['controller_slot']+2]))):
+            hid.command(0xee, key+value)
+            hid.command(0xef, key)
+            if hid.command(0xed, key, True).ljust(len(value), b'\0') != value:
+                raise OSError('Controller pairing verification failed.')
+        expected = [dict(r) for r in plan['before_controller']]
+        expected[plan['controller_slot']] = {'slot': plan['controller_slot'], 'used': True, 'record': plan['controller_record']}
+        if _op_controller_bonds(hid) != expected:
+            raise OSError('Controller pairing slots changed unexpectedly.')
+        usb.transfer(bytes([0x0e, 0xff]))
+        try:
+            hid.command(0x95, bytes([0x52, 0xaf, 0x27, 0xa4]))
+        except OSError:
+            pass  # expected reboot; both records were verified first
+        return {'message': 'Pairing records verified. Unplug only the controller USB cable, keep it on, then inspect and run the wireless check.'}
+    except Exception as e:
+        if wrote:
+            raise OSError('Pairing incomplete; records may be partly written. Private backups saved on this computer. Reconnect both devices and find the controller again. ' + str(e)) from e
+        raise
+    finally:
+        if hid:
+            hid.close()
+        usb.close()
+
+
+def _op_action(op, body, mock=False):
+    """All requests stay under normal bearer auth. Unknown fields fail before USB."""
+    fields = {'inspect': set(), 'test': {'serial'}, 'prepare_pair': {'serial'},
+              'pair': {'confirmation'}, 'bootloader': {'serial'}}
+    if op not in fields or not isinstance(body, dict) or set(body) != fields[op]:
+        return 400, {'ok': False, 'error': 'Unknown OpenPuck action or fields.'}
+    if 'serial' in body:
+        try:
+            _op_serial(body['serial'])
+        except ValueError as e:
+            return 400, {'ok': False, 'error': str(e)}
+    if 'confirmation' in body and (not isinstance(body['confirmation'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{32}', body['confirmation'])):
+        return 400, {'ok': False, 'error': 'Invalid pairing confirmation.'}
+    if not _OP_LOCK.acquire(blocking=False):
+        return 409, {'ok': False, 'error': 'Another OpenPuck operation is running.'}
+    try:
+        if mock:
+            return 200, dict(_op_mock(op, body), ok=True)
+        if op == 'inspect':
+            result = _op_inspect()
+        elif op == 'test':
+            result = _op_check(body['serial'])
+        elif op == 'prepare_pair':
+            result = _op_prepare(body['serial'])
+        elif op == 'pair':
+            result = _op_pair(body['confirmation'])
+        else:
+            usb = _OpUSB(_op_one_puck(body['serial']))
+            try:
+                _op_status(usb.request([1]))  # prove OpenPuck before a reset
+                usb.transfer(bytes([0x0c]))
+            finally:
+                usb.close()
+            result = {'message': 'Bootloader requested. Mount NICENANO in your file manager if needed, then use the existing Flash button.'}
+        return 200, dict(result, ok=True)
+    except (OSError, ValueError) as e:
+        return 200, {'ok': False, 'error': str(e)}
+    finally:
+        _OP_LOCK.release()
+
+
+def _op_mock(op, body):
+    if op == 'inspect':
+        return {'serial': 'TESTPUCK', 'build': '0.9.40', 'protocol': 19, 'dirty': False,
+                'connected': True, 'new_reports': 250,
+                'slots': [{'slot': 1, 'connected': True, 'battery': 95, 'rssi': -47}]}
+    if op == 'test':
+        return {'responses': 20, 'active_samples': 20, 'usb_ok': True, 'wireless_ok': True}
+    if op == 'prepare_pair':
+        return {'confirmation': 'M'*32, 'puck_serial': 'TESTPUCK', 'controller_serial': 'TESTCONTROLLER',
+                'puck_slot': 1, 'controller_slot': 2, 'expires_in': 90}
+    return {'message': 'Mock operation complete.'}
+# ---- End OpenPuck native transport ----
+
+def _op_board_identity(mount):
+    marker = os.path.join(mount, 'INFO_UF2.TXT')
+    if os.path.islink(marker) or os.path.realpath(mount) != os.path.abspath(mount):
+        raise ValueError('Bootloader mount must not be a symlink.')
+    with open(marker) as f:
+        info = f.read(8193)
+    if len(info) > 8192 or 'UF2 Bootloader' not in info or not re.search(r'Board-ID:\s*nRF52840-(?:nicenano|feather|pca10056)\b', info, re.I):
+        raise ValueError('Unsupported bootloader board. Nothing was written.')
+    return os.stat(mount).st_dev, info
+
+
+def _op_reboot_write_error(err, written, total, phase, platform):
+    # Windows CRT reports EBADF when the UF2 device disappears during _commit.
+    # Only after ALL bytes were written may sync/close errors enter USB verification.
+    return written == total and (err in (5, 6, 19) or
+        (platform == 'win32' and phase == 'syncing' and err in (9, 22)))
+
+
+def real_openpuck_flash(variant='pinned'):
+    """Use the existing firmware resolver; success requires a full write and a new USB puck.
+
+    Bootloader write/fsync errors alone are never proof of a completed flash.
+    Serialize with inspection/pairing and preserve the existing ActionResult API.
+    """
+    start = time.monotonic()
+    def done(ok, msg):
+        return {'ok': ok, 'exit_code': 0 if ok else -1, 'stdout': msg if ok else '',
+                'stderr': '' if ok else msg, 'duration_ms': int((time.monotonic()-start)*1000)}
+    if variant not in ('pinned', 'latest'):
+        return done(False, 'Unknown firmware variant.')
+    if not _OP_LOCK.acquire(blocking=False):
+        return done(False, 'Another OpenPuck operation is running.')
+    try:
+        mount = _openpuck_bootloader_mount()
+        if not mount:
+            return done(False, 'No mounted board in DFU mode. Mount NICENANO in the file manager, then retry.')
+        identity = _op_board_identity(mount)
+        before = {d['serial'] for d in _op_usb_inventory() if d['pid'] == 0x1304}
+        if variant == 'latest':
+            fw, tag, err = _openpuck_resolve_latest()
+        else:
+            fw, err = _openpuck_resolve_pinned()
+            tag = _OPENPUCK_FW_TAG
+        if not fw:
+            return done(False, 'Could not get verified firmware: ' + str(err))
+        if not _openpuck_fw_valid(fw, _OPENPUCK_FW_SHA256 if variant == 'pinned' else None):
+            return done(False, 'Firmware verification failed.')
+        with open(fw, 'rb') as f:
+            data = f.read(_OPENPUCK_FW_MAX_SIZE+1)
+        if _op_board_identity(mount) != identity:
+            return done(False, 'The connected board changed. Retry after checking USB.')
+        written = 0
+        phase = 'writing'
+        try:
+            # Exclusive, random filename prevents following an existing removable-media link.
+            fd = os.open(os.path.join(mount, 'CS'+secrets.token_hex(3).upper()+'.UF2'),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
+            try:
+                while written < len(data):
+                    n = os.write(fd, data[written:written+16384])
+                    if not n:
+                        raise OSError('Board stopped accepting firmware.')
+                    written += n
+                phase = 'syncing'
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            if not _op_reboot_write_error(e.errno, written, len(data), phase, sys.platform):
+                return done(False, 'Firmware write was not confirmed complete: '+str(e))
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if not os.path.exists(mount):
+                after = {d['serial'] for d in _op_usb_inventory() if d['pid'] == 0x1304}
+                if len(after-before) == 1:
+                    return done(True, 'Flashed OpenPuck %s; USB reboot verified. Source: https://github.com/emerytech/openpuck/releases/tag/%s' % (tag, tag))
+            time.sleep(.5)
+        return done(False, 'Write finished, but the puck USB reboot was not confirmed. Reconnect and inspect it before retrying; no success counted.')
+    except (OSError, ValueError) as e:
+        return done(False, str(e))
+    finally:
+        _OP_LOCK.release()
+
+
+def _op_validate_firmware(path, want_sha=None):
+    try:
+        size = os.path.getsize(path)
+        if not _OPENPUCK_FW_MIN_SIZE <= size <= _OPENPUCK_FW_MAX_SIZE or size % 512:
+            return False
+        seen, addresses = set(), set()
+        with open(path, 'rb') as f:
+            data = f.read(_OPENPUCK_FW_MAX_SIZE+1)
+        if len(data) != size:
+            return False
+        for off in range(0, size, 512):
+            b = data[off:off+512]
+            magic, magic2, flags, addr, length, num, total, family = struct.unpack_from('<8I', b)
+            if (magic != 0x0a324655 or magic2 != 0x9e5d5157 or struct.unpack_from('<I', b, 508)[0] != 0x0ab16f30
+                    or flags != 0x2000 or family != 0xada52840 or length != 256 or addr % 256
+                    or addr < 0x26000 or addr+256 > 0xed000 or num >= size//512 or total != size//512
+                    or num in seen or addr in addresses):
+                return False
+            seen.add(num); addresses.add(addr)
+        return want_sha is None or hashlib.sha256(data).hexdigest() == want_sha
+    except (OSError, ValueError, struct.error, TypeError):
+        return False
+
+# END SHARED OPENPUCK
+# WinUSB/HID adapters: Windows system DLLs only, no driver installation.
+def _op_win_api():
+    import ctypes as c
+    from ctypes import wintypes as w
+    import uuid
+    class GUID(c.Structure):
+        _fields_ = [('bytes', c.c_ubyte * 16)]
+    class Interface(c.Structure):
+        _fields_ = [('size', w.DWORD), ('guid', GUID), ('flags', w.DWORD), ('reserved', c.c_void_p)]
+    setup = c.WinDLL('setupapi', use_last_error=True)
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    hid = c.WinDLL('hid', use_last_error=True)
+    winusb = c.WinDLL('winusb', use_last_error=True)
+    def bind(lib, name, restype, args):
+        fn = getattr(lib, name); fn.restype = restype; fn.argtypes = args
+        return fn
+    bind(setup, 'SetupDiGetClassDevsW', c.c_void_p, [c.c_void_p, w.LPCWSTR, c.c_void_p, w.DWORD])
+    bind(setup, 'SetupDiEnumDeviceInterfaces', w.BOOL, [c.c_void_p, c.c_void_p, c.c_void_p, w.DWORD, c.c_void_p])
+    bind(setup, 'SetupDiGetDeviceInterfaceDetailW', w.BOOL, [c.c_void_p, c.c_void_p, c.c_void_p, w.DWORD, c.c_void_p, c.c_void_p])
+    bind(setup, 'SetupDiDestroyDeviceInfoList', w.BOOL, [c.c_void_p])
+    bind(kernel, 'CreateFileW', c.c_void_p, [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, c.c_void_p])
+    bind(kernel, 'CloseHandle', w.BOOL, [c.c_void_p])
+    bind(hid, 'HidD_GetFeature', w.BOOL, [c.c_void_p, c.c_void_p, w.ULONG])
+    bind(hid, 'HidD_SetFeature', w.BOOL, [c.c_void_p, c.c_void_p, w.ULONG])
+    bind(hid, 'HidD_GetSerialNumberString', w.BOOL, [c.c_void_p, c.c_void_p, w.ULONG])
+    bind(winusb, 'WinUsb_Initialize', w.BOOL, [c.c_void_p, c.c_void_p])
+    bind(winusb, 'WinUsb_Free', w.BOOL, [c.c_void_p])
+    bind(winusb, 'WinUsb_QueryInterfaceSettings', w.BOOL, [c.c_void_p, c.c_ubyte, c.c_void_p])
+    bind(winusb, 'WinUsb_QueryPipe', w.BOOL, [c.c_void_p, c.c_ubyte, c.c_ubyte, c.c_void_p])
+    bind(winusb, 'WinUsb_SetPipePolicy', w.BOOL, [c.c_void_p, c.c_ubyte, w.ULONG, w.ULONG, c.c_void_p])
+    for name in ('WinUsb_ReadPipe', 'WinUsb_WritePipe'):
+        bind(winusb, name, w.BOOL, [c.c_void_p, c.c_ubyte, c.c_void_p, w.ULONG, c.c_void_p, c.c_void_p])
+    def paths(guid):
+        g = GUID((c.c_ubyte*16).from_buffer_copy(uuid.UUID(guid).bytes_le))
+        handle = setup.SetupDiGetClassDevsW(c.byref(g), None, None, 0x12)
+        if handle == c.c_void_p(-1).value:
+            return []
+        result = []
+        try:
+            for i in range(512):
+                interface = Interface(); interface.size = c.sizeof(interface)
+                if not setup.SetupDiEnumDeviceInterfaces(handle, None, c.byref(g), i, c.byref(interface)):
+                    break
+                needed = w.DWORD()
+                setup.SetupDiGetDeviceInterfaceDetailW(handle, c.byref(interface), None, 0, c.byref(needed), None)
+                if needed.value < 8 or needed.value > 32768:
+                    continue
+                detail = c.create_string_buffer(needed.value)
+                c.cast(detail, c.POINTER(w.DWORD))[0] = 8 if c.sizeof(c.c_void_p) == 8 else 6
+                if setup.SetupDiGetDeviceInterfaceDetailW(handle, c.byref(interface), detail, needed, None, None):
+                    result.append(c.wstring_at(c.addressof(detail)+4))
+        finally:
+            setup.SetupDiDestroyDeviceInfoList(handle)
+        return result
+    return c, w, kernel, hid, winusb, paths
+
+
+def _op_win_inventory():
+    import winreg
+    c, w, kernel, hid, winusb, paths = _op_win_api()
+    result, guids = [], set()
+    # Firmware registers its WinUSB interface GUID under the device parameters.
+    # Read registry only; never change driver associations or privileges.
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Enum\USB') as root:
+            for i in range(winreg.QueryInfoKey(root)[0]):
+                name = winreg.EnumKey(root, i)
+                if not name.upper().startswith('VID_28DE&PID_1304&MI_'):
+                    continue
+                with winreg.OpenKey(root, name) as device:
+                    for j in range(winreg.QueryInfoKey(device)[0]):
+                        instance = winreg.EnumKey(device, j)
+                        try:
+                            with winreg.OpenKey(device, instance + r'\Device Parameters') as params:
+                                value, _ = winreg.QueryValueEx(params, 'DeviceInterfaceGUIDs')
+                                guids.update(value if isinstance(value, list) else [value])
+                        except OSError:
+                            pass
+    except OSError:
+        pass
+    for guid in guids:
+        for path in paths(guid):
+            if 'vid_28de&pid_1304' not in path.lower():
+                continue
+            try:
+                usb = _OpWinUSB({'path': path})
+                result.append({'pid': 0x1304, 'serial': usb.serial, 'path': path})
+                usb.close()
+            except (OSError, ValueError):
+                continue
+    for path in paths('4d1e55b2-f16f-11cf-88cb-001111000030'):
+        m = re.search(r'vid_28de&pid_(1301|1302|1303|1205)', path, re.I)
+        if not m:
+            continue
+        handle = kernel.CreateFileW(path, 0, 3, None, 3, 0, None)
+        if handle == c.c_void_p(-1).value:
+            continue
+        try:
+            serial = c.create_unicode_buffer(128)
+            if hid.HidD_GetSerialNumberString(handle, serial, c.sizeof(serial)):
+                result.append({'pid': int(m[1], 16), 'serial': _op_serial(serial.value), 'path': path})
+        except ValueError:
+            pass
+        finally:
+            kernel.CloseHandle(handle)
+    # A controller exposes several HID collections; retain candidates together.
+    unique = {}
+    for item in result:
+        key = (item['pid'], item['serial'])
+        if key not in unique:
+            unique[key] = dict(item, paths=[])
+        unique[key]['paths'].append(item['path'])
+    return list(unique.values())
+
+
+class _OpWinUSB:
+    def __init__(self, item):
+        self.c, self.w, self.kernel, _, self.api, _ = _op_win_api()
+        c, w = self.c, self.w
+        self.usb = c.c_void_p()
+        self.file = self.kernel.CreateFileW(item['path'], 0xc0000000, 3, None, 3, 0x40000000, None)
+        if self.file == c.c_void_p(-1).value:
+            raise OSError('OpenPuck WinUSB access denied. Close other configurators.')
+        try:
+            if not self.api.WinUsb_Initialize(self.file, c.byref(self.usb)):
+                raise OSError('OpenPuck WinUSB interface is unavailable.')
+            desc = (c.c_ubyte * 9)()
+            if not self.api.WinUsb_QueryInterfaceSettings(self.usb, 0, desc) or desc[5] != 255 or desc[6] == 0x5d:
+                raise ValueError('Not the OpenPuck configuration interface.')
+            self.interface = desc[2]
+            class Pipe(c.Structure):
+                _fields_ = [('type', c.c_int), ('id', c.c_ubyte), ('size', c.c_ushort), ('interval', c.c_ubyte)]
+            self.endpoints = {}
+            for i in range(desc[4]):
+                pipe = Pipe()
+                if self.api.WinUsb_QueryPipe(self.usb, 0, i, c.byref(pipe)) and pipe.type == 2:
+                    self.endpoints['in' if pipe.id & 128 else 'out'] = pipe.id
+                    timeout = w.ULONG(700)
+                    if not self.api.WinUsb_SetPipePolicy(self.usb, pipe.id, 3, 4, c.byref(timeout)):
+                        raise OSError('Cannot set bounded USB timeout.')
+            if len(self.endpoints) != 2:
+                raise ValueError('No OpenPuck bulk endpoints.')
+            # Device serial descriptor is read through WinUSB, not guessed from a composite path.
+            fn = self.api.WinUsb_GetDescriptor
+            fn.restype, fn.argtypes = w.BOOL, [c.c_void_p, c.c_ubyte, c.c_ubyte, c.c_ushort, c.c_void_p, w.ULONG, c.c_void_p]
+            device = (c.c_ubyte * 18)(); size = w.ULONG()
+            if not fn(self.usb, 1, 0, 0, device, 18, c.byref(size)) or size.value != 18 or not device[16]:
+                raise ValueError('Puck serial descriptor is missing.')
+            raw = (c.c_ubyte * 256)()
+            if not fn(self.usb, 3, device[16], 0x409, raw, 256, c.byref(size)):
+                raise ValueError('Cannot read puck serial.')
+            self.serial = _op_serial(bytes(raw)[2:size.value].decode('utf-16-le'))
+            if item.get('serial') and self.serial != item['serial']:
+                raise ValueError('Puck changed during connection.')
+            class Setup(c.Structure):
+                _pack_ = 1
+                _fields_ = [('type', c.c_ubyte), ('request', c.c_ubyte), ('value', c.c_ushort), ('index', c.c_ushort), ('length', c.c_ushort)]
+            fn = self.api.WinUsb_ControlTransfer
+            fn.restype, fn.argtypes = w.BOOL, [c.c_void_p, Setup, c.c_void_p, w.ULONG, c.c_void_p, c.c_void_p]
+            if not fn(self.usb, Setup(0x21, 0x22, 1, self.interface, 0), None, 0, c.byref(size), None):
+                raise OSError('Cannot open the OpenPuck status channel.')
+        except BaseException:
+            self.close()
+            raise
+
+    def transfer(self, data=None):
+        c, w = self.c, self.w
+        buf = c.create_string_buffer(data, len(data)) if data is not None else c.create_string_buffer(256)
+        size = w.ULONG()
+        fn = self.api.WinUsb_WritePipe if data is not None else self.api.WinUsb_ReadPipe
+        if not fn(self.usb, self.endpoints['out' if data is not None else 'in'], buf, len(buf), c.byref(size), None):
+            raise OSError('OpenPuck USB transfer failed or timed out.')
+        if data is not None and size.value != len(data):
+            raise OSError('Short USB command write.')
+        return buf.raw[:size.value]
+
+    def close(self):
+        if self.usb:
+            self.api.WinUsb_Free(self.usb); self.usb = None
+        if self.file is not None:
+            self.kernel.CloseHandle(self.file); self.file = None
+
+
+class _OpWinHID:
+    def __init__(self, item):
+        self.c, self.w, self.kernel, self.hid, _, _ = _op_win_api()
+        self.handle = None
+        # Verify each vendor collection with the same serial command used for pairing.
+        for path in item.get('paths', [item['path']]):
+            handle = self.kernel.CreateFileW(path, 0xc0000000, 3, None, 3, 0, None)
+            if handle == self.c.c_void_p(-1).value:
+                continue
+            self.handle = handle
+            probe = object.__new__(_OpHID); probe.native = self; probe.fd = None
+            try:
+                reply = probe.command(0xae, b'\x01', True)
+                if reply[1:].split(b'\0')[0].decode('ascii') == item['serial']:
+                    return
+            except (OSError, ValueError, UnicodeError):
+                pass
+            self.close()
+        raise OSError('Cannot open controller vendor interface. Close Steam and reconnect USB.')
+
+    def feature(self, data, read):
+        buf = (self.c.c_ubyte * len(data)).from_buffer(data)
+        fn = self.hid.HidD_GetFeature if read else self.hid.HidD_SetFeature
+        if not fn(self.handle, buf, len(data)):
+            raise OSError('Controller HID command failed. Close Steam and reconnect USB.')
+
+    def close(self):
+        if self.handle is not None:
+            self.kernel.CloseHandle(self.handle); self.handle = None
+
+def _openpuck_bootloader_mount():
+    import ctypes
+    if sys.platform != 'win32':
+        return None
+    roots = []
+    for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        root = letter + ':\\'
+        if ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) != 2:
+            continue
+        try:
+            _op_board_identity(root)
+            roots.append(root)
+        except (OSError, ValueError):
+            pass
+    return roots[0] if len(roots) == 1 else None
+
+
+_OP_WINDOWS_STATE = 'no_board'
+
+
+def utilities_state(mock=False):
+    global _OP_WINDOWS_STATE
+    if mock:
+        state = 'puck_present'
+    elif not _OP_LOCK.acquire(blocking=False):
+        state = _OP_WINDOWS_STATE  # polling must not reopen an interface mid-pair
+    else:
+        try:
+            state = 'board_ready' if _openpuck_bootloader_mount() else 'puck_present' if any(d['pid'] == 0x1304 for d in _op_usb_inventory()) else 'no_board'
+            _OP_WINDOWS_STATE = state
+        except (OSError, ValueError):
+            state = 'no_board'
+        finally:
+            _OP_LOCK.release()
+    return [{'id': 'openpuck', 'label': 'OpenPuck receiver', 'description': 'Inspect, pair, test and flash your OpenPuck.', 'state': state}]
+
+
+def mock_openpuck_flash(variant='pinned'):
+    return {'ok': True, 'exit_code': 0, 'stdout': 'Mock flash verified.', 'stderr': '', 'duration_ms': 0}
+
+
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.15-win"
+VERSION = "0.4.16-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -994,7 +1986,7 @@ def set_caps(mock):
         # WIN/ALT-TAB cluster on a ViGEm box), not the Plasma desktop-nav cap.
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "launchers")}
+                 "launchers", "utilities")}
         CAPS["screensaver"] = False
         CAPS["couchmode"] = False
         CAPS["desktop"] = False
@@ -1006,6 +1998,7 @@ def set_caps(mock):
         "gamepad": safe(vigem_ready),
         "steam": _steam_root() is not None,
         "launchers": safe(_any_launcher_source),
+        "utilities": True,
         "media": safe(smtc_available),
         "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
         "screen": _SCREEN is not None,
@@ -6100,6 +7093,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, {"error": "unauthorized"}, started)
                 return
 
+            if path == '/api/utilities':
+                self._send(200, {'utilities': utilities_state(self.mock)}, started)
+                return
+            if path == '/api/utilities/openpuck/latest':
+                self._send(200, mock_openpuck_latest() if self.mock else openpuck_latest(), started)
+                return
             if path == "/api/status":
                 data = mock_status() if self.mock else real_status()
                 data['caps'] = dict(data.get('caps') or {}, file_upload=bool(TLS_ADVERT))
@@ -6346,6 +7345,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {'opened': opened, 'path': root}, started)
                 except OSError:
                     self._send(200, {'opened': False, 'reason': 'file manager unavailable'}, started)
+                return
+
+            if path.startswith('/api/utilities/openpuck/device/'):
+                op = path[len('/api/utilities/openpuck/device/'):]
+                try:
+                    request = json.loads(body.decode('utf-8')) if body else {}
+                except (ValueError, UnicodeError):
+                    request = None
+                code, result = _op_action(op, request, self.mock)
+                self._send(code, result, started)
+                return
+
+            if path == '/api/utilities/openpuck/run':
+                variant = parse_qs(parsed.query).get('variant', ['pinned'])[0]
+                if variant not in ('pinned', 'latest'):
+                    self._send(400, {'ok': False, 'error': 'unknown firmware variant'}, started)
+                    return
+                self._send(200, mock_openpuck_flash(variant) if self.mock else real_openpuck_flash(variant), started)
                 return
 
             prefix = "/api/actions/"
