@@ -1,3 +1,8 @@
+import {Bg3MovePad} from '@/components/Bg3MovePad';
+import { airMousePlacement } from '@/lib/airMousePlacement';
+import { useInputLatency } from '@/hooks/useInputLatency';
+import { syntheticUsbRoute } from '@/lib/airMouseSynthetic';
+import { AirMouseControls } from '@/components/AirMouseControls';
 import { portraitPadMetrics } from '@/lib/portraitPad';
 import { CustomPresetPad } from '@/components/LandscapePad';
 import { isGamePadId } from '@/lib/gamePadCatalog';
@@ -24,7 +29,7 @@ import { getPref, setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation, useRouter, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -359,6 +364,8 @@ function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
 const TP_HAPTIC_PX = 56;
 
 type TrackpadProps = {
+  flingAllowed?: boolean;
+  onActiveChange?: (active: boolean) => void;
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
   onRightClick: () => void;
@@ -377,6 +384,8 @@ type TrackpadProps = {
  *  - double-tap + drag    -> hold left button + drag = marquee select
  */
 function Trackpad({
+  flingAllowed,
+  onActiveChange,
   onMove,
   onLeftClick,
   onRightClick,
@@ -384,7 +393,10 @@ function Trackpad({
   onDragStart,
   onDragEnd,
 }: TrackpadProps) {
+  useEffect(() => () => onActiveChange?.(false), [onActiveChange]);
   const responder = useTrackpad({
+    flingAllowed,
+    onActiveChange,
     onMove,
     onLeftClick,
     onRightClick,
@@ -931,6 +943,10 @@ const MODES: { key: PadMode; label: string }[] = [
 ];
 
 function PadScreen() {
+  const [airMouseTouch, setAirMouseTouch] = useState(false);
+  const airMouseTouchRef=useRef(false);
+  const onAirTouch=useCallback((active:boolean)=>{airMouseTouchRef.current=active;setAirMouseTouch(active);},[]);
+  const [airMouseActive,setAirMouseActive]=useState(false);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
@@ -957,7 +973,11 @@ function PadScreen() {
   // — turn into a trackpad + mini-QWERTY when the phone is held sideways, instead
   // of force-locking to portrait. See the laptop derivation and early return below.
   const landscapeLaptopPref = usePref('landscapeLaptop');
-  const { settings, ready, update } = useSettings();
+  const airMouseEnabled = usePref('airMouseEnabled');
+  const { settings: savedSettings, ready, update } = useSettings();
+  const qaParams=useLocalSearchParams<{syntheticGyro?:string;syntheticUsb?:string}>();
+  const usbQa=process.env.EXPO_PUBLIC_AIR_SYNTHETIC==='1' && qaParams.syntheticGyro==='1' && qaParams.syntheticUsb==='1';
+  const settings=useMemo(()=>syntheticUsbRoute(savedSettings,usbQa),[savedSettings,usbQa]);
   const { activeBox } = useBoxes();
   const preset = normalizePadPreset(activeBox?.controlPreset);
   const prefsReady = usePrefsReady();
@@ -973,6 +993,7 @@ function PadScreen() {
   // doc comment in lib/prefs.ts. Read here rather than inside the surfaces so
   // ONE value drives both the send path and which segments exist.
   const keyboardModePref = usePref('keyboardMode');
+  const bg3MovePreset = usePref('bg3MovePreset');
   // AUTO-DROP THE PAD (opt-in, see prefs.ts). A running game is folded into the
   // SAME "act as keys, not a pad" state the manual toggle drives, so the box
   // tears its virtual pad down while a game is up and recreates it on exit —
@@ -998,7 +1019,9 @@ function PadScreen() {
   // has nothing to drive. Fall back rather than render sticks that go nowhere.
   // Keyboard mode covers 'move' too: the movement zone drives the virtual
   // pad's left stick, which a no-pad handshake never creates.
-  const mode: PadMode = keyboardMode && (rawMode === 'gamepad' || rawMode === 'move') ? 'swipe' : rawMode;
+  const bg3Move = bg3MovePreset && rawMode === 'move';
+  const noPadSession = keyboardMode || bg3Move;
+  const mode: PadMode = keyboardMode && (rawMode === 'gamepad' || (rawMode === 'move' && !bg3Move)) ? 'swipe' : rawMode;
   /**
    * ONLY THE GAMEPAD ROTATES.
    *
@@ -1032,7 +1055,7 @@ function PadScreen() {
   // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
   // Declared before useLockOrientation because the policy below reads it.
   const laptopEligible =
-    landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+    !((mode === 'trackpad' || mode === 'swipe') && (airMouseEnabled || airMouseActive)) && !(mode === 'remote' && airMouseActive) && landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
   const laptop = laptopEligible && landscape && !exited;
 
   useLockOrientation(
@@ -1130,6 +1153,7 @@ function PadScreen() {
   // polled from the client, it turns the pill amber + tap-to-retry live BEFORE
   // the pong watchdog acts, instead of showing a green pill over a dead pipe.
   const [stale, setStale] = useState(false);
+  useInputLatency(padFocused && status === 'connected');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
   // desktop / an elevated window has focus); the string is the hint to show.
@@ -1143,8 +1167,8 @@ function PadScreen() {
   askToSwitchRef.current = askToSwitch;
   // The no-pad decision is made at HANDSHAKE time, so the live value has to be
   // reachable from the focus effect's connect(), not just from render.
-  const keyboardModeRef = useRef(keyboardMode);
-  keyboardModeRef.current = keyboardMode;
+  const keyboardModeRef = useRef(noPadSession);
+  keyboardModeRef.current = noPadSession;
 
   // Hardware volume buttons -> box/TV volume across EVERY input mode (Pad,
   // Swipe, Track, Remote), mounted here on the always-present Pad screen rather
@@ -1334,6 +1358,7 @@ function PadScreen() {
       evaluateWakeLock();
     };
     const disconnect = () => {
+      onAirTouch(false);
       focusedRef.current = false;
       // Chrome comes back the moment the Pad loses focus — see immersiveLive.
       setPadFocused(false);
@@ -1415,9 +1440,9 @@ function PadScreen() {
     client.connect(settingsRef.current, {
       handoffAsk: askToSwitchRef.current,
       deviceName: DEVICE_LABEL,
-      noPad: keyboardMode,
+      noPad: noPadSession,
     });
-  }, [client, ready, keyboardMode]);
+  }, [client, ready, noPadSession]);
 
   // A freshly-learned lastIp should reach the client's stored conn so future
   // reconnects can use it. connect() with an unchanged host/port/token just
@@ -1464,7 +1489,7 @@ function PadScreen() {
       client.connect(settings, {
         handoffAsk: askToSwitch,
         deviceName: DEVICE_LABEL,
-        noPad: keyboardMode,
+        noPad: noPadSession,
       });
     } else if (stale) {
       // Connected on paper but the socket has gone silent. hardReset() rather
@@ -1474,7 +1499,7 @@ function PadScreen() {
       // the switch path performs. See GamepadClient.hardReset.
       client.hardReset();
     }
-  }, [client, settings, status, stale, canForce, askToSwitch, keyboardMode]);
+  }, [client, settings, status, stale, canForce, askToSwitch, noPadSession]);
 
   const btn = useCallback(
     (k: ButtonKey) => ({
@@ -1571,12 +1596,12 @@ function PadScreen() {
         // PERSISTED on 'move' keeps working if the game quits — yanking the
         // surface out from under someone on a poll flap would be worse than
         // an idle stick — but the segment hides, so EXIT is the way back.
-        && (m.key !== 'move' || (runningGame && !keyboardMode) || mode === 'move')
+        && (m.key !== 'move' || bg3MovePreset || (runningGame && !keyboardMode) || mode === 'move')
         // NOTE is a local scratchpad, available on any box; the pref hides the
         // segment. A box already PERSISTED on 'note' keeps it so EXIT still works.
         && (m.key !== 'note' || !hideNoteMode || mode === 'note'),
     ),
-    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode, hideNoteMode],
+    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode, hideNoteMode, bg3MovePreset],
   );
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -2073,6 +2098,7 @@ function PadScreen() {
         <LandscapeLaptop
           client={client}
           tp={{
+            flingAllowed: status==='connected'&&!stale&&inputBlocked==null&&!controlReq&&!diagOpen&&!combosOpen,
             onMove: tpMove,
             onLeftClick: tpLeft,
             onRightClick: tpRight,
@@ -2084,7 +2110,7 @@ function PadScreen() {
           onExit={exitLandscape}
         />
         {controlReq != null && (
-          <View style={styles.handoffOverlay}>
+          <View style={[styles.handoffOverlay,{top:insets.top,left:insets.left,right:insets.right}]}>
             <Text style={styles.handoffText} numberOfLines={2}>
               {controlReq} wants control
             </Text>
@@ -2105,6 +2131,18 @@ function PadScreen() {
       </>
     );
   }
+  // Controller layouts opt in separately: normal gameplay must not start a
+  // desktop cursor just because Mouse mode defaults to Air ON.
+  const airAnchor = immersiveLive && landGeom.ok ? airMousePlacement(landGeom.play,landGeom.nodes.map(n=>n.hit)) : null;
+  const controllerAir = !bg3Move && (mode === 'gamepad' || mode === 'move') && !keyboardMode && !remoteOnly ? (
+    <AirMouseControls floating allowLandscape defaultOn={false}
+      key={hostKey(settings)+':controller'} targetKey={hostKey(settings)+':controller'}
+      available={status === 'connected' && !stale && inputBlocked == null}
+      onMove={(dx,dy,current)=>{if(current())client.sendMouseMove(dx,dy);}}
+      onStop={()=>client.cancelMouseMove()}
+      onClick={current=>{if(current())tpLeft();}}
+      onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)} />
+  ) : null;
   if (immersiveLive) {
     const recovery = status !== 'connected' || stale || inputBlocked != null;
     const ownsElsewhere = status === 'waiting' || status === 'released';
@@ -2119,6 +2157,10 @@ function PadScreen() {
             orientation={landscape ? 'landscape' : 'portrait'}
             onExit={mode === 'move' ? exitMove : exitLandscape}
           />
+        ) : bg3Move ? (
+          <Bg3MovePad key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} client={client} targetKey={hostKey(settings)}
+            available={padFocused && status==='connected' && !stale && inputBlocked==null}
+            locked={padLock} onToggleLock={()=>setPadLock(v=>!v)} onExit={exitMove}/>
         ) : mode === 'move' ? (
           // Movement mode: one big thumb zone driving the LEFT STICK plus a
           // small A/B/NAV/START cluster — the landscape spread or the vertical
@@ -2157,6 +2199,7 @@ function PadScreen() {
             onVariant={() => setMode('move')}
           />
         )}
+        {landGeom.ok && !recovery && airAnchor && <View pointerEvents="box-none" style={{position:'absolute',left:airAnchor.x,top:airAnchor.y,width:airAnchor.w,height:airAnchor.h,zIndex:20}}>{controllerAir}</View>}
         {landGeom.ok && recovery && (
           <View pointerEvents="box-none" style={{ position: 'absolute', top: recoveryTop,
             left: landGeom.play.x, width: landGeom.play.w,
@@ -2185,7 +2228,7 @@ function PadScreen() {
             long enough lets the other device force the takeover — so it cannot
             be a piece of chrome that full-screen play hides. */}
         {controlReq != null && (
-          <View style={styles.handoffOverlay}>
+          <View style={[styles.handoffOverlay,{top:insets.top,left:insets.left,right:insets.right}]}>
             <Text style={styles.handoffText} numberOfLines={2}>
               {controlReq} wants control
             </Text>
@@ -2361,7 +2404,7 @@ function PadScreen() {
         </>
       ) : mode === 'remote' ? (
         <>
-          <RemoteView client={client} settings={settings} />
+          <RemoteView client={client} settings={settings} onAirMouseActive={setAirMouseActive} />
           {keyboardBar}
         </>
       ) : mode === 'swipe' || tvNav ? (
@@ -2371,11 +2414,19 @@ function PadScreen() {
               and a tap clicks; otherwise a step is an arrow key and a tap is
               select. */}
           <View style={styles.tpWrap}>
+            <View style={{flex:1}} onTouchStart={() => onAirTouch(true)} onTouchEnd={e => onAirTouch(e.nativeEvent.touches.length > 0)} onTouchCancel={() => onAirTouch(false)}>
             <SwipeSurface
               onStep={tvNav ? tvStep : dpadStep}
               onStepEnd={tvNav ? NOOP : dpadRelease}
               onSelect={tvNav ? tvClick : selectTap}
             />
+            </View>
+            <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)+':swipe'} targetKey={hostKey(settings)+':swipe'} touchpadActive={airMouseTouch}
+              available={status === 'connected' && !stale && inputBlocked == null}
+              onCursor={(enabled,lease,size)=>api.airMouseCursor(settings,enabled,lease,size)}
+              onStop={()=>client.cancelMouseMove()}
+              onMove={(dx,dy,current)=>{if(current() && !airMouseTouchRef.current)client.sendMouseMove(dx,dy);}}
+              onClick={current=>{if(current())tpLeft();}} />
             {tvToggleChip}
             {padToggleChip}
           </View>
@@ -2429,7 +2480,10 @@ function PadScreen() {
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
           <View style={styles.tpWrap}>
+            <View style={{flex:1}}>
             <Trackpad
+              flingAllowed={status==='connected'&&!stale&&inputBlocked==null&&!controlReq&&!diagOpen&&!combosOpen}
+              onActiveChange={onAirTouch}
               onMove={tpMove}
               onLeftClick={tpLeft}
               onRightClick={tpRight}
@@ -2437,6 +2491,13 @@ function PadScreen() {
               onDragStart={tpDragStart}
               onDragEnd={tpDragEnd}
             />
+            </View>
+          <AirMouseControls onActiveChange={setAirMouseActive} floating key={hostKey(settings)} targetKey={hostKey(settings)} touchpadActive={airMouseTouch}
+            available={status === 'connected' && !stale && inputBlocked == null}
+            onCursor={(enabled, lease, size) => api.airMouseCursor(settings, enabled, lease, size)}
+            onStop={() => client.cancelMouseMove()}
+            onMove={(dx, dy, current) => { if (current() && !airMouseTouchRef.current) client.sendMouseMove(dx, dy); }}
+            onClick={current => { if (current()) tpLeft(); }} />
             {padToggleChip}
           </View>
           {!largePad && (showMouseRow || showSteamRow) && (
@@ -2637,7 +2698,10 @@ function PadScreen() {
             </PadTouchRow>
           </PadTouchRow>
           </PadTouchSurface>
-          {keyboardBar}
+          {controllerAir ? <View style={{flexDirection:'row',alignItems:'center',gap:8}}>
+            <View style={{flex:1,minWidth:0}}>{keyboardBar}</View>
+            <View pointerEvents="box-none" style={{width:60,height:52}}>{controllerAir}</View>
+          </View> : keyboardBar}
         </>
       )}
 

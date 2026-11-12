@@ -1,7 +1,11 @@
+import { useFocusEffect } from 'expo-router';
+import {remoteCircleDiameter,remoteJoystickDirection} from '@/lib/remoteNavigation';
+import { AirMouseControls } from './AirMouseControls';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   Modal,
   PanResponder,
   PanResponderInstance,
@@ -60,7 +64,9 @@ const KEYBOARD_EQUIV: Partial<Record<
 export function RemoteView({
   client,
   settings,
+  onAirMouseActive,
 }: {
+  onAirMouseActive?: (active:boolean)=>void;
   client: GamepadClient;
   settings: Settings;
 }) {
@@ -182,6 +188,11 @@ export function RemoteView({
   const hasDesktop = statusPoll.data?.caps?.desktop === true && showDesktopNav;
 
   const [target, setTarget] = useState<'box' | 'tv'>('box');
+  const lgAutoTarget=useRef('');
+  useEffect(()=>{
+    const key=hostKey(settings);
+    if(remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && lgAutoTarget.current!==key){lgAutoTarget.current=key;setTarget('tv');}
+  },[remoteBackend,tv?.pointer_backends,settings.host,settings.port]);
   const nav = hasTvKeys ? target : 'box';
 
   // MUTE button color reflects the reported mute state (tv.muted, refreshed by
@@ -201,15 +212,29 @@ export function RemoteView({
   // after the fixed rows (which vary — TV keys, the desktop cluster). Measured
   // from its own container so the whole remote always fits ONE screen with no
   // scroll, on any phone and with any set of rows present.
-  const [circleSize, setCircleSize] = useState(200);
+  const [circleSize, setCircleSize] = useState(240);
   const onCircleLayout = React.useCallback(
     (e: { nativeEvent: { layout: { width: number; height: number } } }) => {
       const { width, height } = e.nativeEvent.layout;
-      const s = Math.max(132, Math.min(240, Math.floor(Math.min(width, height)) - 4));
+      const s = remoteCircleDiameter(width,height);
       setCircleSize((prev) => (Math.abs(prev - s) > 1 ? s : prev));
     },
     [],
   );
+
+  const tvJoyBusy=useRef(false),tvJoyEpoch=useRef(0),tvJoyLast=useRef(0);
+  const joystickMove=(dx:number,dy:number)=>{
+    if(nav==='box'){client.sendMouseMove(dx,dy);return;}
+    const native=remoteBackend==='webos'&&tv?.pointer_backends?.includes('webos');
+    if(tvJoyBusy.current||(!native&&Date.now()-tvJoyLast.current<180))return;
+    const direction=remoteJoystickDirection(dx,dy);if(!direction)return;
+    tvJoyBusy.current=true;tvJoyLast.current=Date.now();const id=tvJoyEpoch.current;
+    void Promise.resolve().then(async()=>{
+      if(id!==tvJoyEpoch.current)return;
+      if(native)await api.tvPointer(settings,'move',dx,dy);else await api.tvKey(settings,direction,remoteBackend);
+    }).catch(()=>{}).finally(()=>{tvJoyBusy.current=false;});
+  };
+  const joystickActive=(active:boolean)=>{setJoyActive(active);if(!active)tvJoyEpoch.current++;};
 
   // ---- senders -------------------------------------------------------------
 
@@ -371,6 +396,11 @@ export function RemoteView({
     // Fixed, non-scrolling column: the elastic nav circle absorbs any leftover
     // height so nothing ever scrolls or clips (see circleSize).
     <View style={styles.root}>
+      {target==='tv' && remoteBackend==='webos' && tv?.pointer_backends?.includes('webos') && <AirMouseControls quickClick onActiveChange={onAirMouseActive} floating key={hostKey(settings)+':lg'} targetKey={hostKey(settings)+':lg'} available={!tvPoll.error && (!tv?.pointer_stream || client.getStatus()==='connected')} touchpadActive={joyActive}
+        onMove={(dx,dy,current)=>{if(current()){if(tv?.pointer_stream)client.sendTvPointer('move',dx,dy);else return api.tvPointer(settings,'move',dx,dy);}}}
+        onClick={current=>{if(current()){if(tv?.pointer_stream)client.sendTvPointer('click');else return api.tvPointer(settings,'click');}}}
+        onStop={()=>{if(tv?.pointer_stream)client.sendTvPointer('stop');else void api.tvPointer(settings,'stop').catch(()=>{});}} />}
+
       {/* Nav target toggle — only meaningful with an RS-232 panel */}
       {hasTvKeys && (
         <View style={styles.targetRow}>
@@ -459,35 +489,33 @@ export function RemoteView({
           height; circleArea (flex) centers the elastic circle between the two
           corner rows and is what onCircleLayout measures. */}
       <View style={styles.navBlock}>
-        <View style={styles.cornerRow}>
-          <CornerBtn icon="menu" label="MENU" onPress={navMenu} />
-          <CornerBtn icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
+        <View style={[styles.cornerRow,styles.cornerTop]}>
+          <CornerBtn compact icon="menu" label="MENU" onPress={navMenu} />
+          <CornerBtn compact icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
         </View>
 
         <View style={styles.circleArea} onLayout={onCircleLayout}>
           {trackpad ? (
             <NavTrackpad size={circleSize} responder={trackpadResponder} />
           ) : (
-            <Dpad
+            <Dpad key={hostKey(settings)+':'+nav+':'+remoteBackend}
               size={circleSize}
               onUp={navUp}
               onDown={navDown}
               onLeft={navLeft}
               onRight={navRight}
               onOk={navOk}
-              // Pointer works in BOTH sessions (Big Picture has a cursor too),
-              // so the joystick arms whenever OK drives the box — only the
-              // serial-TV target (nav === 'tv') has no pointer to move.
-              joyEnabled={nav === 'box'}
-              onJoyMove={(dx, dy) => client.sendMouseMove(dx, dy)}
-              onJoyActive={setJoyActive}
+              // LG uses its native pointer; other TVs repeat directional keys.
+              joyEnabled={nav === 'box' || hasTvKeys}
+              onJoyMove={joystickMove}
+              onJoyActive={joystickActive}
             />
           )}
         </View>
 
-        <View style={styles.cornerRow}>
-          <CornerBtn icon="arrow-undo" label="BACK" onPress={navBack} />
-          <CornerBtn
+        <View style={[styles.cornerRow,styles.cornerBottom]}>
+          <CornerBtn compact icon="arrow-undo" label="BACK" onPress={navBack} />
+          <CornerBtn compact
             icon={nav === 'tv' ? 'home-outline' : 'logo-steam'}
             label={nav === 'tv' ? 'HOME' : 'STEAM'}
             onPress={navHome}
@@ -572,13 +600,12 @@ export function RemoteView({
         </View>
       )}
 
-      {tv?.sources_backend === 'cec' && <View style={styles.sourceRow}>
-        <Text style={[styles.sourceText, { flexShrink: 1, textAlign: 'center' }]}>{tv.sources_loading ? 'Finding TV inputs…' : sourceFeedback || tv.sources_error || 'Selecting a CEC device may wake it. Some TV inputs may not appear.'}</Text>
-        <Pressable disabled={sourceBusy || tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs"
-          onPress={() => { setSourceFeedback(''); void api.tvRefreshSources(settings).then(tvPoll.refresh).catch(() => setSourceFeedback('Could not refresh inputs.')); }}>
-          <Text style={styles.sourceText}>Refresh inputs</Text>
-        </Pressable>
+      {tv?.sources_backend === 'cec' && <View style={{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:12,minHeight:28}}>
+        {!!(tv.sources_loading||sourceFeedback||tv.sources_error)&&<Text numberOfLines={1} style={[styles.sourceText,{flexShrink:1}]}>{tv.sources_loading?'Finding inputs…':sourceFeedback||tv.sources_error}</Text>}
+        <Pressable accessibilityRole="button" accessibilityLabel="About TV inputs" onPress={()=>Alert.alert('TV inputs','Selecting a CEC device may wake it. Some TV inputs may not appear.')}><Ionicons name="information-circle-outline" size={20} color={t.textDim}/></Pressable>
+        <Pressable disabled={sourceBusy||tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs" onPress={()=>{setSourceFeedback('');void api.tvRefreshSources(settings).then(tvPoll.refresh).catch(()=>setSourceFeedback('Could not refresh inputs.'));}}><Ionicons name="refresh-outline" size={20} color={t.textDim}/></Pressable>
       </View>}
+
 
       {/* On-TV text entry (webOS / Samsung / Roku). Gated by tv.text. */}
       <Modal
@@ -635,7 +662,9 @@ export function CornerBtn({
   icon,
   label,
   onPress,
+  compact=false,
 }: {
+  compact?: boolean;
   icon: IoniconName;
   label: string;
   onPress: () => void;
@@ -643,9 +672,9 @@ export function CornerBtn({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.corner, pressed && styles.pressed]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.corner, compact && styles.cornerCompact, pressed && styles.pressed]}>
       <Ionicons name={icon} size={17} color={t.text} />
-      <Text style={styles.cornerText}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.cornerText,compact&&{fontSize:8}]}>{label}</Text>
     </Pressable>
   );
 }
@@ -754,7 +783,9 @@ export function Dpad({
   }, []);
 
   // Never leak the tick loop (unmount mid-hold, box switch, tab change).
-  React.useEffect(() => disarm, [disarm]);
+  React.useEffect(() => {const sub=AppState.addEventListener('change',state=>{if(state!=='active')disarm();});return()=>{sub.remove();disarm();};},[disarm]);
+  useFocusEffect(useCallback(()=>()=>disarm(),[disarm]));
+  React.useEffect(()=>{if(!joyEnabled)disarm();},[joyEnabled,disarm]);
 
   const okResponder = React.useRef(
     PanResponder.create({
@@ -811,7 +842,7 @@ export function Dpad({
       <Pressable onPress={onRight} style={({ pressed }) => [styles.wedge, geo.wedge, geo.wedgeRight, pressed && styles.wedgePressed]}>
         <Ionicons name="chevron-forward" size={chevron} color="#0b1220" />
       </Pressable>
-      <View {...okResponder.panHandlers} style={[styles.ok, geo.ok, joy && styles.okJoy]}>
+      <View {...okResponder.panHandlers} accessible accessibilityRole="button" accessibilityLabel={joyEnabled?"OK. Hold and drag for joystick control":"OK"} onAccessibilityTap={onOk} style={[styles.ok, geo.ok, joy && styles.okJoy]}>
         {joy ? (
           <Ionicons name="move" size={Math.round(size * 0.15)} color={t.onAccent} />
         ) : (
@@ -933,7 +964,7 @@ export function MidBtn({
 const makeStyles = (t: Palette) => StyleSheet.create({
   // Fixed, non-scrolling column. gap spaces the rows; navBlock (flex:1) eats
   // the leftover so the elastic circle fits without any scroll.
-  root: { flex: 1, gap: 10, paddingBottom: 6 },
+  root: { flex: 1, gap: 6, paddingBottom: 6 },
   pressed: { opacity: 0.6 },
 
   targetRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -999,11 +1030,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   navBlock: { flex: 1, gap: 6, minHeight: 190 },
   circleArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   cornerRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
+  cornerTop: {position:'absolute',top:0,left:0,right:0,zIndex:2},
+  cornerBottom: {position:'absolute',bottom:0,left:0,right:0,zIndex:2},
+  cornerCompact: {width:56,minWidth:56,height:44,minHeight:44,paddingHorizontal:4,paddingVertical:4,gap:0},
   corner: {
     minWidth: 92,
     alignItems: 'center',
     gap: 3,
-    paddingVertical: 10,
+    paddingVertical: 6,
+    minHeight:44,
     paddingHorizontal: 12,
     borderRadius: 12,
     backgroundColor: t.card,

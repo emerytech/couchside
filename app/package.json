@@ -28,6 +28,7 @@
     "expo-router": "~57.0.8",
     "expo-screen-orientation": "~57.0.1",
     "expo-secure-store": "~57.0.1",
+    "expo-sensors": "~57.0.3",
     "expo-splash-screen": "~57.0.5",
     "expo-status-bar": "~57.0.1",
     "expo-store-review": "~57.0.1",
@@ -59,11 +60,20 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-tcp-socket-android.cjs",
+    "postinstall": "node scripts/patch-tcp-socket-android.cjs && node scripts/patch-gyro-sampling.cjs",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-sensors"
+        ]
+      }
+    }
+  }
 }
