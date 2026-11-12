@@ -385,3 +385,6 @@ BGContinuedProcessingTask, keeps the existing pinned URLSession uploader active
 for a user-started transfer after Home. No third-party package or agent dependency.
 Older systems and rejected admission retain bounded foreground behavior. See
 `docs/IOS_SECURE_UPLOAD_CONTINUATION.md` for the security and lifecycle constraints.
+
+### Game Pause preview (2026-11-10)
+No package dependency added. Linux-only os.pidfd_open + signal.pidfd_send_signal are required; absent support fails closed. Existing Python stdlib procfs, JSON, tempfile, fsync and threading implement the journal/policy. Windows does not offer the feature yet.

@@ -1066,3 +1066,6 @@ possibly stale onScroll offset), re-align through orientation/content reflow,
 and stop on the first user gesture. Consumed requests must not reset later
 ordinary Setup visits. Keep portrait Rotate native-only and require a full44dp
 spacer without squeezing existing shoulder controls; Help qualifies availability.
+
+### Experimental game suspension (2026-11-10)
+Use the locally approved current Steam reaper tree only, never a client PID or process-group sweep. pidfd + start ticks + UID revalidation precede signals. Persist each identity before STOP; retain journal until verified recovery; resume is available after opt-in is disabled. New UI probes additive game_pause data instead of inventing a global capability. See GAME_PAUSE.md.

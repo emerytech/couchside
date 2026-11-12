@@ -16,6 +16,12 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Experimental game Pause / Resume (2026-11-10)
+- **priority:** P2 · **risk:** high (process suspension) · **affects:** Linux agent + phone UI · **depends_on:** local per-game opt-in, pidfds, reviewed game compatibility.
+- **Status:** isolated Linux implementation and mock app control prepared; no release or installed-agent replacement. Windows deferred.
+- Agent-only target resolution; no client process IDs. Stable PID handles, protected-process checks, atomic private journal and local recovery CLI. Optional gaming payload field; older/Windows agents keep existing behavior.
+- Tests exercise owned disposable Linux processes and restart-style recovery plus HTTP/auth rejection and UI actions. Actual game/native acceptance is still required. See docs/GAME_PAUSE.md.
+
 ### Couchside-Ports — installable game-port catalog (2026-11-01)
 - **priority:** P2 · **risk:** medium (runs an installer on the box) · **affects:** agent + app + install.sh · **depends_on:** per-port GitHub release (engine AppImage + bootstrap/setup/uninstall).
 - A catalog of native game ports the app lists and installs onto a paired SteamOS/Bazzite box on demand. First + template entry = `couchside-bbport` (native Bloodborne; engine-only; player supplies their own 1.09 dump). Add a port = entry in `ports/index.json` + mirror into the agent's frozen `_PORTS` + cut the port's own release + ship an agent update.

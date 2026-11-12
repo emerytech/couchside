@@ -656,6 +656,9 @@ jobs:
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
       # phys) battery join, and per-field probe-and-appear. Drives the real
       # functions against sysfs/proc fixtures via the module-constant roots.
+      - name: Experimental game pause (policy, auth, owned Linux process tree)
+        run: python3 tests/test_game_pause.py
+
       - name: Unit tests (gaming card)
         run: python3 tests/test_gaming_card.py
 
