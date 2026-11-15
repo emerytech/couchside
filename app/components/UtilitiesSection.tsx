@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
+import { OpenpuckDeviceTools } from './OpenpuckDeviceTools';
 import {
   confirmDeckyLoaderInstall, confirmRestartDecky, toneColor, useDeckyLoaderOp,
 } from '@/components/DeckyCard';
@@ -81,6 +82,7 @@ export function UtilitiesSection({
   // Opt-in "check for newer firmware": null = not checked, then the box's answer.
   const [latest, setLatest] = useState<OpenpuckLatest | null>(null);
   const [checking, setChecking] = useState(false);
+  const [puckExpanded, setPuckExpanded] = useState(false);
   const live = useRef(true);
   const lastUtils = useRef<Utility[] | null>(null);
   // True once a REAL answer has landed (feature present, or an exact 404 = this
@@ -127,6 +129,8 @@ export function UtilitiesSection({
 
   useEffect(() => {
     live.current = true;
+    setBusy(null);
+    setLatest(null);
     setProbed(false); // a new box (or a caps flip) re-probes from scratch
     if (!canProbe) { setUtils(null); return; }
     void refresh();
@@ -176,15 +180,13 @@ export function UtilitiesSection({
         if (live.current) {
           if (e instanceof ApiError && e.kind === 'timeout') {
             // The write may simply be outlasting our patience — the flash often
-            // SUCCEEDS after this (hardware-observed). In auto mode a timeout on
-            // a real write still means a board went through, so count it: the
-            // board reboots, leaves board_ready, and re-arms us for the next.
+            // may complete later; do not count an unconfirmed outcome.
             setNote((n) => ({ ...n, openpuck: {
               tone: 'info',
               msg: 'Still flashing — the box is writing firmware. The status here '
                 + 'updates when it finishes.',
             } }));
-            if (silent) setFlashedCount((c) => c + 1);
+            // A timeout is unknown, never a successful batch flash.
           } else {
             setNote((n) => ({ ...n, openpuck: { tone: 'err', msg: 'Could not reach the box.' } }));
             hapticWarning();
@@ -525,10 +527,25 @@ export function UtilitiesSection({
           <View key={u.id} style={styles.row}>
             <Ionicons name={p.icon as never} size={20} color={color} style={styles.icon} />
             <View style={styles.body}>
-              <Text style={styles.label}>{u.label}</Text>
+              {u.id === 'openpuck' ? <Pressable
+                onPress={() => setPuckExpanded(v => !v)} accessibilityRole="button"
+                accessibilityLabel="OpenPuck receiver" accessibilityState={{ expanded: puckExpanded }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>{u.label}</Text>
+                  <Text style={styles.sub}>{running ? 'Operation in progress…' : autoflash ? 'Auto-flash armed' : 'Device info, diagnostics, pairing & firmware'}</Text>
+                </View>
+                <Ionicons name={puckExpanded ? 'chevron-down' : 'chevron-forward'} size={16} color={t.textFaint} />
+              </Pressable> : <Text style={styles.label}>{u.label}</Text>}
+              <View style={u.id === 'openpuck' && !puckExpanded ? { display: 'none' } : undefined}>
               <Text style={styles.sub}>{u.description}</Text>
               <Text style={[styles.status, { color }]}>{p.line}</Text>
               {u.id === 'decky' ? renderDecky() : null}
+              {u.id === 'openpuck' ? <OpenpuckDeviceTools
+                key={JSON.stringify(settings)} busy={running} latest={latest} autoflash={autoflash}
+                setBusy={(value) => setBusy(value ? 'openpuck' : null)}
+                afterBootloader={() => { void refresh(); setTimeout(() => { void refresh(); }, 3000); }}
+              >
               {/* Manual flash — hidden while auto-flash is armed (it fires on
                   its own). Still shown for the one-off case. */}
               {canFlash && !autoflash ? (
@@ -569,17 +586,13 @@ export function UtilitiesSection({
                     </Text>
                   </View>
                   <Switch
+                    disabled={running}
                     value={autoflash}
                     onValueChange={toggleAutoflash}
                     trackColor={{ true: t.blue }}
                     testID="openpuck-autoflash-switch"
                   />
                 </View>
-              ) : null}
-              {n ? (
-                <Text style={[styles.note, {
-                  color: n.tone === 'ok' ? t.green : n.tone === 'err' ? t.red : t.blue,
-                }]}>{n.msg}</Text>
               ) : null}
               {/* Open the OpenPuck WebUSB configurator on the box's browser —
                   change mode/mappings, update firmware, or reboot into DFU, all
@@ -655,14 +668,21 @@ export function UtilitiesSection({
                   )}
                 </View>
               ) : null}
+              </OpenpuckDeviceTools> : null}
+              {n ? (
+                <Text style={[styles.note, {
+                  color: n.tone === 'ok' ? t.green : n.tone === 'err' ? t.red : t.blue,
+                }]}>{n.msg}</Text>
+              ) : null}
+              </View>
             </View>
           </View>
         );
       })}
-      <Text style={styles.footNote}>
+      {context !== 'actions' && <Text style={styles.footNote}>
         A small set for now. As more one-click helpers land here, Utilities will move to
         its own dashboard page.
-      </Text>
+      </Text>}
     </View>
   );
 }
