@@ -21,22 +21,28 @@
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { resolveAppVersion } from './resolveAppVersion';
 
-export const APP_VERSION: string =
-  Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '—';
+// Resolution (incl. the empty-string guard that stops a blank About row) lives
+// in the pure, bare-node-testable resolveAppVersion — see that file's header.
+// expo-application's native getters return "" (not null) on some builds, which
+// the old `??` chain let through; nonEmpty() inside the resolver coerces it so
+// the app.json fallback actually runs.
+const _version = resolveAppVersion({
+  nativeVersion: Application.nativeApplicationVersion,
+  nativeBuild: Application.nativeBuildVersion,
+  expoVersion: Constants.expoConfig?.version ?? null,
+  expoIosBuild: Constants.expoConfig?.ios?.buildNumber ?? null,
+  expoAndroidVersionCode: Constants.expoConfig?.android?.versionCode ?? null,
+  isIos: Platform.OS === 'ios',
+});
 
-export const APP_BUILD: string =
-  Application.nativeBuildVersion ??
-  (Platform.OS === 'ios'
-    ? Constants.expoConfig?.ios?.buildNumber ?? ''
-    : Constants.expoConfig?.android?.versionCode != null
-      ? String(Constants.expoConfig.android.versionCode)
-      : '');
+export const APP_VERSION: string = _version.version;
+
+export const APP_BUILD: string = _version.build;
 
 /** "2.9.61 (vc 109)" / "2.9.61 (build 219)" — the About row's format. */
-export const APP_LABEL: string = `${APP_VERSION}${
-  APP_BUILD ? ` (${Platform.OS === 'ios' ? 'build' : 'vc'} ${APP_BUILD})` : ''
-}`;
+export const APP_LABEL: string = _version.label;
 
 /**
  * Android applicationId / iOS bundle id; '' on web. This is what tells the store
