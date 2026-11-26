@@ -18,19 +18,19 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, View,
+  ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useConfirm } from '@/components/ConfirmDialog';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type Port, type PortsState } from '@/lib/api';
+import { usePorts } from '@/hooks/usePorts';
+import { api, hostKey, type Port } from '@/lib/api';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import {
-  anyPortJobActive, installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
+  addonApprovalCopy, installConfirmCopy, PORTS_LEGAL_LINE, PORTS_OPTIN_CMD, portActionError,
   portButton, portJobCopy, uninstallConfirmCopy,
 } from '@/lib/ports';
 import { useSettings } from '@/lib/SettingsContext';
@@ -50,20 +50,55 @@ export default function PortsScreen() {
   const key = hostKey(settings);
 
   const [note, setNote] = useState<Note>(null);
+  const [pin, setPin] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [requesting, setRequesting] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const state = usePoll<PortsState | null>(
-    () => api.ports(settings), 30 * 1000, configured, key);
-  const job = state.data?.install ?? null;
-  const running = anyPortJobActive(job);
-
-  // Tighten to 2 s only while a job runs, so progress paints without a refresh.
-  const fast = usePoll<PortsState | null>(
-    () => api.ports(settings), 2000, configured && running, key);
-  const live = fast.data ?? state.data;
+  const currentKey = useRef(key);
+  currentKey.current = key;
+  useEffect(() => { setNote(null); setExpanded({}); setRequesting(false); setPin(''); setVerifying(false); }, [key]);
+  const state = usePorts(settings);
+  const live = state.data;
   const ports = live?.ports ?? [];
   const allowed = live?.allowed ?? true;
-  const activeJob = live?.install ?? job;
+  const activeJob = live?.install ?? null;
+
+  const requestAddon = async () => {
+    if (!live?.addon || requesting || live.addon.state === 'pending') return;
+    setRequesting(true);
+    setPin('');
+    setNote(null);
+    try {
+      await api.requestAddon(settings, !allowed);
+      if (currentKey.current === key) state.refresh();
+    } catch (error) {
+      if (currentKey.current === key) {
+        setNote({ tone: 'err', msg: error instanceof Error ? error.message : 'Could not request computer approval.' });
+        state.refresh();
+      }
+    } finally {
+      if (currentKey.current === key) setRequesting(false);
+    }
+  };
+
+  const verifyAddon = async () => {
+    if (!/^\d{6}$/.test(pin) || verifying || live?.addon?.state !== 'pending') return;
+    setVerifying(true);
+    setNote(null);
+    try {
+      await api.verifyAddon(settings, pin);
+      if (currentKey.current === key) { setPin(''); state.refresh(); }
+    } catch (error) {
+      if (currentKey.current === key) {
+        setPin('');
+        setNote({ tone: 'err', msg: error instanceof Error ? error.message : 'Could not verify the PIN. Check the computer status.' });
+        state.refresh();
+      }
+    } finally {
+      if (currentKey.current === key) setVerifying(false);
+    }
+  };
 
   const act = useCallback(
     async (port: Port, mode: 'install' | 'uninstall') => {
@@ -72,13 +107,14 @@ export default function PortsScreen() {
         title: copy.title, message: copy.message,
         confirmText: copy.okLabel, destructive: mode === 'uninstall',
       });
-      if (!ok) return;
+      if (!ok || currentKey.current !== key) return;
       hapticLight();
       setNote({ tone: 'info', msg: mode === 'install' ? `Starting ${port.name}…` : `Removing ${port.name}…` });
       try {
         const r = mode === 'install'
           ? await api.installPort(settings, port.id)
           : await api.uninstallPort(settings, port.id);
+        if (currentKey.current !== key) return;
         const err = portActionError(r);
         if (err) {
           hapticWarning();
@@ -88,13 +124,14 @@ export default function PortsScreen() {
         hapticSuccess();
         setNote(null);
         state.refresh();
-        fast.refresh();
+
       } catch (e) {
+        if (currentKey.current !== key) return;
         hapticWarning();
         setNote({ tone: 'err', msg: e instanceof Error ? e.message : 'Could not reach the box.' });
       }
     },
-    [confirm, settings, state, fast],
+    [confirm, settings, state, key],
   );
 
   const jobLine = portJobCopy(
@@ -143,13 +180,13 @@ export default function PortsScreen() {
         <View style={styles.actionRow}>
           <Pressable
             onPress={() => btn.action && act(item, btn.action)}
-            disabled={btn.busy || !btn.action}
+            disabled={btn.busy || !btn.action || !!state.error}
             accessibilityRole="button"
             accessibilityLabel={`${btn.label} ${item.name}`}
             style={({ pressed }) => [
               styles.btn,
               btn.action === 'uninstall' ? styles.btnDanger : styles.btnPrimary,
-              (btn.busy || !btn.action) && styles.btnDisabled,
+              (btn.busy || !btn.action || !!state.error) && styles.btnDisabled,
               pressed && styles.pressed,
             ]}>
             {btn.busy ? <ActivityIndicator size="small" color={t.onAccent} /> : null}
@@ -188,7 +225,7 @@ export default function PortsScreen() {
         <Pressable onPress={() => router.back()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={26} color={t.text} />
         </Pressable>
-        <Text style={styles.title}>Ports</Text>
+        <Text style={styles.title}>Ports · Beta</Text>
         <View style={{ width: 26 }} />
       </View>
 
@@ -202,14 +239,58 @@ export default function PortsScreen() {
           contentContainerStyle={{ padding: 14, paddingBottom: insets.bottom + 24 }}
           ListHeaderComponent={
             <View>
+              <Text style={styles.legal}>Experimental feature. Compatibility and setup vary by port.</Text>
               <Text style={styles.legal}>{PORTS_LEGAL_LINE}</Text>
 
-              {!allowed ? (
+              {live?.addon?.supported ? (
+                <View style={[styles.banner, styles.bannerInfo]}>
+                  <Text style={styles.cardTitle}>Game Ports add-on · {allowed ? 'Enabled' : 'Off'}</Text>
+                  <Text style={styles.bannerText}>Optional · Beta / experimental. Enabling downloads nothing. Changes require approval on this computer. Disabling keeps your games and saves.</Text>
+                  <Pressable
+                    testID="ports-addon-toggle"
+                    accessibilityRole="button"
+                    disabled={requesting || live.addon.remote_paused || !!state.error}
+                    onPress={requestAddon}
+                    style={[styles.btn, styles.btnPrimary, (requesting || live.addon.remote_paused || !!state.error) && styles.btnDisabled]}>
+                    <Text style={styles.btnPrimaryText}>{requesting ? 'Requesting…' : live.addon.remote_paused ? 'Waiting for computer PIN…' : allowed ? 'Request disable on computer' : 'Enable with computer approval'}</Text>
+                  </Pressable>
+                  {live.addon.state === 'pending' ? (
+                    <View style={{ gap: 10, marginTop: 12 }}>
+                      <Text style={styles.bannerText}>Remote access paused · {live.addon.expires_in}s remaining · {live.addon.attempts_remaining} attempts</Text>
+                      <TextInput
+                        testID="addon-pin" accessibilityLabel="Six-digit PIN from computer"
+                        value={pin} onChangeText={(value) => setPin(value.replace(/[^0-9]/g, '').slice(0, 6))}
+                        keyboardType="number-pad" inputMode="numeric" maxLength={6}
+                        autoComplete="off" autoCorrect={false} placeholder="000000"
+                        placeholderTextColor={t.textFaint}
+                        style={{ color: t.text, backgroundColor: t.card, borderColor: t.blue,
+                          borderWidth: 1, borderRadius: 12, fontSize: 28, letterSpacing: 12,
+                          textAlign: 'center', padding: 12, fontFamily: mono }}
+                      />
+                      <Pressable accessibilityRole="button" testID="addon-pin-confirm"
+                        onPress={verifyAddon} disabled={pin.length !== 6 || verifying || !!state.error}
+                        style={[styles.btn, styles.btnPrimary, (pin.length !== 6 || verifying || !!state.error) && styles.btnDisabled]}>
+                        <Text style={styles.btnPrimaryText}>{verifying ? 'Checking PIN…' : 'Confirm PIN'}</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {addonApprovalCopy(live.addon.state) ? <Text accessibilityLiveRegion="polite" style={styles.bannerText}>{addonApprovalCopy(live.addon.state)}</Text> : null}
+                </View>
+              ) : !allowed ? (
                 <View style={[styles.banner, styles.bannerInfo]}>
                   <Text style={styles.bannerText}>
                     Port installs are off on this box. Enable them on the box, then try again:
                   </Text>
                   <Text style={styles.cmd}>{PORTS_OPTIN_CMD}</Text>
+                </View>
+              ) : null}
+
+              {state.error ? (
+                <View style={[styles.banner, styles.bannerErr]}>
+                  <Text style={styles.bannerText}>Connection interrupted. Checking the box again. Any running port job continues on the box.</Text>
+                  <Pressable onPress={state.refresh} accessibilityRole="button" accessibilityLabel="Retry Ports connection">
+                    <Text style={styles.cmd}>Retry connection</Text>
+                  </Pressable>
                 </View>
               ) : null}
 
@@ -243,7 +324,8 @@ export default function PortsScreen() {
           ListEmptyComponent={
             state.loading
               ? <ActivityIndicator style={{ marginTop: 40 }} color={t.textDim} />
-              : <Text style={styles.empty}>No ports available for this box.</Text>
+              : state.error ? null
+                : <Text style={styles.empty}>{live ? 'No ports available for this box.' : 'This box does not provide a Ports catalog.'}</Text>
           }
         />
       )}

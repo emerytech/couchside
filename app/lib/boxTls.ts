@@ -94,7 +94,11 @@ export function connectPinned(
     };
     const timer = setTimeout(() => fail(new Error('pinned connect timeout')), timeoutMs);
     // ca/rejectUnauthorized are read natively but absent from the .d.ts -> cast.
-    const tlsOpts: Record<string, unknown> = { host, port };
+    // Bound the native worker as well as this JS promise. Android queues destroy
+    // behind connect; a JS-only timeout cannot free a worker stuck on a dead host.
+    const tlsOpts: Record<string, unknown> = {
+      host, port, connectTimeout: Math.max(1, Math.min(timeoutMs, 4000)),
+    };
     if (opts?.caPem) { tlsOpts.ca = opts.caPem; tlsOpts.rejectUnauthorized = true; }
     else { tlsOpts.rejectUnauthorized = false; }
     const sock = (TcpSocket.connectTLS as unknown as (o: Record<string, unknown>, cb: () => void) => any)(

@@ -1,9 +1,1 @@
-Couchside 2.9.81
-
-• Browse a visual controller preset gallery with themed backgrounds and previews.
-• Create per-box custom button and trigger mappings with your own labels.
-• Enjoy one-handed Vampire Survivors controls and more themed beta presets.
-• Improved PAD fit on smaller phones.
-• Refreshed Decky plugin cards and installation confirmations.
-• Optional TV appearance packs.
-• Open Steam’s uninstall flow from installed game cards with an updated agent.
+OpenPuck receiver tools now show device info, check connections, pair controllers and update firmware through your computer. Compact controls match Couchside’s theme. Android reconnects more reliably when switching computers. Optional Game Ports (Beta / experimental) adds verified engine downloads and job recovery. Enable it from the app with a PIN shown on your computer; remote viewing and input pause during confirmation and resume automatically.

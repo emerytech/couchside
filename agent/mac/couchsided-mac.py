@@ -122,11 +122,12 @@ def set_caps(mock=False):
     """
     global CAPS
     if mock:
-        CAPS = {"gamepad": True, "steam": True, "media": True, "tv": True,
+        CAPS = {"gamepad": True, "steam": True, "media": True, "tv": True, "utilities": False,
                 "screen": True, "power_schedule": True, "screensaver": True,
                 "couchmode": True, "desktop": True}
         return
     CAPS = {
+        "utilities": False,  # OpenPuck native transports currently Linux/Windows only
         # No uinput on macOS; a virtual pad needs a DriverKit extension.
         "gamepad": False,
         # Steam.app being installed is a fact we can check honestly. It gates

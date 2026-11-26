@@ -54,6 +54,9 @@ export function portButton(
   port: Pick<Port, 'id' | 'installed'>,
   job: PortInstallJob | null | undefined,
 ): { label: string; action: 'install' | 'uninstall' | null; busy: boolean } {
+  if (job?.running && job.id !== port.id) {
+    return { label: 'Job in progress…', action: null, busy: true };
+  }
   if (portJobActive(job, port.id)) {
     const verb = job && job.mode === 'uninstall' ? 'Removing…' : 'Installing…';
     return { label: verb, action: null, busy: true };
@@ -73,6 +76,12 @@ export function portJobCopy(
   portName?: string,
 ): { line: string; tone: Tone; needsDump: boolean } | null {
   if (!job) return null;
+  if (job.recovery_pending) {
+    return { line: 'Checking the existing port job on the box. A second job will not start.', tone: 'warn', needsDump: false };
+  }
+  if (job.phase === 'interrupted') {
+    return { line: job.error || 'The port job was interrupted. Review the log, then retry.', tone: 'warn', needsDump: false };
+  }
   const who = portName || job.id;
   const verb = job.mode === 'uninstall' ? 'Removing' : 'Installing';
   if (job.running) {
@@ -126,7 +135,7 @@ export function installConfirmCopy(port: Pick<Port, 'name' | 'requires_user_file
 } {
   const lines: string[] = [
     `Install ${port.name} on your Steam Machine?`,
-    'The box downloads the port engine from its pinned GitHub release over TLS and installs it as your desktop user (no root).',
+    'The box downloads the port engine from its pinned GitHub release, verifies every executable by SHA-256 and size, and installs it as your desktop user (no root).',
     PORTS_LEGAL_LINE,
   ];
   if (port.requires_user_files && port.user_files_prompt) {
@@ -146,4 +155,18 @@ export function uninstallConfirmCopy(port: Pick<Port, 'name'>): {
     message: `Remove ${port.name} from your Steam Machine? Any game files you supplied yourself are left where they are.`,
     okLabel: 'Remove',
   };
+}
+
+/** Permission is always read back from the selected computer, never optimistic. */
+export function addonApprovalCopy(state: string | undefined): string | null {
+  switch (state) {
+    case 'preparing': return 'Pausing remote viewing and input before showing the PIN…';
+    case 'pending': return 'Read the six-digit PIN on your computer’s display and enter it below. Remote viewing and input resume automatically after confirmation or expiry.';
+    case 'locked': return 'Too many incorrect attempts. Nothing changed. Remote viewing and input are available again.';
+    case 'approved': return 'Your computer saved the add-on setting. Remote viewing and input are available again.';
+    case 'declined': return 'Declined on the computer. Nothing changed. Remote viewing and input are available again.';
+    case 'expired': return 'The confirmation expired. Nothing changed. Remote viewing and input resumed automatically.';
+    case 'failed': return 'The confirmation could not complete. Remote access is available. Try again or use the local CLI.';
+    default: return null;
+  }
 }

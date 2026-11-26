@@ -2631,6 +2631,11 @@ export type Port = {
 
 /** The current (or last) port install/uninstall job the app polls for progress. */
 export type PortInstallJob = {
+  /** Durable identity/status from restart-safe agents; absent on older agents. */
+  job_id?: string;
+  phase?: string;
+  recovery_pending?: boolean;
+  error?: string;
   id: string;
   mode: 'install' | 'uninstall';
   running: boolean;
@@ -2645,8 +2650,19 @@ export type PortInstallJob = {
   lines: string[];
 };
 
+export type AddonApproval = {
+  supported: boolean;
+  state: 'idle' | 'preparing' | 'pending' | 'approved' | 'declined' | 'expired' | 'failed' | 'locked';
+  remote_paused: boolean;
+  expires_in: number;
+  attempts_remaining: number;
+  enabled: boolean;
+  requested_enabled: boolean | null;
+};
+
 export type PortsState = {
   ports: Port[];
+  addon?: AddonApproval;
   /** The on-box opt-in (`couchside allow-ports on`) is set — installs are allowed. */
   allowed: boolean;
   install: PortInstallJob | null;
@@ -2776,13 +2792,24 @@ export const api = {
   },
 
   /**
-   * Start a port install on the box (frozen id -> frozen bootstrap URL; the app
-   * never names a URL or command). LONG timeout: the box fetches the small
-   * bootstrap synchronously before it answers `started`, then the engine
-   * AppImage downloads in a detached child the app watches via api.ports().
+   * Start a verified fixed-recipe job on the box. The worker is independent of
+   * the agent and downloads/verifies in the background. A POST timeout is
+   * ambiguous; reconcile api.ports() instead of automatically retrying a POST.
    * 403 `needs_optin` until the owner runs `couchside allow-ports on`; the port
    * ships the engine only, so the player still supplies their own game dump.
    */
+  verifyAddon(settings: ConnSettings, pin: string): Promise<AddonApproval> {
+    return request<AddonApproval>(settings, '/api/addons/verify', {
+      method: 'POST', body: { pin },
+    });
+  },
+
+  requestAddon(settings: ConnSettings, enabled: boolean): Promise<AddonApproval> {
+    return request<AddonApproval>(settings, '/api/addons/request', {
+      method: 'POST', body: { id: 'ports', enabled },
+    });
+  },
+
   installPort(settings: ConnSettings, id: string): Promise<PortActionResult> {
     return request<PortActionResult>(
       settings, '/api/ports/install', { method: 'POST', body: { id }, timeoutMs: 60000 });
@@ -2974,6 +3001,11 @@ export const api = {
    * anything — flashing a newer build is a separate, explicit
    * runUtility(settings, 'openpuck', 'latest').
    */
+  openpuckDevice(settings: ConnSettings, op: 'inspect' | 'test' | 'prepare_pair' | 'pair' | 'bootloader', body: { serial?: string; confirmation?: string }): Promise<import('./openpuck').PuckResult | null> {
+    return probeOrNull(request<import('./openpuck').PuckResult>(settings,
+      `/api/utilities/openpuck/device/${op}`, { method: 'POST', body, timeoutMs: 75000 }));
+  },
+
   openpuckLatest(settings: ConnSettings): Promise<OpenpuckLatest | null> {
     return probeOrNull(
       request<OpenpuckLatest>(settings, '/api/utilities/openpuck/latest'));

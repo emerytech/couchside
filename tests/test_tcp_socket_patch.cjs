@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const { patchSource, patchPackage, before, after } = require('../app/scripts/patch-tcp-socket-android.cjs');
+const { patchSource, patchPackage, before, after, patchConnectSource, connectBefore, connectAfter } = require('../app/scripts/patch-tcp-socket-android.cjs');
 
 test('patch is narrowly scoped, repeatable, and refuses unreviewed source', () => {
     const source = `untouched TLS and write methods\n${before}\nuntouched certificate methods`;
@@ -34,7 +34,7 @@ test('real dependency cleanup survives queued missing-client closes; existing cl
     const file = path.join(pkgDir, 'android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java');
     const original = fs.readFileSync(file, 'utf8');
     const method = original.includes(before) ? before : after;
-    assert.equal(patchPackage(pkgDir), method === before);
+    patchPackage(pkgDir);
     assert.equal(patchPackage(pkgDir), false);
     const patched = fs.readFileSync(file, 'utf8');
     assert.equal(patched.replace(after, before), original.replace(after, before));
@@ -101,6 +101,88 @@ class ${name} {
             const run = spawnSync('java', ['-cp', dir, name], { cwd: dir, encoding: 'utf8', timeout: 10000 });
             assert.equal(run.status, 0, run.stderr);
             assert.match(run.stdout, new RegExp(`errors=${expectedErrors} live-client-closes=1`));
+        }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('native connection patch is repeatable and fails closed on upstream drift', () => {
+    assert.equal(patchConnectSource(connectBefore), connectAfter);
+    assert.equal(patchConnectSource(connectAfter), connectAfter);
+    assert.throws(() => patchConnectSource(connectBefore.replace('startListening();', 'changed();')), /changed upstream/);
+});
+
+test('two stalled TLS handshakes cannot starve a new host; timed-out sockets close', () => {
+    const pkgDir = process.env.TCP_SOCKET_PACKAGE_DIR;
+    assert.ok(pkgDir);
+    patchPackage(pkgDir);
+    const client = fs.readFileSync(path.join(pkgDir, 'android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java'), 'utf8');
+    assert.ok(client.includes(connectAfter));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'couchside-tcp-deadline-'));
+    try {
+        for (const [name, body, bounded] of [['Unbounded', connectBefore, false], ['Bounded', connectAfter, true]]) {
+            const harness = `
+import java.net.*;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import javax.net.ssl.*;
+class ${name} {
+  final Socket socket;
+  boolean listening=false;
+  ${name}(Socket s) { socket=s; }
+  static class Options {
+    boolean hasKey(String key) { return true; }
+    int getInt(String key) { return 150; }
+  }
+  void startListening() { listening=true; }
+  void connect(int port) throws Exception {
+    Options options=new Options();
+    InetAddress remoteInetAddress=InetAddress.getLoopbackAddress();
+    ${body}
+  }
+  public static void main(String[] args) throws Exception {
+    ServerSocket silent=new ServerSocket(0,10,InetAddress.getLoopbackAddress());
+    List<Socket> peers=Collections.synchronizedList(new ArrayList<>());
+    CountDownLatch accepted=new CountDownLatch(2);
+    Thread acceptor=new Thread(() -> {
+      try { for(int i=0;i<2;i++) { peers.add(silent.accept()); accepted.countDown(); } }
+      catch(IOException e) { throw new RuntimeException(e); }
+    });
+    acceptor.start();
+    ExecutorService workers=Executors.newFixedThreadPool(2);
+    ${name} a=new ${name}(SSLSocketFactory.getDefault().createSocket());
+    ${name} b=new ${name}(SSLSocketFactory.getDefault().createSocket());
+    for(${name} c: new ${name}[]{a,b}) workers.submit(() -> {
+      try { c.connect(silent.getLocalPort()); throw new AssertionError("silent TLS connected"); }
+      catch(IOException expected) { }
+      catch(Exception e) { throw new RuntimeException(e); }
+    });
+    if(!accepted.await(3,TimeUnit.SECONDS)) throw new AssertionError("connections not accepted");
+    ServerSocket live=new ServerSocket(0,10,InetAddress.getLoopbackAddress());
+    ${name} healthy=new ${name}(new Socket());
+    Future<?> next=workers.submit(() -> { try { healthy.connect(live.getLocalPort()); } catch(Exception e) { throw new RuntimeException(e); } });
+    boolean progressed;
+    try { next.get(800,TimeUnit.MILLISECONDS); progressed=true; }
+    catch(TimeoutException expected) { progressed=false; }
+    if(progressed != ${bounded}) throw new AssertionError("wrong host-switch progress: "+progressed);
+    if(${bounded} && (!a.socket.isClosed() || !b.socket.isClosed())) throw new AssertionError("failed TLS sockets leaked");
+    a.socket.close(); b.socket.close();
+    next.get(3,TimeUnit.SECONDS);
+    if(!healthy.listening || healthy.socket.getSoTimeout()!=0) throw new AssertionError("healthy connection changed");
+    healthy.socket.close(); live.close(); silent.close();
+    for(Socket p:peers) p.close();
+    workers.shutdownNow(); acceptor.join(1000);
+    if(!workers.awaitTermination(3,TimeUnit.SECONDS)) throw new AssertionError("workers leaked");
+    System.out.println("new-host-progress="+progressed);
+  }
+}`;
+            fs.writeFileSync(path.join(dir, `${name}.java`), harness);
+            const compile = spawnSync('javac', [`${name}.java`], { cwd: dir, encoding: 'utf8', timeout: 30000 });
+            assert.equal(compile.status, 0, compile.stderr);
+            const run = spawnSync('java', ['-cp', dir, name], { cwd: dir, encoding: 'utf8', timeout: 10000 });
+            assert.equal(run.status, 0, run.stderr);
+            assert.match(run.stdout, new RegExp('new-host-progress=' + bounded));
         }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

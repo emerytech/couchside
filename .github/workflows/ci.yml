@@ -1141,6 +1141,9 @@ jobs:
       # OpenPuck flash target needs a known label AND the UF2 marker (a mislabelled
       # stick is refused — the control), detection degrades closed, and the route is
       # behind the bearer gate.
+      # USB mutations must reject untrusted commands and preserve existing bonds.
+      - name: Unit tests (OpenPuck device operations)
+        run: python3 tests/test_openpuck_device.py
       - name: Unit tests (utilities detection)
         run: python3 tests/test_utilities.py
 
@@ -1153,6 +1156,10 @@ jobs:
         run: python3 tests/test_ports_catalog.py
       - name: Unit tests (Couchside-Ports install path safety)
         run: python3 tests/test_ports_install.py
+      - name: Add-on PIN consent and privacy recovery
+        run: python3 tests/test_addon_confirmation.py
+      - name: Ports installer optional add-on
+        run: python3 tests/test_ports_optin.py
 
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S

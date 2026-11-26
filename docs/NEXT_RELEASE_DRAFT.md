@@ -1,3 +1,8 @@
+> Historical 2.9.81 preparation record. This release shipped October 31, 2026;
+> the store-delivery follow-up was completed November 2. The dated hold/pending
+> statements below describe earlier checkpoints. Use [the next-release audit](NEXT_RELEASE_PLAN.md)
+> for current remaining work. This note does not authorize a new release.
+
 # Couchside 2.9.81 release preparation — not published
 
 Prepared 2026-10-31. Feature source: `24a9799fed1059f38d6754108187ab7235cdd80a`.

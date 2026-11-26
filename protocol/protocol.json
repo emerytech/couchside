@@ -170,7 +170,8 @@
       "screen",
       "screensaver",
       "steam",
-      "tv"
+      "tv",
+      "utilities"
     ]
   },
   "linuxOnlyCapabilities": {
@@ -197,7 +198,6 @@
       "steammenus",
       "streamhost",
       "usbwake",
-      "utilities",
       "wlclipboard"
     ]
   },
