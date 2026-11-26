@@ -12,6 +12,7 @@ import React, { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
+import { GamePauseControl } from './GamePauseControl';
 import { hapticLight } from '@/lib/haptics';
 
 import { PlayDataProvider, useHasPlayData, usePlayPoll, usePlaySession } from '@/hooks/usePlayPoll';
@@ -92,14 +93,15 @@ function NowPlayingContent() {
   const poll = usePlayPoll<Gaming | null>('gaming',
     () => api.gaming(settings), 5000, ready && configured, hostKey(settings));
   const g = poll.data;
-  if (!g?.game) return null;
+  if (!g) return null;
+  if (!g.game) return <GamePauseControl state={g.game_pause} refresh={poll.refresh} demo={demo} />;
   const game = g.game;
 
   return (
     <View style={styles.nowCard}>
       <View style={styles.nowHeader}>
         <Ionicons name="play-circle" size={14} color={t.green} />
-        <Text style={styles.nowHeaderText}>PLAYING NOW</Text>
+        <Text style={styles.nowHeaderText}>{g.game_pause?.paused ? 'PAUSED' : 'PLAYING NOW'}</Text>
         {game.running_s != null && (
           <Text style={styles.nowTime}>{humanizeRun(game.running_s)}</Text>
         )}
@@ -107,6 +109,7 @@ function NowPlayingContent() {
       <Text style={styles.nowTitle} numberOfLines={2}>
         {game.label ?? `App ${game.appid}`}
       </Text>
+      <GamePauseControl state={g.game_pause} refresh={poll.refresh} demo={demo} />
       <Pressable
         onPress={async () => {
           hapticLight();
@@ -123,10 +126,10 @@ function NowPlayingContent() {
             poll.refresh();
           });
         }}
-        disabled={stopping || demo}
+        disabled={stopping || demo || !!g.game_pause?.has_record}
         style={({ pressed }) => [styles.stopBtn, { alignSelf: 'flex-end', borderWidth: 0, marginTop: 0, paddingHorizontal: 8 }, pressed && { opacity: 0.7 }]}>
         <Ionicons name="stop-circle-outline" size={15} color={t.red} />
-        <Text style={styles.stopText}>{demo ? 'DEMO' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
+        <Text style={styles.stopText}>{demo ? 'DEMO' : g.game_pause?.has_record ? 'RESUME TO CLOSE' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
       </Pressable>
     </View>
   );
@@ -272,7 +275,7 @@ export function GamingCard() {
       {g.game && (
         <View style={styles.block}>
           <View style={styles.lineRow}>
-            <Text style={[styles.lineLabel, tk?.label]}>RUNNING</Text>
+            <Text style={[styles.lineLabel, tk?.label]}>{g.game_pause?.paused ? 'PAUSED' : 'RUNNING'}</Text>
             {g.game.running_s != null && (
               <Text style={styles.dim}>{humanizeRun(g.game.running_s)}</Text>
             )}
@@ -295,13 +298,15 @@ export function GamingCard() {
                 poll.refresh();
               });
             }}
-            disabled={stopping}
+            disabled={stopping || !!g.game_pause?.has_record}
             style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}>
             <Ionicons name="stop-circle-outline" size={15} color={t.red} />
-            <Text style={styles.stopText}>{stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
+            <Text style={styles.stopText}>{g.game_pause?.has_record ? 'RESUME TO CLOSE' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
           </Pressable>
         </View>
       )}
+
+      <GamePauseControl state={g.game_pause} refresh={poll.refresh} />
 
       {gpuList.map((card, i) => (
         <GpuBlock
